@@ -10,7 +10,7 @@ use crate::db::{
 };
 use crate::domain::MessageMeta;
 use crate::error::MailMcpError;
-use crate::mail::{locate_emlx, parse_emlx};
+use crate::mail::{locate_emlx_quick, parse_emlx};
 
 /// Parameters for the search_messages tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -131,26 +131,23 @@ fn hydrate_search_result(
     include_body_preview: bool,
 ) -> SearchMessageResult {
     let mut meta = MessageMeta::from_row(row, epoch_offset_s);
-    meta.has_body = false;
+    meta.has_body = true;
 
-    if let Some(mailbox_url) = row.mailbox_url.as_deref()
-        && let Some(path) = locate_emlx(
+    if include_body_preview
+        && let Some(mailbox_url) = row.mailbox_url.as_deref()
+        && let Some(path) = locate_emlx_quick(
             &config.mail_directory,
             &config.mail_version,
             mailbox_url,
             row.rowid,
         )
+        && let Ok(parsed) = parse_emlx(&path)
     {
-        meta.has_body = true;
-        if let Ok(parsed) = parse_emlx(&path) {
-            meta = meta.with_attachment_count(parsed.attachments.len() as u32);
-            if include_body_preview
-                && let Some(text) = parsed.body_text.or(parsed.body_html)
-            {
-                let preview = preview_text(&text);
-                if !preview.is_empty() {
-                    meta = meta.with_body_preview(preview);
-                }
+        meta = meta.with_attachment_count(parsed.attachments.len() as u32);
+        if let Some(text) = parsed.body_text.or(parsed.body_html) {
+            let preview = preview_text(&text);
+            if !preview.is_empty() {
+                meta = meta.with_body_preview(preview);
             }
         }
     }
