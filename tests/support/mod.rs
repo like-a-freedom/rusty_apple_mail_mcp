@@ -33,11 +33,13 @@ pub fn make_test_db() -> Connection {
         INSERT INTO subjects VALUES (1, 'Q3 Review'), (2, 'Budget Planning');
         INSERT INTO addresses VALUES (1, 'alice@example.com'), (2, 'bob@example.com');
         INSERT INTO sender_addresses VALUES (1, 1);
-        INSERT INTO mailboxes VALUES (1, 'imap://alice@mail.example.com/INBOX');
+        INSERT INTO mailboxes VALUES
+            (1, 'imap://account-a/INBOX'),
+            (2, 'ews://account-b/Inbox');
         
         -- Use CoreData epoch: 2024-09-15 = Unix timestamp - 978307200
         INSERT INTO messages VALUES (1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>');
-        INSERT INTO messages VALUES (2, 2, 1, 1, 766627200, 766627200, '<msg2@mail>');
+        INSERT INTO messages VALUES (2, 2, 1, 2, 766627200, 766627200, '<msg2@mail>');
         
         INSERT INTO recipients VALUES (1, 2, 1), (2, 2, 1);
         "#,
@@ -64,12 +66,18 @@ pub fn make_test_config() -> (TempDir, MailConfig) {
     (temp_dir, config)
 }
 
-/// Write an `.emlx` file into a synthetic mailbox tree for a message rowid.
-pub fn seed_emlx(config: &MailConfig, mailbox_name: &str, rowid: i64, raw_email: &str) -> PathBuf {
+/// Write an `.emlx` file into an account-specific synthetic mailbox tree for a message rowid.
+pub fn seed_emlx_in_account(
+    config: &MailConfig,
+    account_dir: &str,
+    mailbox_name: &str,
+    rowid: i64,
+    raw_email: &str,
+) -> PathBuf {
     let messages_dir = config
         .mail_directory
         .join(&config.mail_version)
-        .join("ACCOUNT-UUID")
+        .join(account_dir)
         .join(format!("{mailbox_name}.mbox"))
         .join("Messages");
     std::fs::create_dir_all(&messages_dir).expect("messages dir");

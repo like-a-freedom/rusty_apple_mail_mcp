@@ -5,7 +5,8 @@ use crate::error::MailMcpError;
 use crate::server::tools::{
     GetAttachmentParams, GetMessageParams, SearchMessagesParams,
     get_attachment_content as tool_get_attachment, get_message as tool_get_message,
-    list_mailboxes as tool_list_mailboxes, search_messages as tool_search_messages,
+    list_accounts as tool_list_accounts, list_mailboxes as tool_list_mailboxes,
+    search_messages as tool_search_messages,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -44,10 +45,10 @@ impl MailMcpServer {
         vec![
             Tool::new(
                 "search_messages",
-                "Find emails in Apple Mail by subject, date range, sender, or mailbox — or any combination.\n\n\
+                "Find emails in Apple Mail by subject, date range, sender, participant, account, or mailbox — or any combination.\n\n\
                  Use this tool when: the agent needs to find one or more emails matching known criteria.\n\
                  Do NOT use this tool when: the agent already has a message_id — use get_message instead.\n\n\
-                 At least one filter argument must be provided: subject_query, date_from, date_to, or sender.",
+                 At least one filter argument must be provided: subject_query, date_from, date_to, sender, participant, account, or mailbox.",
                 Self::value_to_schema(json!({
                     "type": "object",
                     "properties": {
@@ -71,6 +72,10 @@ impl MailMcpServer {
                             "type": "string",
                             "description": "Recipient email address (To/CC, exact match)"
                         },
+                        "account": {
+                            "type": "string",
+                            "description": "Account identifier returned by list_accounts (for example, ews://account-id)"
+                        },
                         "mailbox": {
                             "type": "string",
                             "description": "Mailbox name or fragment"
@@ -86,6 +91,17 @@ impl MailMcpServer {
                             "default": false
                         }
                     }
+                })),
+            )
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "list_accounts",
+                "List all mail accounts derived from Apple Mail mailbox URLs.\n\n\
+                 Use this tool when: the agent needs to choose a single account before calling search_messages.\n\
+                 Do NOT use this tool when: searching across all accounts is acceptable.",
+                Self::value_to_schema(json!({
+                    "type": "object",
+                    "properties": {}
                 })),
             )
             .with_annotations(ToolAnnotations::new().read_only(true)),
@@ -182,6 +198,11 @@ impl MailMcpServer {
                 let params: GetAttachmentParams = serde_json::from_value(Value::Object(arguments))
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                 let response = tool_get_attachment(&self.config, params)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![Content::json(response)?]))
+            }
+            "list_accounts" => {
+                let response = tool_list_accounts(&self.config)
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?;
                 Ok(CallToolResult::success(vec![Content::json(response)?]))
             }

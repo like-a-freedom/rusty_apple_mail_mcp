@@ -5,7 +5,10 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::config::MailConfig;
-use crate::db::{count_messages_in_mailbox, list_mailboxes as db_list_mailboxes, open_readonly};
+use crate::db::{
+    count_messages_in_mailbox, list_mailboxes as db_list_mailboxes, mailbox_account_id,
+    open_readonly,
+};
 use crate::error::MailMcpError;
 
 /// Response for list_mailboxes tool.
@@ -29,6 +32,8 @@ pub struct MailboxResult {
     pub url: String,
     /// Number of messages in the mailbox
     pub message_count: i64,
+    /// Account identifier derived from mailbox URL prefix
+    pub account_id: Option<String>,
 }
 
 /// Execute `list_mailboxes` against an already-open SQLite connection.
@@ -55,6 +60,7 @@ pub fn list_mailboxes_with_conn(conn: &Connection) -> Result<ListMailboxesRespon
                 .to_string(),
             url: url.clone(),
             message_count: count_messages_in_mailbox(conn, *id).unwrap_or(0),
+            account_id: mailbox_account_id(url),
         })
         .collect::<Vec<_>>();
 
