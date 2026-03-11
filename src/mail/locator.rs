@@ -23,7 +23,8 @@ struct CacheKey {
 
 /// In-memory cache for resolved message paths.
 /// Key: message ROWID, Value: resolved path to .emlx file
-static PATH_CACHE: Lazy<Mutex<HashMap<CacheKey, PathBuf>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static PATH_CACHE: Lazy<Mutex<HashMap<CacheKey, PathBuf>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Locate the .emlx file for a given message.
 ///
@@ -59,7 +60,7 @@ pub fn locate_emlx(
     }
 
     // Try to locate the file
-    let path = find_emlx_file(mail_dir, mail_version, mailbox_url, message_rowid)?;
+    let path = find_emlx_file(mail_dir, mail_version, mailbox_url, message_rowid, true)?;
 
     // Cache the result
     if let Ok(mut cache) = PATH_CACHE.lock() {
@@ -69,12 +70,40 @@ pub fn locate_emlx(
     Some(path)
 }
 
+/// Locate the `.emlx` file using cache and direct-path heuristics only.
+///
+/// This variant intentionally avoids recursive directory walking and is suitable
+/// for list/search operations where latency matters more than exhaustive lookup.
+pub fn locate_emlx_quick(
+    mail_dir: &Path,
+    mail_version: &str,
+    mailbox_url: &str,
+    message_rowid: i64,
+) -> Option<PathBuf> {
+    let cache_key = CacheKey {
+        mail_root: mail_dir.join(mail_version),
+        message_rowid,
+    };
+
+    {
+        let cache = PATH_CACHE.lock().ok()?;
+        if let Some(cached) = cache.get(&cache_key)
+            && cached.exists()
+        {
+            return Some(cached.clone());
+        }
+    }
+
+    find_emlx_file(mail_dir, mail_version, mailbox_url, message_rowid, false)
+}
+
 /// Internal function to find the .emlx file.
 fn find_emlx_file(
     mail_dir: &Path,
     mail_version: &str,
     mailbox_url: &str,
     message_rowid: i64,
+    allow_recursive_scan: bool,
 ) -> Option<PathBuf> {
     let base_path = mail_dir.join(mail_version);
 
@@ -85,18 +114,20 @@ fn find_emlx_file(
         return Some(path);
     }
 
-    // Strategy 2: Bounded recursive search for {rowid}.emlx
-    // Limit depth to avoid scanning the entire mail directory
-    for entry in WalkDir::new(&base_path)
-        .max_depth(10)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        if entry.file_type().is_file()
-            && let Some(file_name) = entry.file_name().to_str()
-            && file_name == format!("{message_rowid}.emlx")
+    if allow_recursive_scan {
+        // Strategy 2: Bounded recursive search for {rowid}.emlx
+        // Limit depth to avoid scanning the entire mail directory
+        for entry in WalkDir::new(&base_path)
+            .max_depth(10)
+            .into_iter()
+            .filter_map(|e| e.ok())
         {
-            return Some(entry.path().to_path_buf());
+            if entry.file_type().is_file()
+                && let Some(file_name) = entry.file_name().to_str()
+                && file_name == format!("{message_rowid}.emlx")
+            {
+                return Some(entry.path().to_path_buf());
+            }
         }
     }
 
@@ -214,5 +245,21 @@ mod tests {
 
         assert_eq!(first_result.unwrap(), first_file);
         assert_eq!(second_result.unwrap(), second_file);
+    }
+
+    #[test]
+    fn locate_emlx_quick_uses_direct_path_without_recursive_scan() {
+        let temp_dir = TempDir::new().unwrap();
+        let mail_dir = temp_dir.path();
+        let base_path = mail_dir.join("V10");
+        let uuid_dir = base_path.join("AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA");
+        let messages_dir = uuid_dir.join("Inbox.mbox").join("Messages");
+        fs::create_dir_all(&messages_dir).unwrap();
+
+        let emlx_path = messages_dir.join("7.emlx");
+        File::create(&emlx_path).unwrap();
+
+        let result = locate_emlx_quick(mail_dir, "V10", "ews://account/Inbox", 7);
+        assert_eq!(result, Some(emlx_path));
     }
 }
