@@ -8,7 +8,7 @@
 
 use crate::error::MailMcpError;
 use chrono::{Datelike, TimeZone, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Row, params, types::ValueRef};
 
 /// Raw database row from the messages index, before domain mapping.
 #[derive(Debug, Clone)]
@@ -24,6 +24,23 @@ pub struct MessageRow {
 
 /// CoreData epoch offset: seconds from 1970-01-01 to 2001-01-01.
 pub const COREDATA_EPOCH_OFFSET: i64 = 978_307_200;
+
+fn read_optional_string(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<String>> {
+    match row.get_ref(index)? {
+        ValueRef::Null => Ok(None),
+        ValueRef::Text(value) => Ok(Some(String::from_utf8_lossy(value).into_owned())),
+        ValueRef::Integer(value) => Ok(Some(value.to_string())),
+        ValueRef::Real(value) => Ok(Some(value.to_string())),
+        ValueRef::Blob(_) => Err(rusqlite::Error::InvalidColumnType(
+            index,
+            row.as_ref()
+                .column_name(index)
+                .unwrap_or("unknown")
+                .to_string(),
+            rusqlite::types::Type::Blob,
+        )),
+    }
+}
 
 /// Detect the timestamp offset used by the Apple Mail database.
 ///
@@ -164,7 +181,7 @@ pub fn search_messages(
             mailbox_url: row.get(3)?,
             date_sent: row.get(4)?,
             date_received: row.get(5)?,
-            message_id: row.get(6)?,
+            message_id: read_optional_string(row, 6)?,
         })
     })?;
 
@@ -215,7 +232,7 @@ pub fn get_message_by_id(conn: &Connection, id: i64) -> Result<Option<MessageRow
             mailbox_url: row.get(3)?,
             date_sent: row.get(4)?,
             date_received: row.get(5)?,
-            message_id: row.get(6)?,
+            message_id: read_optional_string(row, 6)?,
         })
     })?;
 
@@ -431,5 +448,40 @@ mod tests {
         let conn = make_test_db();
         assert!(address_exists(&conn, "alice@example.com").unwrap());
         assert!(!address_exists(&conn, "nobody@example.com").unwrap());
+    }
+
+    #[test]
+    fn search_messages_handles_integer_message_id_column() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+            CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
+            CREATE TABLE sender_addresses (ROWID INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (
+                ROWID INTEGER PRIMARY KEY,
+                subject INTEGER REFERENCES subjects,
+                sender INTEGER REFERENCES sender_addresses,
+                mailbox INTEGER REFERENCES mailboxes,
+                date_sent INTEGER,
+                date_received INTEGER,
+                message_id INTEGER
+            );
+
+            INSERT INTO subjects VALUES (1, 'Today');
+            INSERT INTO addresses VALUES (1, 'sender@example.com');
+            INSERT INTO sender_addresses VALUES (1, 1);
+            INSERT INTO mailboxes VALUES (1, 'ews://account/Inbox');
+            INSERT INTO messages VALUES (1, 1, 1, 1, 0, 0, 123456);
+            "#,
+        )
+        .expect("seed sqlite");
+
+        let results = search_messages(&conn, Some("Today"), None, None, None, None, None, 20, 0)
+            .expect("search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].message_id.as_deref(), Some("123456"));
     }
 }

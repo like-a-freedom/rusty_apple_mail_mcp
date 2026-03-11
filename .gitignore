@@ -22,3 +22,4 @@ AGENTS.md
 tarpaulin-report.html
 *.profraw
 cobertura.xml
+.vscode/
