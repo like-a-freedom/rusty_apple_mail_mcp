@@ -11,6 +11,8 @@
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
+use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use walkdir::WalkDir;
@@ -24,6 +26,15 @@ struct CacheKey {
 /// In-memory cache for resolved message paths.
 /// Key: message ROWID, Value: resolved path to .emlx file
 static PATH_CACHE: Lazy<Mutex<HashMap<CacheKey, PathBuf>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, Default)]
+struct MailboxIndex {
+    by_header: HashMap<String, PathBuf>,
+    by_stem: HashMap<String, PathBuf>,
+}
+
+static MAILBOX_INDEX_CACHE: Lazy<Mutex<HashMap<PathBuf, MailboxIndex>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Locate the .emlx file for a given message.
@@ -44,6 +55,25 @@ pub fn locate_emlx(
     mailbox_url: &str,
     message_rowid: i64,
 ) -> Option<PathBuf> {
+    locate_emlx_with_hints(
+        mail_dir,
+        mail_version,
+        mailbox_url,
+        message_rowid,
+        &[message_rowid.to_string()],
+        None,
+    )
+}
+
+/// Locate the `.emlx` file using fast exact-path hints first, then a mailbox-local cached index.
+pub fn locate_emlx_with_hints(
+    mail_dir: &Path,
+    mail_version: &str,
+    mailbox_url: &str,
+    message_rowid: i64,
+    numeric_hints: &[String],
+    message_id_header: Option<&str>,
+) -> Option<PathBuf> {
     let cache_key = CacheKey {
         mail_root: mail_dir.join(mail_version),
         message_rowid,
@@ -59,10 +89,37 @@ pub fn locate_emlx(
         }
     }
 
-    // Try to locate the file
-    let path = find_emlx_file(mail_dir, mail_version, mailbox_url, message_rowid, true)?;
+    let mut candidate_ids = numeric_hints.to_vec();
+    if !candidate_ids.iter().any(|candidate| candidate == &message_rowid.to_string()) {
+        candidate_ids.push(message_rowid.to_string());
+    }
 
-    // Cache the result
+    let mailbox_dirs = candidate_mailbox_directories(&mail_dir.join(mail_version), mailbox_url);
+
+    if let Some(path) = find_emlx_file(
+        mail_dir,
+        mail_version,
+        mailbox_url,
+        &candidate_ids,
+        false,
+    ) {
+        if let Ok(mut cache) = PATH_CACHE.lock() {
+            cache.insert(cache_key, path.clone());
+        }
+        return Some(path);
+    }
+
+    for mailbox_dir in &mailbox_dirs {
+        if let Some(path) = lookup_mailbox_index(mailbox_dir, &candidate_ids, message_id_header) {
+            if let Ok(mut cache) = PATH_CACHE.lock() {
+                cache.insert(cache_key.clone(), path.clone());
+            }
+            return Some(path);
+        }
+    }
+
+    let path = find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, true)?;
+
     if let Ok(mut cache) = PATH_CACHE.lock() {
         cache.insert(cache_key, path.clone());
     }
@@ -94,7 +151,13 @@ pub fn locate_emlx_quick(
         }
     }
 
-    find_emlx_file(mail_dir, mail_version, mailbox_url, message_rowid, false)
+    find_emlx_file(
+        mail_dir,
+        mail_version,
+        mailbox_url,
+        &[message_rowid.to_string()],
+        false,
+    )
 }
 
 /// Internal function to find the .emlx file.
@@ -102,31 +165,32 @@ fn find_emlx_file(
     mail_dir: &Path,
     mail_version: &str,
     mailbox_url: &str,
-    message_rowid: i64,
+    candidate_ids: &[String],
     allow_recursive_scan: bool,
 ) -> Option<PathBuf> {
     let base_path = mail_dir.join(mail_version);
+    let mailbox_dirs = candidate_mailbox_directories(&base_path, mailbox_url);
 
     // Strategy 1: Try direct path construction from mailbox URL
-    if let Some(path) = try_direct_path(&base_path, mailbox_url, message_rowid)
+    if let Some(path) = try_direct_path(&mailbox_dirs, candidate_ids)
         && path.exists()
     {
         return Some(path);
     }
 
     if allow_recursive_scan {
-        // Strategy 2: Bounded recursive search for {rowid}.emlx
-        // Limit depth to avoid scanning the entire mail directory
-        for entry in WalkDir::new(&base_path)
-            .max_depth(10)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            if entry.file_type().is_file()
-                && let Some(file_name) = entry.file_name().to_str()
-                && file_name == format!("{message_rowid}.emlx")
+        for mailbox_dir in mailbox_dirs {
+            for entry in WalkDir::new(&mailbox_dir)
+                .max_depth(8)
+                .into_iter()
+                .filter_map(|e| e.ok())
             {
-                return Some(entry.path().to_path_buf());
+                if entry.file_type().is_file()
+                    && let Some(file_name) = entry.file_name().to_str()
+                    && matches_candidate(file_name, candidate_ids)
+                {
+                    return Some(entry.path().to_path_buf());
+                }
             }
         }
     }
@@ -141,62 +205,251 @@ fn find_emlx_file(
 ///
 /// The corresponding filesystem path is usually under:
 /// `~/Library/Mail/V10/[UUID]/[Mailbox Name].mbox/Messages/`
-fn try_direct_path(base_path: &Path, mailbox_url: &str, message_rowid: i64) -> Option<PathBuf> {
-    // Extract mailbox name from URL (last segment after /)
-    let mailbox_name = mailbox_url.rsplit('/').next()?;
+fn try_direct_path(mailbox_dirs: &[PathBuf], candidate_ids: &[String]) -> Option<PathBuf> {
+    mailbox_dirs
+        .iter()
+        .find_map(|mailbox_dir| find_candidate_in_mailbox_dir(mailbox_dir, candidate_ids))
+}
 
-    let mut preferred_dirs = Vec::new();
-    if let Some(account_id) = mailbox_url
-        .find("://")
-        .and_then(|scheme_end| {
-            let rest = &mailbox_url[scheme_end + 3..];
-            rest.find('/').map(|slash| &rest[..slash])
-        })
-    {
-        preferred_dirs.push(account_id.to_string());
+fn parse_mailbox_url(mailbox_url: &str) -> Option<(&str, Vec<String>)> {
+    let scheme_end = mailbox_url.find("://")?;
+    let rest = &mailbox_url[scheme_end + 3..];
+    let slash = rest.find('/')?;
+    let account_id = &rest[..slash];
+    let path_part = &rest[slash + 1..];
+
+    let segments = path_part.split('/').map(percent_decode).collect::<Vec<_>>();
+    Some((account_id, segments))
+}
+
+fn candidate_mailbox_directories(base_path: &Path, mailbox_url: &str) -> Vec<PathBuf> {
+    let Some((account_id, segments)) = parse_mailbox_url(mailbox_url) else {
+        return Vec::new();
+    };
+
+    let mut roots = vec![base_path.join(account_id)];
+    if let Ok(entries) = fs::read_dir(base_path) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() && !roots.iter().any(|root| root == &path) {
+                roots.push(path);
+            }
+        }
     }
 
-    // Try common patterns
-    // Pattern 1: [UUID]/[Mailbox Name].mbox/Messages/[ROWID].emlx
-    for entry in std::fs::read_dir(base_path).ok()? {
-        let entry = entry.ok()?;
-        let dir_path = entry.path();
-        if !dir_path.is_dir() {
-            continue;
-        }
+    roots
+        .into_iter()
+        .map(|root| build_mailbox_path(root, &segments))
+        .collect()
+}
 
-        if let Some(dir_name) = dir_path.file_name().and_then(|name| name.to_str())
-            && !preferred_dirs.is_empty()
-            && !preferred_dirs.iter().any(|preferred| preferred == dir_name)
+fn build_mailbox_path(mut mailbox_dir: PathBuf, segments: &[String]) -> PathBuf {
+    for segment in segments {
+        mailbox_dir = mailbox_dir.join(format!("{}.mbox", percent_decode(segment)));
+    }
+    mailbox_dir
+}
+
+fn percent_decode(segment: &str) -> String {
+    let bytes = segment.as_bytes();
+    let mut decoded = String::with_capacity(segment.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len()
+            && let Ok(value) = u8::from_str_radix(&segment[index + 1..index + 3], 16)
         {
+            decoded.push(value as char);
+            index += 3;
             continue;
         }
 
-        let mbox_path = dir_path
-            .join(format!("{mailbox_name}.mbox"))
-            .join("Messages");
-        let emlx_path = mbox_path.join(format!("{message_rowid}.emlx"));
-        if emlx_path.exists() {
-            return Some(emlx_path);
-        }
+        decoded.push(bytes[index] as char);
+        index += 1;
     }
 
-    if !preferred_dirs.is_empty() {
-        for entry in std::fs::read_dir(base_path).ok()? {
-            let entry = entry.ok()?;
-            let dir_path = entry.path();
-            if !dir_path.is_dir() {
+    decoded
+}
+
+fn file_name_candidates(candidate_id: &str) -> [String; 2] {
+    [
+        format!("{candidate_id}.emlx"),
+        format!("{candidate_id}.partial.emlx"),
+    ]
+}
+
+fn matches_candidate(file_name: &str, candidate_ids: &[String]) -> bool {
+    candidate_ids.iter().any(|candidate_id| {
+        let [emlx, partial] = file_name_candidates(candidate_id);
+        file_name == emlx || file_name == partial
+    })
+}
+
+fn find_candidate_in_mailbox_dir(mailbox_dir: &Path, candidate_ids: &[String]) -> Option<PathBuf> {
+    for candidate_id in candidate_ids {
+        let [emlx_name, partial_name] = file_name_candidates(candidate_id);
+
+        for file_name in [&emlx_name, &partial_name] {
+            let direct_messages = mailbox_dir.join("Messages").join(file_name);
+            if direct_messages.exists() {
+                return Some(direct_messages);
+            }
+        }
+
+        for entry in fs::read_dir(mailbox_dir).ok()?.filter_map(Result::ok) {
+            let child = entry.path();
+            if !child.is_dir() {
                 continue;
             }
 
-            let mbox_path = dir_path
-                .join(format!("{mailbox_name}.mbox"))
-                .join("Messages");
-            let emlx_path = mbox_path.join(format!("{message_rowid}.emlx"));
-            if emlx_path.exists() {
-                return Some(emlx_path);
+            for file_name in [&emlx_name, &partial_name] {
+                let child_messages = child.join("Messages").join(file_name);
+                if child_messages.exists() {
+                    return Some(child_messages);
+                }
+            }
+
+            let data_root = child.join("Data");
+            if !data_root.is_dir() {
+                continue;
+            }
+
+            for level_one in fs::read_dir(&data_root).ok()?.filter_map(Result::ok) {
+                let level_one_path = level_one.path();
+                if !level_one_path.is_dir() {
+                    continue;
+                }
+
+                for level_two in fs::read_dir(&level_one_path).ok()?.filter_map(Result::ok) {
+                    let level_two_path = level_two.path();
+                    if !level_two_path.is_dir() {
+                        continue;
+                    }
+
+                    for file_name in [&emlx_name, &partial_name] {
+                        let hashed_messages = level_two_path.join("Messages").join(file_name);
+                        if hashed_messages.exists() {
+                            return Some(hashed_messages);
+                        }
+                    }
+                }
             }
         }
+    }
+
+    None
+}
+
+fn lookup_mailbox_index(
+    mailbox_dir: &Path,
+    candidate_ids: &[String],
+    message_id_header: Option<&str>,
+) -> Option<PathBuf> {
+    if let Ok(cache) = MAILBOX_INDEX_CACHE.lock()
+        && let Some(index) = cache.get(mailbox_dir)
+    {
+        if let Some(header) = message_id_header
+            && let Some(path) = index.by_header.get(header)
+            && path.exists()
+        {
+            return Some(path.clone());
+        }
+
+        for candidate_id in candidate_ids {
+            if let Some(path) = index.by_stem.get(candidate_id)
+                && path.exists()
+            {
+                return Some(path.clone());
+            }
+        }
+    }
+
+    let index = build_mailbox_index(mailbox_dir)?;
+    let matched = if let Some(header) = message_id_header {
+        index.by_header.get(header).cloned()
+    } else {
+        None
+    }
+    .or_else(|| {
+        candidate_ids
+            .iter()
+            .find_map(|candidate_id| index.by_stem.get(candidate_id).cloned())
+    });
+
+    if let Ok(mut cache) = MAILBOX_INDEX_CACHE.lock() {
+        cache.insert(mailbox_dir.to_path_buf(), index);
+    }
+
+    matched
+}
+
+fn build_mailbox_index(mailbox_dir: &Path) -> Option<MailboxIndex> {
+    if !mailbox_dir.exists() {
+        return None;
+    }
+
+    let mut index = MailboxIndex::default();
+    for entry in WalkDir::new(mailbox_dir)
+        .max_depth(8)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let Some(file_name) = entry.file_name().to_str() else {
+            continue;
+        };
+        if !(file_name.ends_with(".emlx") || file_name.ends_with(".partial.emlx")) {
+            continue;
+        }
+
+        let path = entry.path().to_path_buf();
+        let stem = file_name.trim_end_matches(".partial.emlx").trim_end_matches(".emlx");
+        index.by_stem.entry(stem.to_string()).or_insert(path.clone());
+
+        if let Some(header) = extract_message_id_header(&path) {
+            index.by_header.entry(header).or_insert(path);
+        }
+    }
+
+    Some(index)
+}
+
+fn extract_message_id_header(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    let _byte_count = lines.next()?.ok()?;
+
+    let mut current_name = String::new();
+    let mut current_value = String::new();
+    for line in lines.take(200) {
+        let line = line.ok()?;
+        if line.trim().is_empty() {
+            break;
+        }
+
+        if line.starts_with(' ') || line.starts_with('\t') {
+            current_value.push_str(line.trim());
+            continue;
+        }
+
+        if current_name.eq_ignore_ascii_case("Message-ID") {
+            return Some(current_value.trim().to_string());
+        }
+
+        if let Some((name, value)) = line.split_once(':') {
+            current_name.clear();
+            current_name.push_str(name.trim());
+            current_value.clear();
+            current_value.push_str(value.trim());
+        }
+    }
+
+    if current_name.eq_ignore_ascii_case("Message-ID") {
+        return Some(current_value.trim().to_string());
     }
 
     None
@@ -316,5 +569,103 @@ mod tests {
 
         let result = locate_emlx(mail_dir, "V10", "ews://account-b/Inbox", 9);
         assert_eq!(result, Some(right_file));
+    }
+
+    #[test]
+    fn locate_emlx_finds_message_in_nested_mailbox_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let mail_dir = temp_dir.path();
+        let messages_dir = mail_dir
+            .join("V10")
+            .join("account-b")
+            .join("Inbox.mbox")
+            .join("Internal services.mbox")
+            .join("Confluence.mbox")
+            .join("Messages");
+        fs::create_dir_all(&messages_dir).unwrap();
+
+        let emlx_path = messages_dir.join("194184.emlx");
+        File::create(&emlx_path).unwrap();
+
+        let result = locate_emlx(
+            mail_dir,
+            "V10",
+            "ews://account-b/Inbox/Internal%20services/Confluence",
+            194184,
+        );
+
+        assert_eq!(result, Some(emlx_path));
+    }
+
+    #[test]
+    fn locate_emlx_finds_message_in_uuid_data_subtree_for_nested_mailbox() {
+        let temp_dir = TempDir::new().unwrap();
+        let mail_dir = temp_dir.path();
+        let messages_dir = mail_dir
+            .join("V10")
+            .join("account-b")
+            .join("Inbox.mbox")
+            .join("Internal services.mbox")
+            .join("Confluence.mbox")
+            .join("UUID-1234")
+            .join("Data")
+            .join("4")
+            .join("8")
+            .join("Messages");
+        fs::create_dir_all(&messages_dir).unwrap();
+
+        let emlx_path = messages_dir.join("194184.emlx");
+        File::create(&emlx_path).unwrap();
+
+        let result = locate_emlx(
+            mail_dir,
+            "V10",
+            "ews://account-b/Inbox/Internal%20services/Confluence",
+            194184,
+        );
+
+        assert_eq!(result, Some(emlx_path));
+    }
+
+    #[test]
+    fn locate_emlx_with_hints_matches_by_message_id_header_when_filename_differs() {
+        let temp_dir = TempDir::new().unwrap();
+        let mail_dir = temp_dir.path();
+        let messages_dir = mail_dir
+            .join("V10")
+            .join("account-b")
+            .join("Inbox.mbox")
+            .join("Internal services.mbox")
+            .join("Confluence.mbox")
+            .join("UUID-1234")
+            .join("Data")
+            .join("4")
+            .join("8")
+            .join("Messages");
+        fs::create_dir_all(&messages_dir).unwrap();
+
+        let emlx_path = messages_dir.join("79665.emlx");
+        fs::write(
+            &emlx_path,
+            concat!(
+                "121\n",
+                "Message-ID: <confluence@example.com>\n",
+                "Subject: Nested\n",
+                "\n",
+                "Body\n"
+            ),
+        )
+        .unwrap();
+
+        let result = locate_emlx_with_hints(
+            mail_dir,
+            "V10",
+            "ews://account-b/Inbox/Internal%20services/Confluence",
+            194184,
+            &["194184".to_string(), "99974".to_string()],
+            Some("<confluence@example.com>"),
+        );
+
+        assert_eq!(result, Some(emlx_path));
     }
 }

@@ -142,7 +142,7 @@ impl MessageFull {
 
         Self {
             id: row.rowid.to_string(),
-            message_id_header: row.message_id.clone(),
+            message_id_header: row.message_id_header.clone().or(row.message_id.clone()),
             subject: row.subject.clone().unwrap_or_default(),
             from: row.sender.clone().unwrap_or_default(),
             to,
@@ -204,6 +204,8 @@ mod tests {
             date_sent: Some(2704665600),
             date_received: Some(2704665600),
             message_id: Some("<test@mail>".to_string()),
+            global_message_id: Some(7),
+            message_id_header: Some("<test@mail>".to_string()),
         };
 
         let meta = MessageMeta::from_row(&row, COREDATA_EPOCH_OFFSET);
