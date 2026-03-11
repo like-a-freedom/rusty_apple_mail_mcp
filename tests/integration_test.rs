@@ -3,18 +3,29 @@
 mod support;
 
 use rusty_apple_mail_mcp::server::{MailMcpServer, tools::*};
-use support::{make_test_config, make_test_db, seed_emlx};
+use support::{make_test_config, make_test_db, seed_emlx_in_account};
 
 #[test]
 fn tool_definitions_are_all_read_only() {
     let tools = MailMcpServer::tool_definitions();
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 5);
     assert!(tools.iter().all(|tool| {
         tool.annotations
             .as_ref()
             .and_then(|annotations| annotations.read_only_hint)
             == Some(true)
     }));
+}
+
+#[test]
+fn list_accounts_returns_distinct_accounts() {
+    let conn = make_test_db();
+    let response = list_accounts_with_conn(&conn).unwrap();
+
+    assert_eq!(response.status, "success");
+    assert_eq!(response.total_count, Some(2));
+    assert_eq!(response.accounts[0].account_id, "ews://account-b");
+    assert_eq!(response.accounts[1].account_id, "imap://account-a");
 }
 
 #[test]
@@ -31,6 +42,7 @@ fn search_by_subject_returns_matching_messages() {
             date_to: None,
             sender: None,
             participant: None,
+            account: None,
             mailbox: None,
             limit: 20,
             include_body_preview: false,
@@ -41,6 +53,34 @@ fn search_by_subject_returns_matching_messages() {
     assert_eq!(response.status, "success");
     assert_eq!(response.total_count, 1);
     assert_eq!(response.messages[0].subject, "Q3 Review");
+}
+
+#[test]
+fn search_by_account_returns_only_matching_messages() {
+    let conn = make_test_db();
+    let (_temp_dir, config) = make_test_config();
+
+    let response = search_messages_with_conn(
+        &config,
+        &conn,
+        SearchMessagesParams {
+            subject_query: None,
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: Some("ews://account-b".to_string()),
+            mailbox: None,
+            limit: 20,
+            include_body_preview: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(response.status, "success");
+    assert_eq!(response.total_count, 1);
+    assert_eq!(response.messages[0].mailbox, "Inbox");
+    assert_eq!(response.messages[0].subject, "Budget Planning");
 }
 
 #[test]
@@ -57,6 +97,7 @@ fn search_with_no_filters_returns_validation_error() {
             date_to: None,
             sender: None,
             participant: None,
+            account: None,
             mailbox: None,
             limit: 20,
             include_body_preview: false,
@@ -72,8 +113,9 @@ fn search_with_no_filters_returns_validation_error() {
 fn get_message_returns_body_and_attachment_summary() {
     let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
-    seed_emlx(
+    seed_emlx_in_account(
         &config,
+        "account-a",
         "INBOX",
         1,
         concat!(
@@ -120,8 +162,9 @@ fn get_message_returns_body_and_attachment_summary() {
 fn get_attachment_content_returns_text_for_text_attachment() {
     let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
-    seed_emlx(
+    seed_emlx_in_account(
         &config,
+        "account-a",
         "INBOX",
         1,
         concat!(
@@ -166,6 +209,6 @@ fn list_mailboxes_returns_all_mailboxes() {
     let response = list_mailboxes_with_conn(&conn).unwrap();
 
     assert_eq!(response.status, "success");
-    assert_eq!(response.total_count, Some(1));
-    assert_eq!(response.mailboxes[0].name, "INBOX");
+    assert_eq!(response.total_count, Some(2));
+    assert_eq!(response.mailboxes[0].name, "Inbox");
 }

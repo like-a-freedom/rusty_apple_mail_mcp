@@ -145,6 +145,17 @@ fn try_direct_path(base_path: &Path, mailbox_url: &str, message_rowid: i64) -> O
     // Extract mailbox name from URL (last segment after /)
     let mailbox_name = mailbox_url.rsplit('/').next()?;
 
+    let mut preferred_dirs = Vec::new();
+    if let Some(account_id) = mailbox_url
+        .find("://")
+        .and_then(|scheme_end| {
+            let rest = &mailbox_url[scheme_end + 3..];
+            rest.find('/').map(|slash| &rest[..slash])
+        })
+    {
+        preferred_dirs.push(account_id.to_string());
+    }
+
     // Try common patterns
     // Pattern 1: [UUID]/[Mailbox Name].mbox/Messages/[ROWID].emlx
     for entry in std::fs::read_dir(base_path).ok()? {
@@ -154,12 +165,37 @@ fn try_direct_path(base_path: &Path, mailbox_url: &str, message_rowid: i64) -> O
             continue;
         }
 
+        if let Some(dir_name) = dir_path.file_name().and_then(|name| name.to_str())
+            && !preferred_dirs.is_empty()
+            && !preferred_dirs.iter().any(|preferred| preferred == dir_name)
+        {
+            continue;
+        }
+
         let mbox_path = dir_path
             .join(format!("{mailbox_name}.mbox"))
             .join("Messages");
         let emlx_path = mbox_path.join(format!("{message_rowid}.emlx"));
         if emlx_path.exists() {
             return Some(emlx_path);
+        }
+    }
+
+    if !preferred_dirs.is_empty() {
+        for entry in std::fs::read_dir(base_path).ok()? {
+            let entry = entry.ok()?;
+            let dir_path = entry.path();
+            if !dir_path.is_dir() {
+                continue;
+            }
+
+            let mbox_path = dir_path
+                .join(format!("{mailbox_name}.mbox"))
+                .join("Messages");
+            let emlx_path = mbox_path.join(format!("{message_rowid}.emlx"));
+            if emlx_path.exists() {
+                return Some(emlx_path);
+            }
         }
     }
 
@@ -261,5 +297,24 @@ mod tests {
 
         let result = locate_emlx_quick(mail_dir, "V10", "ews://account/Inbox", 7);
         assert_eq!(result, Some(emlx_path));
+    }
+
+    #[test]
+    fn locate_emlx_prefers_account_specific_directory_hint() {
+        let temp_dir = TempDir::new().unwrap();
+        let mail_dir = temp_dir.path();
+        let base_path = mail_dir.join("V10");
+
+        let wrong_messages = base_path.join("other-account").join("Inbox.mbox").join("Messages");
+        let right_messages = base_path.join("account-b").join("Inbox.mbox").join("Messages");
+        fs::create_dir_all(&wrong_messages).unwrap();
+        fs::create_dir_all(&right_messages).unwrap();
+        let wrong_file = wrong_messages.join("9.emlx");
+        let right_file = right_messages.join("9.emlx");
+        File::create(&wrong_file).unwrap();
+        File::create(&right_file).unwrap();
+
+        let result = locate_emlx(mail_dir, "V10", "ews://account-b/Inbox", 9);
+        assert_eq!(result, Some(right_file));
     }
 }

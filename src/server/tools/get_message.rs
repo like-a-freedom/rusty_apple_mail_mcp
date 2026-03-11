@@ -5,7 +5,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::MailConfig;
-use crate::db::{detect_epoch_offset_seconds, get_message_by_id, get_recipients, open_readonly};
+use crate::db::{
+    detect_epoch_offset_seconds, get_message_by_id, get_recipients, mailbox_account_id,
+    open_readonly,
+};
 use crate::domain::AttachmentMeta;
 use crate::error::MailMcpError;
 use crate::mail::{locate_emlx, parse_emlx, raw_attachments_to_meta};
@@ -109,6 +112,10 @@ pub fn get_message_with_conn(
         .as_ref()
         .map(|url| url.rsplit('/').next().unwrap_or(url).to_string())
         .unwrap_or_else(|| "Unknown".to_string());
+    let _account_id = row
+        .mailbox_url
+        .as_deref()
+        .and_then(mailbox_account_id);
 
     let mut to = Vec::new();
     let mut cc = Vec::new();

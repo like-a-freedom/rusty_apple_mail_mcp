@@ -9,6 +9,7 @@
 use crate::error::MailMcpError;
 use chrono::{Datelike, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, params, types::ValueRef};
+use std::collections::BTreeMap;
 
 /// Raw database row from the messages index, before domain mapping.
 #[derive(Debug, Clone)]
@@ -20,6 +21,15 @@ pub struct MessageRow {
     pub date_sent: Option<i64>,
     pub date_received: Option<i64>,
     pub message_id: Option<String>,
+}
+
+/// Aggregated account information derived from mailbox URL prefixes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountRow {
+    pub account_id: String,
+    pub account_type: String,
+    pub mailbox_count: i64,
+    pub message_count: i64,
 }
 
 /// CoreData epoch offset: seconds from 1970-01-01 to 2001-01-01.
@@ -96,6 +106,7 @@ pub fn search_messages(
     date_to: Option<i64>,
     sender: Option<&str>,
     participant: Option<&str>,
+    account: Option<&str>,
     mailbox: Option<&str>,
     limit: u32,
     offset: u32,
@@ -131,6 +142,11 @@ pub fn search_messages(
             "EXISTS (SELECT 1 FROM recipients r JOIN addresses ra ON ra.ROWID = r.address WHERE r.message = m.ROWID AND ra.address = ?)",
         );
         params.push(Box::new(participant_addr.to_string()));
+    }
+
+    if let Some(account_id) = account {
+        conditions.push("mb.url LIKE ?");
+        params.push(Box::new(format!("{account_id}/%")));
     }
 
     if let Some(mailbox_filter) = mailbox {
@@ -290,6 +306,44 @@ pub fn list_mailboxes(conn: &Connection) -> Result<Vec<(i64, String)>, MailMcpEr
     Ok(results)
 }
 
+/// List mailbox-derived accounts aggregated by URL prefix.
+pub fn list_accounts(conn: &Connection) -> Result<Vec<AccountRow>, MailMcpError> {
+    let mailboxes = list_mailboxes(conn)?;
+    let mut grouped: BTreeMap<String, (String, i64, i64)> = BTreeMap::new();
+
+    for (mailbox_id, url) in mailboxes {
+        if let Some(account_id) = mailbox_account_id(&url) {
+            let account_type = mailbox_scheme(&url).unwrap_or_else(|| "unknown".to_string());
+            let message_count = count_messages_in_mailbox(conn, mailbox_id)?;
+            let entry = grouped.entry(account_id).or_insert((account_type, 0, 0));
+            entry.1 += 1;
+            entry.2 += message_count;
+        }
+    }
+
+    Ok(grouped
+        .into_iter()
+        .map(|(account_id, (account_type, mailbox_count, message_count))| AccountRow {
+            account_id,
+            account_type,
+            mailbox_count,
+            message_count,
+        })
+        .collect())
+}
+
+/// Derive an account identifier from a mailbox URL, e.g. `ews://account-id`.
+pub fn mailbox_account_id(mailbox_url: &str) -> Option<String> {
+    let scheme_end = mailbox_url.find("://")?;
+    let rest = &mailbox_url[scheme_end + 3..];
+    let slash = rest.find('/')?;
+    Some(format!("{}://{}", &mailbox_url[..scheme_end], &rest[..slash]))
+}
+
+fn mailbox_scheme(mailbox_url: &str) -> Option<String> {
+    mailbox_url.find("://").map(|index| mailbox_url[..index].to_string())
+}
+
 /// Count messages in a mailbox.
 pub fn count_messages_in_mailbox(conn: &Connection, mailbox_id: i64) -> Result<i64, MailMcpError> {
     let mut stmt = conn.prepare("SELECT COUNT(*) FROM messages WHERE mailbox = ?")?;
@@ -347,7 +401,8 @@ mod tests {
     fn search_by_subject_returns_matching_messages() {
         let conn = make_test_db();
         let results =
-            search_messages(&conn, Some("Q3"), None, None, None, None, None, 20, 0).unwrap();
+            search_messages(&conn, Some("Q3"), None, None, None, None, None, None, 20, 0)
+                .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].subject, Some("Q3 Review".to_string()));
     }
@@ -363,6 +418,7 @@ mod tests {
             Some("alice@example.com"),
             None,
             None,
+            None,
             20,
             0,
         )
@@ -373,7 +429,8 @@ mod tests {
     #[test]
     fn search_with_no_filters_returns_all_messages() {
         let conn = make_test_db();
-        let results = search_messages(&conn, None, None, None, None, None, None, 20, 0).unwrap();
+        let results = search_messages(&conn, None, None, None, None, None, None, None, 20, 0)
+            .unwrap();
         assert_eq!(results.len(), 2);
     }
 
@@ -387,6 +444,26 @@ mod tests {
             None,
             None,
             Some("bob@example.com"),
+            None,
+            None,
+            20,
+            0,
+        )
+        .unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_by_account_returns_matching_messages() {
+        let conn = make_test_db();
+        let results = search_messages(
+            &conn,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("imap://alice@mail.example.com"),
             None,
             20,
             0,
@@ -425,6 +502,33 @@ mod tests {
         let mailboxes = list_mailboxes(&conn).unwrap();
         assert_eq!(mailboxes.len(), 1);
         assert!(mailboxes[0].1.contains("INBOX"));
+    }
+
+    #[test]
+    fn list_accounts_groups_mailboxes_by_url_prefix() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, mailbox INTEGER, date_sent INTEGER, date_received INTEGER, message_id TEXT, subject INTEGER, sender INTEGER);
+
+            INSERT INTO mailboxes VALUES (1, 'ews://account-b/Inbox');
+            INSERT INTO mailboxes VALUES (2, 'ews://account-b/Sent Items');
+            INSERT INTO mailboxes VALUES (3, 'imap://account-a/INBOX');
+
+            INSERT INTO messages VALUES (1, 1, 0, 0, 'm1', NULL, NULL);
+            INSERT INTO messages VALUES (2, 2, 0, 0, 'm2', NULL, NULL);
+            INSERT INTO messages VALUES (3, 3, 0, 0, 'm3', NULL, NULL);
+            "#,
+        )
+        .expect("seed sqlite");
+
+        let accounts = list_accounts(&conn).unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].account_id, "ews://account-b");
+        assert_eq!(accounts[0].mailbox_count, 2);
+        assert_eq!(accounts[0].message_count, 2);
+        assert_eq!(accounts[1].account_id, "imap://account-a");
     }
 
     #[test]
@@ -478,8 +582,19 @@ mod tests {
         )
         .expect("seed sqlite");
 
-        let results = search_messages(&conn, Some("Today"), None, None, None, None, None, 20, 0)
-            .expect("search should succeed");
+        let results = search_messages(
+            &conn,
+            Some("Today"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            20,
+            0,
+        )
+        .expect("search should succeed");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].message_id.as_deref(), Some("123456"));

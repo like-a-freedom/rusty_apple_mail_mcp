@@ -25,6 +25,8 @@ pub struct SearchMessagesParams {
     pub sender: Option<String>,
     /// Recipient participant email address (To/CC exact match)
     pub participant: Option<String>,
+    /// Account identifier returned by list_accounts (for example, `ews://account-id`)
+    pub account: Option<String>,
     /// Mailbox name or fragment
     pub mailbox: Option<String>,
     /// Maximum number of results (default 20, max 100)
@@ -82,11 +84,12 @@ fn validate_params(params: &SearchMessagesParams) -> Result<(), String> {
         || params.date_to.is_some()
         || params.sender.is_some()
         || params.participant.is_some()
+        || params.account.is_some()
         || params.mailbox.is_some();
 
     if !has_any_filter {
         return Err(
-            "At least one filter must be provided: subject_query, date_from, date_to, sender, participant, or mailbox.".to_string(),
+            "At least one filter must be provided: subject_query, date_from, date_to, sender, participant, account, or mailbox.".to_string(),
         );
     }
 
@@ -204,6 +207,7 @@ pub fn search_messages_with_conn(
         date_to_ts,
         params.sender.as_deref(),
         params.participant.as_deref(),
+        params.account.as_deref(),
         params.mailbox.as_deref(),
         params.limit,
         0,
@@ -305,6 +309,7 @@ mod tests {
             date_to: None,
             sender: None,
             participant: None,
+            account: None,
             mailbox: None,
             limit: 20,
             include_body_preview: false,
