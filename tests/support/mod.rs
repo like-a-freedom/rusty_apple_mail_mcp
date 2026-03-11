@@ -1,0 +1,81 @@
+//! Test support utilities for integration tests.
+
+use rusty_apple_mail_mcp::config::MailConfig;
+use rusqlite::Connection;
+use std::path::PathBuf;
+use tempfile::TempDir;
+
+/// Create an in-memory test database with a minimal schema and seed data.
+pub fn make_test_db() -> Connection {
+    let conn = Connection::open_in_memory().expect("in-memory sqlite");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+        CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
+        CREATE TABLE sender_addresses (sender INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
+        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+        CREATE TABLE messages (
+            ROWID INTEGER PRIMARY KEY,
+            subject INTEGER REFERENCES subjects,
+            sender INTEGER REFERENCES sender_addresses,
+            mailbox INTEGER REFERENCES mailboxes,
+            date_sent INTEGER,
+            date_received INTEGER,
+            message_id TEXT
+        );
+        CREATE TABLE recipients (
+            message INTEGER REFERENCES messages,
+            address INTEGER REFERENCES addresses,
+            type INTEGER
+        );
+
+        -- Seed data
+        INSERT INTO subjects VALUES (1, 'Q3 Review'), (2, 'Budget Planning');
+        INSERT INTO addresses VALUES (1, 'alice@example.com'), (2, 'bob@example.com');
+        INSERT INTO sender_addresses VALUES (1, 1);
+        INSERT INTO mailboxes VALUES (1, 'imap://alice@mail.example.com/INBOX');
+        
+        -- Use CoreData epoch: 2024-09-15 = Unix timestamp - 978307200
+        INSERT INTO messages VALUES (1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>');
+        INSERT INTO messages VALUES (2, 2, 1, 1, 766627200, 766627200, '<msg2@mail>');
+        
+        INSERT INTO recipients VALUES (1, 2, 1), (2, 2, 1);
+        "#,
+    )
+    .expect("seed test schema");
+    conn
+}
+
+/// Build a temporary Apple Mail-like directory and a matching config for tests.
+pub fn make_test_config() -> (TempDir, MailConfig) {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let mail_directory = temp_dir.path().to_path_buf();
+    let mail_version = "V10".to_string();
+    let db_dir = mail_directory.join(&mail_version).join("MailData");
+    std::fs::create_dir_all(&db_dir).expect("mail data dir");
+    std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
+
+    let config = MailConfig::from_parts(
+        mail_directory,
+        mail_version,
+        "user@example.com".to_string(),
+    )
+    .expect("config");
+    (temp_dir, config)
+}
+
+/// Write an `.emlx` file into a synthetic mailbox tree for a message rowid.
+pub fn seed_emlx(config: &MailConfig, mailbox_name: &str, rowid: i64, raw_email: &str) -> PathBuf {
+    let messages_dir = config
+        .mail_directory
+        .join(&config.mail_version)
+        .join("ACCOUNT-UUID")
+        .join(format!("{mailbox_name}.mbox"))
+        .join("Messages");
+    std::fs::create_dir_all(&messages_dir).expect("messages dir");
+
+    let emlx_path = messages_dir.join(format!("{rowid}.emlx"));
+    let emlx_content = format!("{}\n{}", raw_email.len(), raw_email);
+    std::fs::write(&emlx_path, emlx_content).expect("write emlx");
+    emlx_path
+}
