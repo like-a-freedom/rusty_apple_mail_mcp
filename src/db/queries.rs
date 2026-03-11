@@ -323,12 +323,14 @@ pub fn list_accounts(conn: &Connection) -> Result<Vec<AccountRow>, MailMcpError>
 
     Ok(grouped
         .into_iter()
-        .map(|(account_id, (account_type, mailbox_count, message_count))| AccountRow {
-            account_id,
-            account_type,
-            mailbox_count,
-            message_count,
-        })
+        .map(
+            |(account_id, (account_type, mailbox_count, message_count))| AccountRow {
+                account_id,
+                account_type,
+                mailbox_count,
+                message_count,
+            },
+        )
         .collect())
 }
 
@@ -337,11 +339,17 @@ pub fn mailbox_account_id(mailbox_url: &str) -> Option<String> {
     let scheme_end = mailbox_url.find("://")?;
     let rest = &mailbox_url[scheme_end + 3..];
     let slash = rest.find('/')?;
-    Some(format!("{}://{}", &mailbox_url[..scheme_end], &rest[..slash]))
+    Some(format!(
+        "{}://{}",
+        &mailbox_url[..scheme_end],
+        &rest[..slash]
+    ))
 }
 
 fn mailbox_scheme(mailbox_url: &str) -> Option<String> {
-    mailbox_url.find("://").map(|index| mailbox_url[..index].to_string())
+    mailbox_url
+        .find("://")
+        .map(|index| mailbox_url[..index].to_string())
 }
 
 /// Count messages in a mailbox.
@@ -401,8 +409,7 @@ mod tests {
     fn search_by_subject_returns_matching_messages() {
         let conn = make_test_db();
         let results =
-            search_messages(&conn, Some("Q3"), None, None, None, None, None, None, 20, 0)
-                .unwrap();
+            search_messages(&conn, Some("Q3"), None, None, None, None, None, None, 20, 0).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].subject, Some("Q3 Review".to_string()));
     }
@@ -429,8 +436,8 @@ mod tests {
     #[test]
     fn search_with_no_filters_returns_all_messages() {
         let conn = make_test_db();
-        let results = search_messages(&conn, None, None, None, None, None, None, None, 20, 0)
-            .unwrap();
+        let results =
+            search_messages(&conn, None, None, None, None, None, None, None, 20, 0).unwrap();
         assert_eq!(results.len(), 2);
     }
 
