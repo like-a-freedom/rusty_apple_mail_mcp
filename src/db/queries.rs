@@ -329,8 +329,8 @@ mod tests {
     #[test]
     fn search_by_subject_returns_matching_messages() {
         let conn = make_test_db();
-        let results = search_messages(&conn, Some("Q3"), None, None, None, None, None, 20, 0)
-            .unwrap();
+        let results =
+            search_messages(&conn, Some("Q3"), None, None, None, None, None, 20, 0).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].subject, Some("Q3 Review".to_string()));
     }
@@ -356,8 +356,7 @@ mod tests {
     #[test]
     fn search_with_no_filters_returns_all_messages() {
         let conn = make_test_db();
-        let results = search_messages(&conn, None, None, None, None, None, None, 20, 0)
-            .unwrap();
+        let results = search_messages(&conn, None, None, None, None, None, None, 20, 0).unwrap();
         assert_eq!(results.len(), 2);
     }
 
@@ -421,7 +420,10 @@ mod tests {
     #[test]
     fn detect_epoch_offset_for_coredata_seed() {
         let conn = make_test_db();
-        assert_eq!(detect_epoch_offset_seconds(&conn).unwrap(), COREDATA_EPOCH_OFFSET);
+        assert_eq!(
+            detect_epoch_offset_seconds(&conn).unwrap(),
+            COREDATA_EPOCH_OFFSET
+        );
     }
 
     #[test]
