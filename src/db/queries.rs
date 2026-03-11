@@ -21,6 +21,8 @@ pub struct MessageRow {
     pub date_sent: Option<i64>,
     pub date_received: Option<i64>,
     pub message_id: Option<String>,
+    pub global_message_id: Option<i64>,
+    pub message_id_header: Option<String>,
 }
 
 /// Aggregated account information derived from mailbox URL prefixes.
@@ -198,6 +200,8 @@ pub fn search_messages(
             date_sent: row.get(4)?,
             date_received: row.get(5)?,
             message_id: read_optional_string(row, 6)?,
+            global_message_id: None,
+            message_id_header: None,
         })
     })?;
 
@@ -230,12 +234,15 @@ pub fn get_message_by_id(conn: &Connection, id: i64) -> Result<Option<MessageRow
             mb.url,
             m.date_sent,
             m.date_received,
-            m.message_id
+            m.message_id,
+            m.global_message_id,
+            mgd.message_id_header
         FROM messages m
         LEFT JOIN subjects s ON m.subject = s.ROWID
         LEFT JOIN sender_addresses sa ON m.sender = sa.ROWID
         LEFT JOIN addresses a ON sa.address = a.ROWID
         LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID
+        LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
         WHERE m.ROWID = ?
         "#,
     )?;
@@ -249,6 +256,8 @@ pub fn get_message_by_id(conn: &Connection, id: i64) -> Result<Option<MessageRow
             date_sent: row.get(4)?,
             date_received: row.get(5)?,
             message_id: read_optional_string(row, 6)?,
+            global_message_id: row.get(7)?,
+            message_id_header: read_optional_string(row, 8)?,
         })
     })?;
 
@@ -380,7 +389,13 @@ mod tests {
                 mailbox INTEGER REFERENCES mailboxes,
                 date_sent INTEGER,
                 date_received INTEGER,
-                message_id TEXT
+                message_id TEXT,
+                global_message_id INTEGER
+            );
+            CREATE TABLE message_global_data (
+                ROWID INTEGER PRIMARY KEY,
+                message_id INTEGER,
+                message_id_header TEXT
             );
             CREATE TABLE recipients (
                 message INTEGER REFERENCES messages,
@@ -395,8 +410,10 @@ mod tests {
             INSERT INTO mailboxes VALUES (1, 'imap://alice@mail.example.com/INBOX');
             
             -- Use CoreData epoch: 2024-09-15 = 1726358400 (Unix) - 978307200 = 748051200
-            INSERT INTO messages VALUES (1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>');
-            INSERT INTO messages VALUES (2, 2, 1, 1, 766627200, 766627200, '<msg2@mail>');
+            INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
+            INSERT INTO message_global_data VALUES (20, 222, '<msg2@mail>');
+            INSERT INTO messages VALUES (1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>', 10);
+            INSERT INTO messages VALUES (2, 2, 1, 1, 766627200, 766627200, '<msg2@mail>', 20);
             
             INSERT INTO recipients VALUES (1, 2, 1), (2, 2, 1);
             "#,
@@ -517,15 +534,16 @@ mod tests {
         conn.execute_batch(
             r#"
             CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
-            CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, mailbox INTEGER, date_sent INTEGER, date_received INTEGER, message_id TEXT, subject INTEGER, sender INTEGER);
+            CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, mailbox INTEGER, date_sent INTEGER, date_received INTEGER, message_id TEXT, subject INTEGER, sender INTEGER, global_message_id INTEGER);
+            CREATE TABLE message_global_data (ROWID INTEGER PRIMARY KEY, message_id INTEGER, message_id_header TEXT);
 
             INSERT INTO mailboxes VALUES (1, 'ews://account-b/Inbox');
             INSERT INTO mailboxes VALUES (2, 'ews://account-b/Sent Items');
             INSERT INTO mailboxes VALUES (3, 'imap://account-a/INBOX');
 
-            INSERT INTO messages VALUES (1, 1, 0, 0, 'm1', NULL, NULL);
-            INSERT INTO messages VALUES (2, 2, 0, 0, 'm2', NULL, NULL);
-            INSERT INTO messages VALUES (3, 3, 0, 0, 'm3', NULL, NULL);
+            INSERT INTO messages VALUES (1, 1, 0, 0, 'm1', NULL, NULL, NULL);
+            INSERT INTO messages VALUES (2, 2, 0, 0, 'm2', NULL, NULL, NULL);
+            INSERT INTO messages VALUES (3, 3, 0, 0, 'm3', NULL, NULL, NULL);
             "#,
         )
         .expect("seed sqlite");
@@ -577,14 +595,17 @@ mod tests {
                 mailbox INTEGER REFERENCES mailboxes,
                 date_sent INTEGER,
                 date_received INTEGER,
-                message_id INTEGER
+                message_id INTEGER,
+                global_message_id INTEGER
             );
+            CREATE TABLE message_global_data (ROWID INTEGER PRIMARY KEY, message_id INTEGER, message_id_header TEXT);
 
             INSERT INTO subjects VALUES (1, 'Today');
             INSERT INTO addresses VALUES (1, 'sender@example.com');
             INSERT INTO sender_addresses VALUES (1, 1);
             INSERT INTO mailboxes VALUES (1, 'ews://account/Inbox');
-            INSERT INTO messages VALUES (1, 1, 1, 1, 0, 0, 123456);
+            INSERT INTO message_global_data VALUES (1, 123456, '<int-msg@example.com>');
+            INSERT INTO messages VALUES (1, 1, 1, 1, 0, 0, 123456, 1);
             "#,
         )
         .expect("seed sqlite");

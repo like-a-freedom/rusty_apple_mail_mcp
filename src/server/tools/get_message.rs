@@ -11,7 +11,7 @@ use crate::db::{
 };
 use crate::domain::AttachmentMeta;
 use crate::error::MailMcpError;
-use crate::mail::{locate_emlx, parse_emlx, raw_attachments_to_meta};
+use crate::mail::{locate_emlx_with_hints, parse_emlx, raw_attachments_to_meta};
 
 /// Parameters for the get_message tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -129,7 +129,7 @@ pub fn get_message_with_conn(
 
     let mut result = GetMessageResult {
         id: row.rowid.to_string(),
-        message_id_header: row.message_id.clone(),
+        message_id_header: row.message_id_header.clone().or(row.message_id.clone()),
         subject: row.subject.clone().unwrap_or_default(),
         from: row.sender.clone().unwrap_or_default(),
         to,
@@ -147,11 +147,23 @@ pub fn get_message_with_conn(
     };
 
     if params.include_body || params.include_attachments_summary {
-        let emlx_path = locate_emlx(
+        let mut numeric_hints = vec![row.rowid.to_string()];
+        if let Some(global_message_id) = row.global_message_id {
+            numeric_hints.push(global_message_id.to_string());
+        }
+        if let Some(message_id) = row.message_id.as_ref() {
+            numeric_hints.push(message_id.clone());
+        }
+        numeric_hints.sort();
+        numeric_hints.dedup();
+
+        let emlx_path = locate_emlx_with_hints(
             &config.mail_directory,
             &config.mail_version,
             row.mailbox_url.as_deref().unwrap_or(""),
             row.rowid,
+            &numeric_hints,
+            row.message_id_header.as_deref().or(row.message_id.as_deref()),
         );
 
         if let Some(path) = emlx_path {
@@ -201,7 +213,7 @@ pub fn get_message_with_conn(
                 status: "partial".to_string(),
                 message: Some(result),
                 guidance: Some(
-                    "Message body file location could not be determined. The mailbox structure may have changed or the message was moved.".to_string(),
+                    "No local message file matched this message inside the mailbox subtree. The message may not be downloaded, may only exist as a partial cache entry, or the local Mail storage layout may differ from the indexed metadata.".to_string(),
                 ),
             });
         }

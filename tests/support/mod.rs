@@ -21,7 +21,13 @@ pub fn make_test_db() -> Connection {
             mailbox INTEGER REFERENCES mailboxes,
             date_sent INTEGER,
             date_received INTEGER,
-            message_id TEXT
+            message_id TEXT,
+            global_message_id INTEGER
+        );
+        CREATE TABLE message_global_data (
+            ROWID INTEGER PRIMARY KEY,
+            message_id INTEGER,
+            message_id_header TEXT
         );
         CREATE TABLE recipients (
             message INTEGER REFERENCES messages,
@@ -38,8 +44,10 @@ pub fn make_test_db() -> Connection {
             (2, 'ews://account-b/Inbox');
         
         -- Use CoreData epoch: 2024-09-15 = Unix timestamp - 978307200
-        INSERT INTO messages VALUES (1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>');
-        INSERT INTO messages VALUES (2, 2, 1, 2, 766627200, 766627200, '<msg2@mail>');
+        INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
+        INSERT INTO message_global_data VALUES (20, 222, '<msg2@mail>');
+        INSERT INTO messages VALUES (1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>', 10);
+        INSERT INTO messages VALUES (2, 2, 1, 2, 766627200, 766627200, '<msg2@mail>', 20);
         
         INSERT INTO recipients VALUES (1, 2, 1), (2, 2, 1);
         "#,
@@ -83,6 +91,33 @@ pub fn seed_emlx_in_account(
     std::fs::create_dir_all(&messages_dir).expect("messages dir");
 
     let emlx_path = messages_dir.join(format!("{rowid}.emlx"));
+    let emlx_content = format!("{}\n{}", raw_email.len(), raw_email);
+    std::fs::write(&emlx_path, emlx_content).expect("write emlx");
+    emlx_path
+}
+
+/// Write an `.emlx` file into a nested mailbox tree with optional UUID/Data fanout.
+pub fn seed_emlx_in_nested_mailbox(
+    config: &MailConfig,
+    account_dir: &str,
+    mailbox_segments: &[&str],
+    file_stem: &str,
+    raw_email: &str,
+) -> PathBuf {
+    let mut mailbox_dir = config.mail_directory.join(&config.mail_version).join(account_dir);
+    for segment in mailbox_segments {
+        mailbox_dir = mailbox_dir.join(format!("{segment}.mbox"));
+    }
+
+    let messages_dir = mailbox_dir
+        .join("UUID-1234")
+        .join("Data")
+        .join("4")
+        .join("8")
+        .join("Messages");
+    std::fs::create_dir_all(&messages_dir).expect("messages dir");
+
+    let emlx_path = messages_dir.join(format!("{file_stem}.emlx"));
     let emlx_content = format!("{}\n{}", raw_email.len(), raw_email);
     std::fs::write(&emlx_path, emlx_content).expect("write emlx");
     emlx_path

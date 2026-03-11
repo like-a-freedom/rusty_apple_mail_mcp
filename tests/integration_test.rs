@@ -3,7 +3,7 @@
 mod support;
 
 use rusty_apple_mail_mcp::server::{MailMcpServer, tools::*};
-use support::{make_test_config, make_test_db, seed_emlx_in_account};
+use support::{make_test_config, make_test_db, seed_emlx_in_account, seed_emlx_in_nested_mailbox};
 
 #[test]
 fn tool_definitions_are_all_read_only() {
@@ -211,4 +211,44 @@ fn list_mailboxes_returns_all_mailboxes() {
     assert_eq!(response.status, "success");
     assert_eq!(response.total_count, Some(2));
     assert_eq!(response.mailboxes[0].name, "Inbox");
+}
+
+#[test]
+fn get_message_reads_body_from_nested_mailbox_uuid_data_layout() {
+    let conn = make_test_db();
+    conn.execute("UPDATE mailboxes SET url = ?1 WHERE ROWID = 2", ["ews://account-b/Inbox/Internal%20services/Confluence"])
+        .unwrap();
+    let (_temp_dir, config) = make_test_config();
+    seed_emlx_in_nested_mailbox(
+        &config,
+        "account-b",
+        &["Inbox", "Internal services", "Confluence"],
+        "79665",
+        concat!(
+            "From: notifications@example.com\n",
+            "To: bob@example.com\n",
+            "Message-ID: <msg2@mail>\n",
+            "Subject: Budget Planning\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Nested mailbox body\n"
+        ),
+    );
+
+    let response = get_message_with_conn(
+        &config,
+        &conn,
+        GetMessageParams {
+            message_id: "2".to_string(),
+            include_body: true,
+            include_attachments_summary: true,
+            body_format: BodyFormat::Text,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(response.status, "success");
+    let message = response.message.expect("message payload");
+    assert_eq!(message.mailbox, "Confluence");
+    assert_eq!(message.body.as_deref(), Some("Nested mailbox body\n"));
 }
