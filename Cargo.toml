@@ -1,0 +1,52 @@
+[package]
+name = "rusty_apple_mail_mcp"
+version = "0.1.0"
+edition = "2024"
+resolver = "3"
+
+[[bin]]
+name = "rusty_apple_mail_mcp"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "1.2.0", features = ["server", "macros", "transport-io"] }
+tokio = { version = "1.50.0", features = [
+    "rt-multi-thread",
+    "macros",
+    "io-util"
+] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+anyhow = "1.0.102"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+chrono = { version = "0.4.26", features = ["serde"] }
+dirs = "6"
+walkdir = "2.5.0"
+mail-parser = "0.11"
+schemars = "1.2.1"
+once_cell = "1.21"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.dev]
+opt-level = 0
+debug = 1
+incremental = true
+codegen-units = 16
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test]
+inherits = "dev"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
