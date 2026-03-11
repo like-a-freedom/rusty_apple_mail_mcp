@@ -68,7 +68,9 @@ impl MessageMeta {
             subject: row.subject.clone().unwrap_or_default(),
             from: row.sender.clone().unwrap_or_default(),
             date_sent: row.date_sent.map(|ts| timestamp_to_iso(ts, epoch_offset_s)),
-            date_received: row.date_received.map(|ts| timestamp_to_iso(ts, epoch_offset_s)),
+            date_received: row
+                .date_received
+                .map(|ts| timestamp_to_iso(ts, epoch_offset_s)),
             mailbox,
             has_body: true,      // Assume true; actual check happens when reading emlx
             attachment_count: 0, // Will be populated from emlx parsing
@@ -148,7 +150,9 @@ impl MessageFull {
             to,
             cc,
             date_sent: row.date_sent.map(|ts| timestamp_to_iso(ts, epoch_offset_s)),
-            date_received: row.date_received.map(|ts| timestamp_to_iso(ts, epoch_offset_s)),
+            date_received: row
+                .date_received
+                .map(|ts| timestamp_to_iso(ts, epoch_offset_s)),
             mailbox,
             body: None,
             attachments: Vec::new(),
