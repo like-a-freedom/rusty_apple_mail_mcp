@@ -17,7 +17,7 @@ impl MailConfig {
     /// `APPLE_MAIL_DIR`, `APPLE_MAIL_VERSION`, `APPLE_MAIL_PRIMARY_EMAIL`.
     pub fn from_env() -> Result<Self, MailMcpError> {
         let mail_directory = std::env::var("APPLE_MAIL_DIR")
-            .map(PathBuf::from)
+            .map(|raw| expand_mail_directory(&raw))
             .unwrap_or_else(|_| default_mail_directory());
         let mail_version = std::env::var("APPLE_MAIL_VERSION")
             .unwrap_or_else(|_| DEFAULT_MAIL_VERSION.to_string());
@@ -78,6 +78,20 @@ fn default_mail_directory() -> PathBuf {
         .join("Library/Mail")
 }
 
+fn expand_mail_directory(raw: &str) -> PathBuf {
+    if raw == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(raw));
+    }
+
+    if let Some(stripped) = raw.strip_prefix("~/")
+        && let Some(home_dir) = dirs::home_dir()
+    {
+        return home_dir.join(stripped);
+    }
+
+    PathBuf::from(raw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +138,13 @@ mod tests {
         let cfg = MailConfig::from_env().unwrap();
         assert_eq!(cfg.mail_version, "V9");
         assert_eq!(cfg.primary_email, "user@corp.com");
+    }
+
+    #[test]
+    fn expand_mail_directory_expands_tilde_prefix() {
+        let expected = dirs::home_dir().expect("home dir").join("Library/Mail");
+
+        assert_eq!(expand_mail_directory("~/Library/Mail"), expected);
     }
 
     #[test]
