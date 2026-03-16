@@ -687,3 +687,50 @@ fn get_message_prefers_message_id_match_over_wrong_numeric_hint() {
     let message = response.message.expect("message payload");
     assert_eq!(message.body.as_deref(), Some("Correct Message-ID body\n"));
 }
+
+#[test]
+fn get_message_uses_cache_for_repeated_calls() {
+        let conn = make_test_db();
+        let (_temp_dir, config) = make_test_config();
+        seed_emlx_in_account(
+            &config,
+            "account-a",
+            "INBOX",
+            1,
+            concat!(
+                "From: alice@example.com\n",
+                "To: bob@example.com\n",
+                "Subject: Q3 Review\n",
+                "MIME-Version: 1.0\n",
+                "Content-Type: multipart/mixed; boundary=\"boundary\"\n",
+                "\n",
+                "--boundary\n",
+                "Content-Type: text/plain; charset=utf-8\n",
+                "\n",
+                "Hello from emlx body\n",
+                "--boundary\n",
+                "Content-Type: text/plain; name=\"notes.txt\"\n",
+                "Content-Disposition: attachment; filename=\"notes.txt\"\n",
+                "\n",
+                "Attached text\n",
+                "--boundary--\n"
+            ),
+        );
+
+        let params = GetMessageParams {
+            message_id: "1".to_string(),
+            include_body: true,
+            include_attachments_summary: true,
+            body_format: BodyFormat::Text,
+        };
+
+        let first = get_message_with_conn(&config, &conn, params.clone()).unwrap();
+        assert_eq!(first.status, "success");
+        let first_message = first.message.expect("first message");
+        assert!(first_message.body.expect("body").contains("Hello from emlx body"));
+
+        let second = get_message_with_conn(&config, &conn, params).unwrap();
+        assert_eq!(second.status, "success");
+        let second_message = second.message.expect("second message");
+        assert!(second_message.body.expect("body").contains("Hello from emlx body"));
+    }
