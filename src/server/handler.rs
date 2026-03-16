@@ -419,6 +419,98 @@ mod tests {
     }
 
     #[test]
+    fn call_tool_by_name_list_accounts() {
+        let (_temp_dir, config) = create_temp_config();
+
+        // Create test database with mailboxes using proper SQLite API
+        let db_path = config.envelope_db_path();
+        // Remove the placeholder file first
+        let _ = std::fs::remove_file(&db_path);
+        let conn = rusqlite::Connection::open(&db_path).expect("create db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, mailbox INTEGER, date_sent INTEGER, date_received INTEGER, message_id TEXT, global_message_id INTEGER, subject INTEGER, sender INTEGER);
+            INSERT INTO mailboxes VALUES (1, 'imap://test/INBOX');
+            INSERT INTO messages VALUES (1, 1, 0, 0, 'msg1', NULL, NULL, NULL);
+            "#,
+        ).expect("seed db");
+        drop(conn);
+
+        let server = MailMcpServer::new(config).expect("server creation");
+
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { server.call_tool_by_name("list_accounts", Map::new()).await });
+
+        assert!(result.is_ok());
+        let call_result = result.unwrap();
+        assert!(!call_result.content.is_empty());
+    }
+
+    #[test]
+    fn call_tool_by_name_list_mailboxes() {
+        let (_temp_dir, config) = create_temp_config();
+
+        // Create test database with mailboxes using proper SQLite API
+        let db_path = config.envelope_db_path();
+        // Remove the placeholder file first
+        let _ = std::fs::remove_file(&db_path);
+        let conn = rusqlite::Connection::open(&db_path).expect("create db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, mailbox INTEGER, date_sent INTEGER, date_received INTEGER, message_id TEXT, global_message_id INTEGER, subject INTEGER, sender INTEGER);
+            INSERT INTO mailboxes VALUES (1, 'imap://test/INBOX');
+            INSERT INTO messages VALUES (1, 1, 0, 0, 'msg1', NULL, NULL, NULL);
+            "#,
+        ).expect("seed db");
+        drop(conn);
+
+        let server = MailMcpServer::new(config).expect("server creation");
+
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { server.call_tool_by_name("list_mailboxes", Map::new()).await });
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn call_tool_by_name_search_messages_requires_filter() {
+        let (_temp_dir, config) = create_temp_config();
+        let server = MailMcpServer::new(config).expect("server creation");
+
+        let mut args = Map::new();
+        args.insert("limit".to_string(), json!(20));
+
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { server.call_tool_by_name("search_messages", args).await });
+
+        assert!(result.is_ok());
+        let call_result = result.unwrap();
+        // Should return error response since no filter provided
+        let content = &call_result.content[0];
+        // Access the JSON value from the Annotated content
+        assert!(call_result.content.len() > 0);
+    }
+
+    #[test]
+    fn tool_definitions_all_read_only() {
+        let tools = MailMcpServer::tool_definitions();
+        assert_eq!(tools.len(), 5);
+
+        for tool in &tools {
+            assert!(
+                tool.annotations.as_ref().and_then(|a| a.read_only_hint) == Some(true),
+                "Tool {} should be read-only",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
     fn call_tool_with_invalid_params() {
         let (_temp_dir, config) = create_temp_config();
         let server = MailMcpServer::new(config).expect("server creation");

@@ -610,4 +610,73 @@ mod tests {
         assert!(from_ts.is_some());
         assert!(to_ts.is_some());
     }
+
+    #[test]
+    fn parse_date_valid_yyyy_mm_dd_format() {
+        let result = parse_date("2024-09-15");
+        assert!(result.is_some());
+        let ts = result.unwrap();
+        // 2024-09-15 00:00:00 UTC
+        assert_eq!(ts, 1726358400);
+    }
+
+    #[test]
+    fn parse_date_invalid_format_returns_none() {
+        assert!(parse_date("2024/09/15").is_none());
+        assert!(parse_date("09-15-2024").is_none());
+        assert!(parse_date("not-a-date").is_none());
+        assert!(parse_date("").is_none());
+    }
+
+    #[test]
+    fn validate_params_rejects_limit_over_100() {
+        let params = SearchMessagesParams {
+            subject_query: Some("test".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 101,
+            include_body_preview: false,
+        };
+
+        let result = validate_params(&params);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("limit must be between 1 and 100")
+        );
+    }
+
+    #[test]
+    fn preview_text_truncates_to_200_chars() {
+        let long_text = "a".repeat(300);
+        let preview = preview_text(&long_text);
+        assert_eq!(preview.len(), 200);
+        assert!(preview.starts_with('a'));
+        assert!(preview.ends_with('a'));
+
+        let short_text = "Hello";
+        let preview = preview_text(&short_text);
+        assert_eq!(preview, "Hello");
+    }
+
+    #[test]
+    fn load_search_metadata_empty_list() {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, subject INTEGER, sender INTEGER, mailbox INTEGER, summary INTEGER, date_sent INTEGER, date_received INTEGER, message_id TEXT, global_message_id INTEGER);
+            CREATE TABLE summaries (ROWID INTEGER PRIMARY KEY, summary TEXT);
+            CREATE TABLE attachments (ROWID INTEGER PRIMARY KEY, message INTEGER, attachment_id TEXT, name TEXT);
+            "#,
+        ).expect("create schema");
+
+        let result = load_search_metadata(&conn, &[]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
 }

@@ -1123,4 +1123,69 @@ mod tests {
             Some(&emlx_path)
         );
     }
+
+    #[test]
+    fn hashed_data_bucket_segments_computes_correctly() {
+        // For ID "194184" (6 digits), takes first 3 digits "194", reverses to ["4", "9", "1"]
+        let segments = hashed_data_bucket_segments("194184");
+        assert_eq!(
+            segments,
+            Some(vec!["4".to_string(), "9".to_string(), "1".to_string()])
+        );
+
+        // For ID "79665" (5 digits), takes first 2 digits "79", reverses to ["9", "7"]
+        let segments = hashed_data_bucket_segments("79665");
+        assert_eq!(segments, Some(vec!["9".to_string(), "7".to_string()]));
+
+        // For ID "1234567" (7 digits), takes first 4 digits "1234", reverses to ["4", "3", "2", "1"]
+        let segments = hashed_data_bucket_segments("1234567");
+        assert_eq!(
+            segments,
+            Some(vec![
+                "4".to_string(),
+                "3".to_string(),
+                "2".to_string(),
+                "1".to_string()
+            ])
+        );
+
+        // Short IDs (<=3 digits) return None
+        let segments = hashed_data_bucket_segments("123");
+        assert!(segments.is_none());
+
+        // Non-numeric IDs return None
+        let segments = hashed_data_bucket_segments("abc123");
+        assert!(segments.is_none());
+    }
+
+    #[test]
+    fn percent_decode_decodes_url_encoded_segments() {
+        assert_eq!(percent_decode("Inbox"), "Inbox");
+        assert_eq!(percent_decode("Internal%20services"), "Internal services");
+        assert_eq!(percent_decode("Test%20Folder%20Name"), "Test Folder Name");
+        assert_eq!(percent_decode("%48%65%6C%6C%6F"), "Hello");
+        assert_eq!(percent_decode("partial%"), "partial%"); // Invalid encoding
+    }
+
+    #[test]
+    fn file_name_candidates_includes_partial_emlx() {
+        let candidates = file_name_candidates("42");
+        assert_eq!(candidates[0], "42.emlx");
+        assert_eq!(candidates[1], "42.partial.emlx");
+
+        let candidates = file_name_candidates("194184");
+        assert_eq!(candidates[0], "194184.emlx");
+        assert_eq!(candidates[1], "194184.partial.emlx");
+    }
+
+    #[test]
+    fn matches_candidate_checks_both_emlx_and_partial() {
+        let candidate_ids = vec!["42".to_string(), "100".to_string()];
+
+        assert!(matches_candidate("42.emlx", &candidate_ids));
+        assert!(matches_candidate("42.partial.emlx", &candidate_ids));
+        assert!(matches_candidate("100.emlx", &candidate_ids));
+        assert!(!matches_candidate("99.emlx", &candidate_ids));
+        assert!(!matches_candidate("99.partial.emlx", &candidate_ids));
+    }
 }
