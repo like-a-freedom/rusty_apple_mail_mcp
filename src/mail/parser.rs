@@ -58,12 +58,11 @@ pub fn parse_emlx(path: &Path) -> Result<ParsedEmail, MailMcpError> {
         }
     })?;
 
-    let header_end = file_bytes
-        .iter()
-        .position(|b| *b == b'\n')
-        .ok_or_else(|| MailMcpError::BodyFileNotFound {
+    let header_end = file_bytes.iter().position(|b| *b == b'\n').ok_or_else(|| {
+        MailMcpError::BodyFileNotFound {
             path: path.to_path_buf(),
-        })?;
+        }
+    })?;
 
     let byte_count: usize = std::str::from_utf8(&file_bytes[..header_end])
         .map_err(|_| MailMcpError::BodyFileNotFound {
@@ -86,11 +85,11 @@ pub fn parse_emlx(path: &Path) -> Result<ParsedEmail, MailMcpError> {
     let email_bytes = &file_bytes[email_start..email_end];
 
     // Parse the email content
-    let message = MessageParser::default()
-        .parse(email_bytes)
-        .ok_or_else(|| MailMcpError::BodyFileNotFound {
+    let message = MessageParser::default().parse(email_bytes).ok_or_else(|| {
+        MailMcpError::BodyFileNotFound {
             path: path.to_path_buf(),
-        })?;
+        }
+    })?;
 
     // Extract body text (prefer plain text, fallback to HTML)
     let body_text = message.body_text(0).map(|s| s.to_string());

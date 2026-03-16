@@ -84,6 +84,110 @@ fn search_by_account_returns_only_matching_messages() {
 }
 
 #[test]
+fn search_messages_reports_attachment_count_without_body_preview() {
+    let conn = make_test_db();
+    let (_temp_dir, config) = make_test_config();
+    seed_emlx_in_account(
+        &config,
+        "account-a",
+        "INBOX",
+        1,
+        concat!(
+            "From: alice@example.com\n",
+            "To: bob@example.com\n",
+            "Subject: Q3 Review\n",
+            "MIME-Version: 1.0\n",
+            "Content-Type: multipart/mixed; boundary=\"boundary\"\n",
+            "\n",
+            "--boundary\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Hello from emlx body\n",
+            "--boundary\n",
+            "Content-Type: text/plain; name=\"notes.txt\"\n",
+            "Content-Disposition: attachment; filename=\"notes.txt\"\n",
+            "\n",
+            "Attached text\n",
+            "--boundary--\n"
+        ),
+    );
+
+    let response = search_messages_with_conn(
+        &config,
+        &conn,
+        SearchMessagesParams {
+            subject_query: Some("Q3".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            include_body_preview: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(response.status, "success");
+    assert_eq!(response.total_count, 1);
+    assert_eq!(response.messages[0].attachment_count, 1);
+    assert_eq!(response.messages[0].body_preview, None);
+}
+
+#[test]
+fn search_messages_counts_attachments_when_emlx_is_found_by_message_id() {
+    let conn = make_test_db();
+    let (_temp_dir, config) = make_test_config();
+    seed_emlx_in_nested_mailbox(
+        &config,
+        "account-b",
+        &["Inbox"],
+        "79665",
+        concat!(
+            "From: notifications@example.com\n",
+            "To: bob@example.com\n",
+            "Message-ID: <msg2@mail>\n",
+            "Subject: Budget Planning\n",
+            "MIME-Version: 1.0\n",
+            "Content-Type: multipart/mixed; boundary=\"boundary\"\n",
+            "\n",
+            "--boundary\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Nested mailbox body\n",
+            "--boundary\n",
+            "Content-Type: text/plain; name=\"agenda.txt\"\n",
+            "Content-Disposition: attachment; filename=\"agenda.txt\"\n",
+            "\n",
+            "Agenda attachment\n",
+            "--boundary--\n"
+        ),
+    );
+
+    let response = search_messages_with_conn(
+        &config,
+        &conn,
+        SearchMessagesParams {
+            subject_query: Some("Budget".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            include_body_preview: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(response.status, "success");
+    assert_eq!(response.total_count, 1);
+    assert_eq!(response.messages[0].attachment_count, 1);
+}
+
+#[test]
 fn search_with_no_filters_returns_validation_error() {
     let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
