@@ -491,9 +491,7 @@ mod tests {
         assert!(result.is_ok());
         let call_result = result.unwrap();
         // Should return error response since no filter provided
-        let content = &call_result.content[0];
-        // Access the JSON value from the Annotated content
-        assert!(call_result.content.len() > 0);
+        assert!(!call_result.content.is_empty());
     }
 
     #[test]
