@@ -194,7 +194,7 @@ pub fn locate_emlx_quick_with_hints(
 
     if let Some(header) = message_id_header {
         for mailbox_dir in &mailbox_dirs {
-            if let Some(path) = lookup_mailbox_header(mailbox_dir, header) {
+            if let Some(path) = lookup_mailbox_header_cached(mailbox_dir, header) {
                 if let Ok(mut cache) = PATH_CACHE.lock() {
                     cache.insert(cache_key.clone(), path.clone());
                 }
@@ -211,7 +211,9 @@ pub fn locate_emlx_quick_with_hints(
     }
 
     for mailbox_dir in &mailbox_dirs {
-        if let Some(path) = lookup_mailbox_index(mailbox_dir, &candidate_ids, message_id_header) {
+        if let Some(path) =
+            lookup_mailbox_index_cached(mailbox_dir, &candidate_ids, message_id_header)
+        {
             if let Ok(mut cache) = PATH_CACHE.lock() {
                 cache.insert(cache_key.clone(), path.clone());
             }
@@ -408,23 +410,8 @@ fn lookup_mailbox_index(
     candidate_ids: &[String],
     message_id_header: Option<&str>,
 ) -> Option<PathBuf> {
-    if let Ok(cache) = MAILBOX_INDEX_CACHE.lock()
-        && let Some(index) = cache.get(mailbox_dir)
-    {
-        if let Some(header) = message_id_header
-            && let Some(path) = index.by_header.get(header)
-            && path.exists()
-        {
-            return Some(path.clone());
-        }
-
-        for candidate_id in candidate_ids {
-            if let Some(path) = index.by_stem.get(candidate_id)
-                && path.exists()
-            {
-                return Some(path.clone());
-            }
-        }
+    if let Some(path) = lookup_mailbox_index_cached(mailbox_dir, candidate_ids, message_id_header) {
+        return Some(path);
     }
 
     let index = build_mailbox_index(mailbox_dir)?;
@@ -446,13 +433,35 @@ fn lookup_mailbox_index(
     matched
 }
 
-fn lookup_mailbox_header(mailbox_dir: &Path, message_id_header: &str) -> Option<PathBuf> {
-    if let Ok(cache) = MAILBOX_INDEX_CACHE.lock()
-        && let Some(index) = cache.get(mailbox_dir)
-        && let Some(path) = index.by_header.get(message_id_header)
+fn lookup_mailbox_index_cached(
+    mailbox_dir: &Path,
+    candidate_ids: &[String],
+    message_id_header: Option<&str>,
+) -> Option<PathBuf> {
+    let cache = MAILBOX_INDEX_CACHE.lock().ok()?;
+    let index = cache.get(mailbox_dir)?;
+
+    if let Some(header) = message_id_header
+        && let Some(path) = index.by_header.get(header)
         && path.exists()
     {
         return Some(path.clone());
+    }
+
+    for candidate_id in candidate_ids {
+        if let Some(path) = index.by_stem.get(candidate_id)
+            && path.exists()
+        {
+            return Some(path.clone());
+        }
+    }
+
+    None
+}
+
+fn lookup_mailbox_header(mailbox_dir: &Path, message_id_header: &str) -> Option<PathBuf> {
+    if let Some(path) = lookup_mailbox_header_cached(mailbox_dir, message_id_header) {
+        return Some(path);
     }
 
     let index = build_mailbox_index(mailbox_dir)?;
@@ -463,6 +472,18 @@ fn lookup_mailbox_header(mailbox_dir: &Path, message_id_header: &str) -> Option<
     }
 
     matched
+}
+
+fn lookup_mailbox_header_cached(mailbox_dir: &Path, message_id_header: &str) -> Option<PathBuf> {
+    if let Ok(cache) = MAILBOX_INDEX_CACHE.lock()
+        && let Some(index) = cache.get(mailbox_dir)
+        && let Some(path) = index.by_header.get(message_id_header)
+        && path.exists()
+    {
+        return Some(path.clone());
+    }
+
+    None
 }
 
 fn build_mailbox_index(mailbox_dir: &Path) -> Option<MailboxIndex> {
@@ -809,5 +830,41 @@ mod tests {
         );
 
         assert_eq!(result, Some(correct_header_file));
+    }
+
+    #[test]
+    fn locate_emlx_quick_with_hints_does_not_build_mailbox_index_on_cache_miss() {
+        let temp_dir = TempDir::new().unwrap();
+        let mail_dir = temp_dir.path();
+        let messages_dir = mail_dir
+            .join("V10")
+            .join("account-b")
+            .join("Inbox.mbox")
+            .join("Messages");
+        fs::create_dir_all(&messages_dir).unwrap();
+
+        let indexed_only_file = messages_dir.join("79665.emlx");
+        fs::write(
+            &indexed_only_file,
+            concat!(
+                "123\n",
+                "Message-ID: <right@example.com>\n",
+                "Subject: Correct\n",
+                "\n",
+                "Correct body\n"
+            ),
+        )
+        .unwrap();
+
+        let result = locate_emlx_quick_with_hints(
+            mail_dir,
+            "V10",
+            "ews://account-b/Inbox",
+            194184,
+            &["194184".to_string(), "99974".to_string()],
+            Some("<right@example.com>"),
+        );
+
+        assert_eq!(result, None);
     }
 }
