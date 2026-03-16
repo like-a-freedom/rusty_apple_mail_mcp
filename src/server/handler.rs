@@ -16,6 +16,7 @@ use rmcp::{
 };
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// MailMcpServer - MCP server for Apple Mail read-only access.
 #[derive(Clone)]
@@ -38,6 +39,21 @@ impl MailMcpServer {
             Value::Object(map) => Arc::new(map),
             _ => Arc::new(Map::new()),
         }
+    }
+
+    /// Format an elapsed duration as fractional seconds with millisecond precision.
+    fn format_elapsed_seconds(elapsed: Duration) -> String {
+        format!("{:.3}", elapsed.as_secs_f64())
+    }
+
+    /// Emit a warn-level completion log for a tool invocation.
+    fn log_tool_completion(name: &str, elapsed: Duration, outcome: &str) {
+        tracing::warn!(
+            "tool completed: name={}, outcome={}, elapsed_s={}",
+            name,
+            outcome,
+            Self::format_elapsed_seconds(elapsed)
+        );
     }
 
     /// List all available tools.
@@ -250,7 +266,93 @@ impl ServerHandler for MailMcpServer {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        let name = request.name;
         let args = request.arguments.unwrap_or_default();
-        self.call_tool_by_name(&request.name, args).await
+        let started = Instant::now();
+        let result = self.call_tool_by_name(&name, args).await;
+        let outcome = if result.is_ok() { "success" } else { "error" };
+
+        Self::log_tool_completion(&name, started.elapsed(), outcome);
+
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+    use std::io::Write;
+    use std::sync::Mutex;
+    use std::time::Duration;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone, Default)]
+    struct SharedWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    struct SharedWriterGuard {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl<'a> MakeWriter<'a> for SharedWriter {
+        type Writer = SharedWriterGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedWriterGuard {
+                buffer: Arc::clone(&self.buffer),
+            }
+        }
+    }
+
+    impl Write for SharedWriterGuard {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.buffer
+                .lock()
+                .expect("buffer lock")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn format_elapsed_seconds_formats_fractional_seconds() {
+        assert_eq!(
+            MailMcpServer::format_elapsed_seconds(Duration::from_millis(1250)),
+            "1.250"
+        );
+    }
+
+    #[test]
+    fn log_tool_completion_emits_warn_log_with_elapsed_seconds() {
+        let writer = SharedWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .with_writer(writer.clone())
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            MailMcpServer::log_tool_completion(
+                "search_messages",
+                Duration::from_millis(1250),
+                "success",
+            );
+        });
+
+        let output = String::from_utf8(writer.buffer.lock().expect("buffer lock").clone())
+            .expect("utf8 log output");
+        assert!(
+            output
+                .contains("tool completed: name=search_messages, outcome=success, elapsed_s=1.250"),
+            "unexpected log output: {output}"
+        );
     }
 }
