@@ -94,7 +94,7 @@ Example setup:
 export APPLE_MAIL_DIR="$HOME/Library/Mail"
 export APPLE_MAIL_VERSION="V10"
 export APPLE_MAIL_ACCOUNT="Kaspersky"
-export RUST_LOG="rusty_apple_mail_mcp=debug"
+export RUST_LOG="warn"
 ```
 
 ### `RUST_LOG` values
