@@ -32,8 +32,10 @@ pub struct RawAttachment {
     pub filename: Option<String>,
     /// MIME type of the attachment
     pub mime_type: String,
+    /// Size of the attachment content in bytes
+    pub size_bytes: u64,
     /// Raw bytes of the attachment
-    pub content: Vec<u8>,
+    pub content: Option<Vec<u8>>,
     /// Whether the attachment is inline (embedded in the message body)
     pub is_inline: bool,
 }
@@ -48,6 +50,18 @@ pub struct RawAttachment {
 ///
 /// Parsed email content or an error.
 pub fn parse_emlx(path: &Path) -> Result<ParsedEmail, MailMcpError> {
+    parse_emlx_internal(path, true)
+}
+
+/// Parse an `.emlx` file while skipping attachment byte copies.
+pub fn parse_emlx_without_attachment_content(path: &Path) -> Result<ParsedEmail, MailMcpError> {
+    parse_emlx_internal(path, false)
+}
+
+fn parse_emlx_internal(
+    path: &Path,
+    include_attachment_content: bool,
+) -> Result<ParsedEmail, MailMcpError> {
     let file_bytes = std::fs::read(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             MailMcpError::BodyFileNotFound {
@@ -107,7 +121,9 @@ pub fn parse_emlx(path: &Path) -> Result<ParsedEmail, MailMcpError> {
             .map(content_type_to_mime)
             .unwrap_or_else(|| "application/octet-stream".to_string());
 
-        let content = attachment.contents().to_vec();
+        let content_bytes = attachment.contents();
+        let size_bytes = content_bytes.len() as u64;
+        let content = include_attachment_content.then(|| content_bytes.to_vec());
 
         // Check if inline based on content disposition
         let is_inline = attachment
@@ -118,6 +134,7 @@ pub fn parse_emlx(path: &Path) -> Result<ParsedEmail, MailMcpError> {
         attachments.push(RawAttachment {
             filename,
             mime_type,
+            size_bytes,
             content,
             is_inline,
         });
@@ -152,7 +169,7 @@ pub fn raw_attachments_to_meta(
                 .clone()
                 .unwrap_or_else(|| "unnamed".to_string()),
             mime_type: raw.mime_type.clone(),
-            size_bytes: raw.content.len() as u64,
+            size_bytes: raw.size_bytes,
             is_inline: raw.is_inline,
         })
         .collect()
@@ -218,6 +235,14 @@ Hello, World!
         assert_eq!(result.attachments.len(), 1);
         assert_eq!(result.attachments[0].filename.as_deref(), Some("notes.txt"));
         assert_eq!(result.attachments[0].mime_type, "text/plain");
+        assert_eq!(
+            result.attachments[0].size_bytes,
+            "Attachment body".len() as u64
+        );
+        assert_eq!(
+            result.attachments[0].content.as_deref(),
+            Some(b"Attachment body".as_slice())
+        );
     }
 
     #[test]
@@ -227,5 +252,42 @@ Hello, World!
 
         let result = parse_emlx(&emlx_path);
         assert!(matches!(result, Err(MailMcpError::BodyFileNotFound { .. })));
+    }
+
+    #[test]
+    fn parse_emlx_without_attachment_content_keeps_attachment_sizes() {
+        let temp_dir = TempDir::new().unwrap();
+        let emlx_path = temp_dir.path().join("metadata_only.emlx");
+
+        let email_content = concat!(
+            "From: sender@example.com\n",
+            "To: recipient@example.com\n",
+            "Subject: Metadata only\n",
+            "MIME-Version: 1.0\n",
+            "Content-Type: multipart/mixed; boundary=\"boundary\"\n",
+            "\n",
+            "--boundary\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Body text\n",
+            "--boundary\n",
+            "Content-Type: text/plain; name=\"notes.txt\"\n",
+            "Content-Disposition: attachment; filename=\"notes.txt\"\n",
+            "\n",
+            "Attachment payload\n",
+            "--boundary--\n"
+        );
+        let emlx_content = format!("{}\n{}", email_content.len(), email_content);
+        fs::write(&emlx_path, emlx_content).unwrap();
+
+        let result = parse_emlx_without_attachment_content(&emlx_path).unwrap();
+        assert_eq!(result.body_text.as_deref(), Some("Body text"));
+        assert_eq!(result.attachments.len(), 1);
+        assert_eq!(result.attachments[0].filename.as_deref(), Some("notes.txt"));
+        assert_eq!(
+            result.attachments[0].size_bytes,
+            "Attachment payload".len() as u64
+        );
+        assert_eq!(result.attachments[0].content, None);
     }
 }

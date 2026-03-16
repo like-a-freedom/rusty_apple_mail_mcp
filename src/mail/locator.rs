@@ -97,6 +97,19 @@ pub fn locate_emlx_with_hints(
         candidate_ids.push(message_rowid.to_string());
     }
 
+    if let Some(path) = find_emlx_file(
+        mail_dir,
+        mail_version,
+        mailbox_url,
+        &[message_rowid.to_string()],
+        false,
+    ) {
+        if let Ok(mut cache) = PATH_CACHE.lock() {
+            cache.insert(cache_key.clone(), path.clone());
+        }
+        return Some(path);
+    }
+
     let mailbox_dirs = candidate_mailbox_directories(&mail_dir.join(mail_version), mailbox_url);
 
     if let Some(header) = message_id_header {

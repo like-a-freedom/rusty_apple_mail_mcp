@@ -3,6 +3,7 @@
 use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 use crate::config::MailConfig;
 use crate::db::{
@@ -11,7 +12,9 @@ use crate::db::{
 };
 use crate::domain::AttachmentMeta;
 use crate::error::MailMcpError;
-use crate::mail::{locate_emlx_with_hints, parse_emlx, raw_attachments_to_meta};
+use crate::mail::{
+    locate_emlx_with_hints, parse_emlx_without_attachment_content, raw_attachments_to_meta,
+};
 
 /// Parameters for the get_message tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -77,6 +80,7 @@ pub fn get_message_with_conn(
     conn: &Connection,
     params: GetMessageParams,
 ) -> Result<GetMessageResponse, MailMcpError> {
+    let total_started = Instant::now();
     let message_id: i64 = match params.message_id.parse() {
         Ok(id) => id,
         Err(_) => {
@@ -91,6 +95,7 @@ pub fn get_message_with_conn(
         }
     };
 
+    let db_started = Instant::now();
     let epoch_offset_s = detect_epoch_offset_seconds(conn)?;
     let row = match get_message_by_id(conn, message_id)? {
         Some(row) => row,
@@ -119,6 +124,7 @@ pub fn get_message_with_conn(
     }
 
     let recipients = get_recipients(conn, message_id)?;
+    let db_elapsed = db_started.elapsed();
     let mailbox = row
         .mailbox_url
         .as_ref()
@@ -156,6 +162,7 @@ pub fn get_message_with_conn(
     };
 
     if params.include_body || params.include_attachments_summary {
+        let locator_started = Instant::now();
         let mut numeric_hints = vec![row.rowid.to_string()];
         if let Some(global_message_id) = row.global_message_id {
             numeric_hints.push(global_message_id.to_string());
@@ -176,9 +183,11 @@ pub fn get_message_with_conn(
                 .as_deref()
                 .or(row.message_id.as_deref()),
         );
+        let locator_elapsed = locator_started.elapsed();
 
         if let Some(path) = emlx_path {
-            match parse_emlx(&path) {
+            let parse_started = Instant::now();
+            match parse_emlx_without_attachment_content(&path) {
                 Ok(parsed) => {
                     if params.include_body {
                         result.body = match params.body_format {
@@ -198,6 +207,17 @@ pub fn get_message_with_conn(
                         result.attachments =
                             raw_attachments_to_meta(row.rowid, &parsed.attachments);
                     }
+
+                    tracing::debug!(
+                        "get_message completed: message_id={}, db={} ms, locator={} ms, parse={} ms, total={} ms, include_body={}, include_attachments_summary={}",
+                        row.rowid,
+                        db_elapsed.as_millis(),
+                        locator_elapsed.as_millis(),
+                        parse_started.elapsed().as_millis(),
+                        total_started.elapsed().as_millis(),
+                        params.include_body,
+                        params.include_attachments_summary,
+                    );
                 }
                 Err(MailMcpError::BodyFileNotFound { .. }) => {
                     return Ok(GetMessageResponse {
@@ -234,6 +254,15 @@ pub fn get_message_with_conn(
             });
         }
     }
+
+    tracing::debug!(
+        "get_message completed: message_id={}, db={} ms, locator=0 ms, parse=0 ms, total={} ms, include_body={}, include_attachments_summary={}",
+        row.rowid,
+        db_elapsed.as_millis(),
+        total_started.elapsed().as_millis(),
+        params.include_body,
+        params.include_attachments_summary,
+    );
 
     Ok(GetMessageResponse {
         status: "success".to_string(),
