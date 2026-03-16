@@ -21,7 +21,7 @@ This project exposes that storage through a small, intent-driven MCP interface s
 - extract readable text from supported attachments;
 - operate completely **locally** and **read-only**.
 
-In practice, it empowers AI workflows to search and read your mail archive safely and quickly, without relying on Mail.app automation or network protocols.
+In practice, it empowers AI workflows to search and read your mail archive safely and quickly, without relying on Mail.app automation like AppleScript (which damn slow and throws timeouts regularly) or network protocols.
 
 ## What the server can do
 
@@ -220,4 +220,4 @@ cargo doc --no-deps
 
 ## TL;DR
 
-Need an AI agent to safely search and read Apple Mail on your Mac? This project provides a clean, read-only MCP layer over Apple Mail’s native storage—fast index-based searches, on‑demand body hydration from `.emlx`, and zero write access.
+Need an AI agent to safely search and read Apple Mail on your Mac? This project provides a clean, read-only MCP layer over Apple Mail’s native storage — fast index-based searches, on‑demand body hydration from `.emlx`, and zero write access.
