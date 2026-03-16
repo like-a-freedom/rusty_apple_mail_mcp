@@ -19,7 +19,7 @@ pub struct AttachmentMeta {
 }
 
 /// Format of the extracted attachment content.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ContentFormat {
     /// Text was successfully extracted from the attachment
