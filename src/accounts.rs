@@ -71,7 +71,9 @@ pub fn load_account_metadata_with_conn(
         let type_identifier = normalize_optional(row.get::<_, Option<String>>(4)?);
         let type_description = normalize_optional(row.get::<_, Option<String>>(5)?);
 
-        let Some(account_type) = mail_scheme(type_identifier.as_deref(), type_description.as_deref()) else {
+        let Some(account_type) =
+            mail_scheme(type_identifier.as_deref(), type_description.as_deref())
+        else {
             continue;
         };
 
@@ -79,7 +81,11 @@ pub fn load_account_metadata_with_conn(
         let email = properties
             .get("IdentityEmailAddress")
             .and_then(|bytes| extract_email(bytes))
-            .or_else(|| properties.get("EmailAliases").and_then(|bytes| extract_email(bytes)))
+            .or_else(|| {
+                properties
+                    .get("EmailAliases")
+                    .and_then(|bytes| extract_email(bytes))
+            })
             .or_else(|| username.as_deref().and_then(normalize_email));
 
         let property_name = properties
@@ -330,10 +336,7 @@ mod tests {
         );
 
         let imap = accounts.get("imap://IMAP-UUID").expect("imap account");
-        assert_eq!(
-            imap.email.as_deref(),
-            Some("solovey.anton@gmail.com")
-        );
+        assert_eq!(imap.email.as_deref(), Some("solovey.anton@gmail.com"));
     }
 
     #[test]

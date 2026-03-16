@@ -30,7 +30,10 @@ fn list_accounts_returns_distinct_accounts() {
     assert_eq!(response.total_count, Some(2));
     assert_eq!(response.accounts[0].account_id, "ews://account-b");
     assert_eq!(response.accounts[1].account_id, "imap://account-a");
-    assert_eq!(response.accounts[0].account_name.as_deref(), Some("Kaspersky"));
+    assert_eq!(
+        response.accounts[0].account_name.as_deref(),
+        Some("Kaspersky")
+    );
     assert_eq!(
         response.accounts[0].email.as_deref(),
         Some("anton.solovey@kaspersky.com")
@@ -154,16 +157,23 @@ fn search_messages_rejects_disallowed_explicit_account_filter() {
     .unwrap();
 
     assert_eq!(response.status, "error");
-    assert!(response
-        .guidance
-        .expect("guidance")
-        .contains("excluded by APPLE_MAIL_ACCOUNT"));
+    assert!(
+        response
+            .guidance
+            .expect("guidance")
+            .contains("excluded by APPLE_MAIL_ACCOUNT")
+    );
 }
 
 #[test]
 fn search_messages_reports_attachment_count_without_body_preview() {
     let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
+    conn.execute(
+        "INSERT INTO attachments (ROWID, message, attachment_id, name) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![1_i64, 1_i64, "att-1", "notes.txt"],
+    )
+    .unwrap();
     seed_emlx_in_account(
         &config,
         "account-a",
@@ -213,9 +223,97 @@ fn search_messages_reports_attachment_count_without_body_preview() {
 }
 
 #[test]
-fn search_messages_counts_attachments_when_emlx_is_found_by_message_id() {
+fn search_messages_prefers_database_summary_and_attachment_metadata() {
     let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
+    conn.execute_batch(
+        r#"
+        INSERT INTO attachments (ROWID, message, attachment_id, name) VALUES
+            (1, 1, 'att-1', 'notes.txt'),
+            (2, 1, 'att-2', 'agenda.txt');
+        "#,
+    )
+    .unwrap();
+
+    let response = search_messages_with_conn(
+        &config,
+        &conn,
+        SearchMessagesParams {
+            subject_query: Some("Q3".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            include_body_preview: true,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(response.status, "success");
+    assert_eq!(response.total_count, 1);
+    assert_eq!(response.messages[0].attachment_count, 2);
+    assert_eq!(
+        response.messages[0].body_preview.as_deref(),
+        Some("DB-backed preview for Q3 review")
+    );
+}
+
+#[test]
+fn search_messages_falls_back_to_emlx_preview_when_database_summary_is_missing() {
+    let conn = make_test_db();
+    let (_temp_dir, config) = make_test_config();
+    seed_emlx_in_account(
+        &config,
+        "account-b",
+        "Inbox",
+        2,
+        concat!(
+            "From: notifications@example.com\n",
+            "To: bob@example.com\n",
+            "Subject: Budget Planning\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Fallback preview from emlx body\n"
+        ),
+    );
+
+    let response = search_messages_with_conn(
+        &config,
+        &conn,
+        SearchMessagesParams {
+            subject_query: Some("Budget".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            include_body_preview: true,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(response.status, "success");
+    assert_eq!(response.total_count, 1);
+    assert_eq!(
+        response.messages[0].body_preview.as_deref(),
+        Some("Fallback preview from emlx body")
+    );
+}
+
+#[test]
+fn search_messages_counts_attachments_from_database_for_nested_mailbox_results() {
+    let conn = make_test_db();
+    let (_temp_dir, config) = make_test_config();
+    conn.execute(
+        "INSERT INTO attachments (ROWID, message, attachment_id, name) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![1_i64, 2_i64, "agenda-1", "agenda.txt"],
+    )
+    .unwrap();
     seed_emlx_in_nested_mailbox(
         &config,
         "account-b",
@@ -404,7 +502,10 @@ fn list_mailboxes_hides_disallowed_accounts() {
 
     assert_eq!(response.status, "success");
     assert_eq!(response.total_count, Some(1));
-    assert_eq!(response.mailboxes[0].account_id.as_deref(), Some("ews://account-b"));
+    assert_eq!(
+        response.mailboxes[0].account_id.as_deref(),
+        Some("ews://account-b")
+    );
 }
 
 #[test]
@@ -425,10 +526,12 @@ fn get_message_blocks_disallowed_accounts() {
     .unwrap();
 
     assert_eq!(response.status, "error");
-    assert!(response
-        .guidance
-        .expect("guidance")
-        .contains("excluded by APPLE_MAIL_ACCOUNT"));
+    assert!(
+        response
+            .guidance
+            .expect("guidance")
+            .contains("excluded by APPLE_MAIL_ACCOUNT")
+    );
 }
 
 #[test]
@@ -471,10 +574,12 @@ fn get_attachment_blocks_disallowed_accounts() {
     .unwrap();
 
     assert_eq!(response.status, "error");
-    assert!(response
-        .guidance
-        .expect("guidance")
-        .contains("excluded by APPLE_MAIL_ACCOUNT"));
+    assert!(
+        response
+            .guidance
+            .expect("guidance")
+            .contains("excluded by APPLE_MAIL_ACCOUNT")
+    );
 }
 
 #[test]

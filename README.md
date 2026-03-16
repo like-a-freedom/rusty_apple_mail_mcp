@@ -86,6 +86,7 @@ The server is configured **only** through environment variables:
 | `APPLE_MAIL_DIR` | no | `~/Library/Mail` | Root folder of the Mail data |
 | `APPLE_MAIL_VERSION` | no | `V10` | Envelope Index version subdirectory |
 | `APPLE_MAIL_ACCOUNT` | no | unset | Comma-separated account selectors such as `Kaspersky` or `anton.solovey@kaspersky.com`; when set, the whole server is restricted to the resolved account(s) |
+| `RUST_LOG` | no | unset | Standard Rust tracing filter used by `tracing_subscriber`; controls server logs written to stderr |
 
 Example setup:
 
@@ -93,7 +94,35 @@ Example setup:
 export APPLE_MAIL_DIR="$HOME/Library/Mail"
 export APPLE_MAIL_VERSION="V10"
 export APPLE_MAIL_ACCOUNT="Kaspersky"
+export RUST_LOG="rusty_apple_mail_mcp=debug"
 ```
+
+### `RUST_LOG` values
+
+The server reads `RUST_LOG` through `tracing_subscriber::EnvFilter`, so it accepts the usual Rust tracing filter syntax.
+
+Common values:
+
+- `error` — only errors
+- `warn` — warnings and errors
+- `info` — startup and high-level operational logs
+- `debug` — includes per-request debug logs
+- `trace` — very verbose tracing
+- `off` — disables logging
+
+You can also scope logs per module/crate:
+
+- `rusty_apple_mail_mcp=debug`
+- `rusty_apple_mail_mcp=trace,rusqlite=warn`
+- `info,rmcp=warn`
+
+When `RUST_LOG` enables `debug` for this crate, `search_messages` logs timing breakdowns to stderr, including:
+
+- total matched rows
+- SQL query time
+- metadata hydration time from SQLite
+- body preview fallback time
+- total request time
 
 ### Account scoping
 
@@ -117,7 +146,8 @@ Example minimum `.vscode/mcp.json` configuration:
             "env": {
                 "APPLE_MAIL_DIR": "/Users/your-user/Library/Mail",
                 "APPLE_MAIL_VERSION": "V10",
-                "APPLE_MAIL_ACCOUNT": "Kaspersky"
+                "APPLE_MAIL_ACCOUNT": "Kaspersky",
+                "RUST_LOG": "warn"
             }
         }
     }

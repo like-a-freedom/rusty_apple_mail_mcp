@@ -21,10 +21,21 @@ pub fn make_test_db() -> Connection {
             subject INTEGER REFERENCES subjects,
             sender INTEGER REFERENCES sender_addresses,
             mailbox INTEGER REFERENCES mailboxes,
+            summary INTEGER REFERENCES summaries,
             date_sent INTEGER,
             date_received INTEGER,
             message_id TEXT,
             global_message_id INTEGER
+        );
+        CREATE TABLE summaries (
+            ROWID INTEGER PRIMARY KEY,
+            summary TEXT
+        );
+        CREATE TABLE attachments (
+            ROWID INTEGER PRIMARY KEY,
+            message INTEGER REFERENCES messages,
+            attachment_id TEXT,
+            name TEXT
         );
         CREATE TABLE message_global_data (
             ROWID INTEGER PRIMARY KEY,
@@ -48,8 +59,9 @@ pub fn make_test_db() -> Connection {
         -- Use CoreData epoch: 2024-09-15 = Unix timestamp - 978307200
         INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
         INSERT INTO message_global_data VALUES (20, 222, '<msg2@mail>');
-        INSERT INTO messages VALUES (1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>', 10);
-        INSERT INTO messages VALUES (2, 2, 1, 2, 766627200, 766627200, '<msg2@mail>', 20);
+        INSERT INTO summaries VALUES (1, 'DB-backed preview for Q3 review');
+        INSERT INTO messages VALUES (1, 1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>', 10);
+        INSERT INTO messages VALUES (2, 2, 1, 2, NULL, 766627200, 766627200, '<msg2@mail>', 20);
         
         INSERT INTO recipients VALUES (1, 2, 1), (2, 2, 1);
         "#,
