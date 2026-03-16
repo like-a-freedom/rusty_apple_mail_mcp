@@ -313,7 +313,6 @@ mod tests {
         let config = MailConfig {
             mail_directory: PathBuf::from("/tmp"),
             mail_version: "V10".to_string(),
-            primary_email: "test@example.com".to_string(),
         };
 
         let params = SearchMessagesParams {
