@@ -90,19 +90,27 @@ pub fn locate_emlx_with_hints(
     }
 
     let mut candidate_ids = numeric_hints.to_vec();
-    if !candidate_ids.iter().any(|candidate| candidate == &message_rowid.to_string()) {
+    if !candidate_ids
+        .iter()
+        .any(|candidate| candidate == &message_rowid.to_string())
+    {
         candidate_ids.push(message_rowid.to_string());
     }
 
     let mailbox_dirs = candidate_mailbox_directories(&mail_dir.join(mail_version), mailbox_url);
 
-    if let Some(path) = find_emlx_file(
-        mail_dir,
-        mail_version,
-        mailbox_url,
-        &candidate_ids,
-        false,
-    ) {
+    if let Some(header) = message_id_header {
+        for mailbox_dir in &mailbox_dirs {
+            if let Some(path) = lookup_mailbox_header(mailbox_dir, header) {
+                if let Ok(mut cache) = PATH_CACHE.lock() {
+                    cache.insert(cache_key.clone(), path.clone());
+                }
+                return Some(path);
+            }
+        }
+    }
+
+    if let Some(path) = find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, false) {
         if let Ok(mut cache) = PATH_CACHE.lock() {
             cache.insert(cache_key, path.clone());
         }
@@ -256,7 +264,8 @@ fn percent_decode(segment: &str) -> String {
     let mut index = 0;
 
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len()
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
             && let Ok(value) = u8::from_str_radix(&segment[index + 1..index + 3], 16)
         {
             decoded.push(value as char);
@@ -383,6 +392,25 @@ fn lookup_mailbox_index(
     matched
 }
 
+fn lookup_mailbox_header(mailbox_dir: &Path, message_id_header: &str) -> Option<PathBuf> {
+    if let Ok(cache) = MAILBOX_INDEX_CACHE.lock()
+        && let Some(index) = cache.get(mailbox_dir)
+        && let Some(path) = index.by_header.get(message_id_header)
+        && path.exists()
+    {
+        return Some(path.clone());
+    }
+
+    let index = build_mailbox_index(mailbox_dir)?;
+    let matched = index.by_header.get(message_id_header).cloned();
+
+    if let Ok(mut cache) = MAILBOX_INDEX_CACHE.lock() {
+        cache.insert(mailbox_dir.to_path_buf(), index);
+    }
+
+    matched
+}
+
 fn build_mailbox_index(mailbox_dir: &Path) -> Option<MailboxIndex> {
     if !mailbox_dir.exists() {
         return None;
@@ -406,8 +434,13 @@ fn build_mailbox_index(mailbox_dir: &Path) -> Option<MailboxIndex> {
         }
 
         let path = entry.path().to_path_buf();
-        let stem = file_name.trim_end_matches(".partial.emlx").trim_end_matches(".emlx");
-        index.by_stem.entry(stem.to_string()).or_insert(path.clone());
+        let stem = file_name
+            .trim_end_matches(".partial.emlx")
+            .trim_end_matches(".emlx");
+        index
+            .by_stem
+            .entry(stem.to_string())
+            .or_insert(path.clone());
 
         if let Some(header) = extract_message_id_header(&path) {
             index.by_header.entry(header).or_insert(path);
@@ -558,8 +591,14 @@ mod tests {
         let mail_dir = temp_dir.path();
         let base_path = mail_dir.join("V10");
 
-        let wrong_messages = base_path.join("other-account").join("Inbox.mbox").join("Messages");
-        let right_messages = base_path.join("account-b").join("Inbox.mbox").join("Messages");
+        let wrong_messages = base_path
+            .join("other-account")
+            .join("Inbox.mbox")
+            .join("Messages");
+        let right_messages = base_path
+            .join("account-b")
+            .join("Inbox.mbox")
+            .join("Messages");
         fs::create_dir_all(&wrong_messages).unwrap();
         fs::create_dir_all(&right_messages).unwrap();
         let wrong_file = wrong_messages.join("9.emlx");
@@ -667,5 +706,54 @@ mod tests {
         );
 
         assert_eq!(result, Some(emlx_path));
+    }
+
+    #[test]
+    fn locate_emlx_with_hints_prefers_message_id_header_over_wrong_numeric_hint() {
+        let temp_dir = TempDir::new().unwrap();
+        let mail_dir = temp_dir.path();
+        let messages_dir = mail_dir
+            .join("V10")
+            .join("account-b")
+            .join("Inbox.mbox")
+            .join("Messages");
+        fs::create_dir_all(&messages_dir).unwrap();
+
+        let wrong_numeric_file = messages_dir.join("99974.emlx");
+        fs::write(
+            &wrong_numeric_file,
+            concat!(
+                "105\n",
+                "Message-ID: <wrong@example.com>\n",
+                "Subject: Wrong\n",
+                "\n",
+                "Wrong body\n"
+            ),
+        )
+        .unwrap();
+
+        let correct_header_file = messages_dir.join("79665.emlx");
+        fs::write(
+            &correct_header_file,
+            concat!(
+                "123\n",
+                "Message-ID: <right@example.com>\n",
+                "Subject: Correct\n",
+                "\n",
+                "Correct body\n"
+            ),
+        )
+        .unwrap();
+
+        let result = locate_emlx_with_hints(
+            mail_dir,
+            "V10",
+            "ews://account-b/Inbox",
+            194184,
+            &["194184".to_string(), "99974".to_string()],
+            Some("<right@example.com>"),
+        );
+
+        assert_eq!(result, Some(correct_header_file));
     }
 }
