@@ -216,8 +216,11 @@ fn list_mailboxes_returns_all_mailboxes() {
 #[test]
 fn get_message_reads_body_from_nested_mailbox_uuid_data_layout() {
     let conn = make_test_db();
-    conn.execute("UPDATE mailboxes SET url = ?1 WHERE ROWID = 2", ["ews://account-b/Inbox/Internal%20services/Confluence"])
-        .unwrap();
+    conn.execute(
+        "UPDATE mailboxes SET url = ?1 WHERE ROWID = 2",
+        ["ews://account-b/Inbox/Internal%20services/Confluence"],
+    )
+    .unwrap();
     let (_temp_dir, config) = make_test_config();
     seed_emlx_in_nested_mailbox(
         &config,
@@ -251,4 +254,67 @@ fn get_message_reads_body_from_nested_mailbox_uuid_data_layout() {
     let message = response.message.expect("message payload");
     assert_eq!(message.mailbox, "Confluence");
     assert_eq!(message.body.as_deref(), Some("Nested mailbox body\n"));
+}
+
+#[test]
+fn get_message_prefers_message_id_match_over_wrong_numeric_hint() {
+    let conn = make_test_db();
+    conn.execute(
+        "UPDATE messages SET global_message_id = ?1 WHERE ROWID = 2",
+        [99974],
+    )
+    .unwrap();
+    let (_temp_dir, config) = make_test_config();
+
+    let messages_dir = config
+        .mail_directory
+        .join(&config.mail_version)
+        .join("account-b")
+        .join("Inbox.mbox")
+        .join("Messages");
+    std::fs::create_dir_all(&messages_dir).unwrap();
+
+    let wrong_emlx = messages_dir.join("99974.emlx");
+    let wrong_raw_email = concat!(
+        "Message-ID: <wrong@mail>\n",
+        "Subject: Wrong body\n",
+        "Content-Type: text/plain; charset=utf-8\n",
+        "\n",
+        "Wrong numeric hint body\n"
+    );
+    std::fs::write(
+        &wrong_emlx,
+        format!("{}\n{}", wrong_raw_email.len(), wrong_raw_email),
+    )
+    .unwrap();
+
+    let correct_emlx = messages_dir.join("79665.emlx");
+    let correct_raw_email = concat!(
+        "Message-ID: <msg2@mail>\n",
+        "Subject: Budget Planning\n",
+        "Content-Type: text/plain; charset=utf-8\n",
+        "\n",
+        "Correct Message-ID body\n"
+    );
+    std::fs::write(
+        &correct_emlx,
+        format!("{}\n{}", correct_raw_email.len(), correct_raw_email),
+    )
+    .unwrap();
+
+    let response = get_message_with_conn(
+        &config,
+        &conn,
+        GetMessageParams {
+            message_id: "2".to_string(),
+            include_body: true,
+            include_attachments_summary: false,
+            body_format: BodyFormat::Text,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(response.status, "success");
+    let message = response.message.expect("message payload");
+    assert_eq!(message.body.as_deref(), Some("Correct Message-ID body\n"));
 }
