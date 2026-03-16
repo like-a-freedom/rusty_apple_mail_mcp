@@ -37,8 +37,14 @@ pub struct MailboxResult {
 }
 
 /// Execute `list_mailboxes` against an already-open SQLite connection.
-pub fn list_mailboxes_with_conn(conn: &Connection) -> Result<ListMailboxesResponse, MailMcpError> {
-    let mailboxes = db_list_mailboxes(conn)?;
+pub fn list_mailboxes_with_conn(
+    config: &MailConfig,
+    conn: &Connection,
+) -> Result<ListMailboxesResponse, MailMcpError> {
+    let mailboxes = db_list_mailboxes(conn)?
+        .into_iter()
+        .filter(|(_, url)| config.is_mailbox_allowed(url))
+        .collect::<Vec<_>>();
 
     if mailboxes.is_empty() {
         return Ok(ListMailboxesResponse {
@@ -76,5 +82,5 @@ pub fn list_mailboxes_with_conn(conn: &Connection) -> Result<ListMailboxesRespon
 pub fn list_mailboxes(config: &MailConfig) -> Result<ListMailboxesResponse, MailMcpError> {
     let db_path = config.envelope_db_path();
     let conn = open_readonly(&db_path)?;
-    list_mailboxes_with_conn(&conn)
+    list_mailboxes_with_conn(config, &conn)
 }

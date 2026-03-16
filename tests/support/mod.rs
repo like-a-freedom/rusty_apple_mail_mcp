@@ -1,7 +1,9 @@
 //! Test support utilities for integration tests.
 
 use rusqlite::Connection;
+use rusty_apple_mail_mcp::accounts::AccountMetadata;
 use rusty_apple_mail_mcp::config::MailConfig;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -65,8 +67,61 @@ pub fn make_test_config() -> (TempDir, MailConfig) {
     std::fs::create_dir_all(&db_dir).expect("mail data dir");
     std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
 
-    let config = MailConfig::from_parts(mail_directory, mail_version).expect("config");
+    let config = MailConfig::from_parts_with_accounts(
+        mail_directory,
+        mail_version,
+        None,
+        make_account_metadata(),
+    )
+    .expect("config");
     (temp_dir, config)
+}
+
+/// Build a temporary Apple Mail-like directory and a config restricted to one account.
+pub fn make_restricted_test_config(allowed_account_id: &str) -> (TempDir, MailConfig) {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let mail_directory = temp_dir.path().to_path_buf();
+    let mail_version = "V10".to_string();
+    let db_dir = mail_directory.join(&mail_version).join("MailData");
+    std::fs::create_dir_all(&db_dir).expect("mail data dir");
+    std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
+
+    let config = MailConfig::from_parts_with_accounts(
+        mail_directory,
+        mail_version,
+        Some(vec![allowed_account_id.to_string()]),
+        make_account_metadata(),
+    )
+    .expect("restricted config");
+    (temp_dir, config)
+}
+
+/// Create synthetic friendly account metadata for tests.
+pub fn make_account_metadata() -> HashMap<String, AccountMetadata> {
+    HashMap::from([
+        (
+            "imap://account-a".to_string(),
+            AccountMetadata {
+                account_id: "imap://account-a".to_string(),
+                account_name: Some("Personal Gmail".to_string()),
+                email: Some("solovey.anton@gmail.com".to_string()),
+                username: Some("solovey.anton@gmail.com".to_string()),
+                source_identifier: "account-a".to_string(),
+                account_type: "imap".to_string(),
+            },
+        ),
+        (
+            "ews://account-b".to_string(),
+            AccountMetadata {
+                account_id: "ews://account-b".to_string(),
+                account_name: Some("Kaspersky".to_string()),
+                email: Some("anton.solovey@kaspersky.com".to_string()),
+                username: Some("KL\\solovey".to_string()),
+                source_identifier: "account-b".to_string(),
+                account_type: "ews".to_string(),
+            },
+        ),
+    ])
 }
 
 /// Write an `.emlx` file into an account-specific synthetic mailbox tree for a message rowid.

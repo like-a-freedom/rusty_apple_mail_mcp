@@ -23,7 +23,7 @@ This project exposes that storage through a small, intent-driven MCP interface s
 
 In practice, it empowers AI workflows to search and read your mail archive safely and quickly, without relying on Mail.app automation or network protocols.
 
-## Что умеет сервер
+## What the server can do
 
 The current tool set is intentionally compact:
 
@@ -85,13 +85,24 @@ The server is configured **only** through environment variables:
 |---|---|---|---|
 | `APPLE_MAIL_DIR` | no | `~/Library/Mail` | Root folder of the Mail data |
 | `APPLE_MAIL_VERSION` | no | `V10` | Envelope Index version subdirectory |
+| `APPLE_MAIL_ACCOUNT` | no | unset | Comma-separated account selectors such as `Kaspersky` or `anton.solovey@kaspersky.com`; when set, the whole server is restricted to the resolved account(s) |
 
 Example setup:
 
 ```bash
 export APPLE_MAIL_DIR="$HOME/Library/Mail"
 export APPLE_MAIL_VERSION="V10"
+export APPLE_MAIL_ACCOUNT="Kaspersky"
 ```
+
+### Account scoping
+
+If `APPLE_MAIL_ACCOUNT` is set, the server resolves each selector through macOS `~/Library/Accounts/Accounts4.sqlite` and then restricts **all** tools to the matched Mail account IDs.
+
+- Matching is case-insensitive and trims whitespace.
+- Supported selectors include human-friendly account names and email addresses.
+- Startup fails fast if a selector matches zero accounts or multiple accounts.
+- `list_accounts` returns `account_name` and `email` when available, so valid selector values are discoverable from the MCP interface itself.
 
 ## VS Code integration
 
@@ -105,7 +116,8 @@ Example minimum `.vscode/mcp.json` configuration:
             "args": [],
             "env": {
                 "APPLE_MAIL_DIR": "/Users/your-user/Library/Mail",
-                "APPLE_MAIL_VERSION": "V10"
+                "APPLE_MAIL_VERSION": "V10",
+                "APPLE_MAIL_ACCOUNT": "Kaspersky"
             }
         }
     }
@@ -116,7 +128,7 @@ Example minimum `.vscode/mcp.json` configuration:
 
 Typical usage pattern:
 
-1. Call `list_accounts` to see available account identifiers or scope your query.
+1. Call `list_accounts` to see available account identifiers plus human-friendly `account_name` / `email` values.
 2. Use `search_messages` to build a shortlist of candidates.
 3. Call `get_message` to fetch the full message you care about.
 4. Use `get_attachment_content` when you need the text of a particular attachment.

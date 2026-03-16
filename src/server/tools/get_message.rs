@@ -106,6 +106,19 @@ pub fn get_message_with_conn(
         }
     };
 
+    if let Some(mailbox_url) = row.mailbox_url.as_deref()
+        && !config.is_mailbox_allowed(mailbox_url)
+    {
+        return Ok(GetMessageResponse {
+            status: "error".to_string(),
+            message: None,
+            guidance: Some(
+                "This message belongs to an account excluded by APPLE_MAIL_ACCOUNT."
+                    .to_string(),
+            ),
+        });
+    }
+
     let recipients = get_recipients(conn, message_id)?;
     let mailbox = row
         .mailbox_url

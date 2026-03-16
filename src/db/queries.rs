@@ -109,6 +109,7 @@ pub fn search_messages(
     sender: Option<&str>,
     participant: Option<&str>,
     account: Option<&str>,
+    allowed_accounts: Option<&[String]>,
     mailbox: Option<&str>,
     limit: u32,
     offset: u32,
@@ -116,43 +117,53 @@ pub fn search_messages(
     let epoch_offset = detect_epoch_offset_seconds(conn)?;
 
     // Build WHERE clause dynamically
-    let mut conditions = Vec::new();
+    let mut conditions: Vec<String> = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
     if let Some(subject) = subject_query {
-        conditions.push("s.subject LIKE ?");
+        conditions.push("s.subject LIKE ?".to_string());
         params.push(Box::new(format!("%{subject}%")));
     }
 
     if let Some(from) = date_from {
-        conditions.push("m.date_received >= ?");
+        conditions.push("m.date_received >= ?".to_string());
         params.push(Box::new(from - epoch_offset));
     }
 
     if let Some(to) = date_to {
-        conditions.push("m.date_received <= ?");
+        conditions.push("m.date_received <= ?".to_string());
         params.push(Box::new(to - epoch_offset));
     }
 
     if let Some(sender_addr) = sender {
-        conditions.push("a.address = ?");
+        conditions.push("a.address = ?".to_string());
         params.push(Box::new(sender_addr.to_string()));
     }
 
     if let Some(participant_addr) = participant {
         conditions.push(
-            "EXISTS (SELECT 1 FROM recipients r JOIN addresses ra ON ra.ROWID = r.address WHERE r.message = m.ROWID AND ra.address = ?)",
+            "EXISTS (SELECT 1 FROM recipients r JOIN addresses ra ON ra.ROWID = r.address WHERE r.message = m.ROWID AND ra.address = ?)".to_string(),
         );
         params.push(Box::new(participant_addr.to_string()));
     }
 
     if let Some(account_id) = account {
-        conditions.push("mb.url LIKE ?");
+        conditions.push("mb.url LIKE ?".to_string());
         params.push(Box::new(format!("{account_id}/%")));
+    } else if let Some(account_ids) = allowed_accounts
+        && !account_ids.is_empty()
+    {
+        let account_conditions = std::iter::repeat_n("mb.url LIKE ?", account_ids.len())
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        conditions.push(format!("({account_conditions})"));
+        for account_id in account_ids {
+            params.push(Box::new(format!("{account_id}/%")));
+        }
     }
 
     if let Some(mailbox_filter) = mailbox {
-        conditions.push("mb.url LIKE ?");
+        conditions.push("mb.url LIKE ?".to_string());
         params.push(Box::new(format!("%{mailbox_filter}%")));
     }
 
@@ -429,7 +440,8 @@ mod tests {
     fn search_by_subject_returns_matching_messages() {
         let conn = make_test_db();
         let results =
-            search_messages(&conn, Some("Q3"), None, None, None, None, None, None, 20, 0).unwrap();
+            search_messages(&conn, Some("Q3"), None, None, None, None, None, None, None, 20, 0)
+                .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].subject, Some("Q3 Review".to_string()));
     }
@@ -446,6 +458,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             20,
             0,
         )
@@ -457,7 +470,8 @@ mod tests {
     fn search_with_no_filters_returns_all_messages() {
         let conn = make_test_db();
         let results =
-            search_messages(&conn, None, None, None, None, None, None, None, 20, 0).unwrap();
+            search_messages(&conn, None, None, None, None, None, None, None, None, 20, 0)
+                .unwrap();
         assert_eq!(results.len(), 2);
     }
 
@@ -471,6 +485,7 @@ mod tests {
             None,
             None,
             Some("bob@example.com"),
+            None,
             None,
             None,
             20,
@@ -492,11 +507,60 @@ mod tests {
             None,
             Some("imap://alice@mail.example.com"),
             None,
+            None,
             20,
             0,
         )
         .unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_by_allowlist_returns_only_allowed_accounts() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+            CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
+            CREATE TABLE sender_addresses (sender INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (
+                ROWID INTEGER PRIMARY KEY,
+                subject INTEGER REFERENCES subjects,
+                sender INTEGER REFERENCES sender_addresses,
+                mailbox INTEGER REFERENCES mailboxes,
+                date_sent INTEGER,
+                date_received INTEGER,
+                message_id TEXT,
+                global_message_id INTEGER
+            );
+            CREATE TABLE message_global_data (ROWID INTEGER PRIMARY KEY, message_id INTEGER, message_id_header TEXT);
+
+            INSERT INTO subjects VALUES (1, 'Allowed'), (2, 'Blocked');
+            INSERT INTO mailboxes VALUES (1, 'ews://allowed/Inbox'), (2, 'imap://blocked/INBOX');
+            INSERT INTO messages VALUES (1, 1, NULL, 1, 0, 0, 'm1', NULL);
+            INSERT INTO messages VALUES (2, 2, NULL, 2, 0, 0, 'm2', NULL);
+            "#,
+        )
+        .expect("seed sqlite");
+
+        let results = search_messages(
+            &conn,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&["ews://allowed".to_string()]),
+            None,
+            20,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rowid, 1);
     }
 
     #[test]
@@ -616,6 +680,7 @@ mod tests {
         let results = search_messages(
             &conn,
             Some("Today"),
+            None,
             None,
             None,
             None,

@@ -1,5 +1,6 @@
 //! Apple Mail read-only MCP server library.
 
+pub mod accounts;
 pub mod config;
 pub mod db;
 pub mod domain;
