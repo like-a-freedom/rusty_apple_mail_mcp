@@ -281,6 +281,7 @@ impl ServerHandler for MailMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::io;
     use std::io::Write;
     use std::sync::Mutex;
@@ -354,5 +355,82 @@ mod tests {
                 .contains("tool completed: name=search_messages, outcome=success, elapsed_s=1.250"),
             "unexpected log output: {output}"
         );
+    }
+
+    #[test]
+    fn value_to_schema_with_object() {
+        let value = json!({"type": "object", "properties": {}});
+        let result = MailMcpServer::value_to_schema(value);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn value_to_schema_with_non_object() {
+        let value = json!("not an object");
+        let result = MailMcpServer::value_to_schema(value);
+        assert_eq!(result.len(), 0);
+    }
+
+    fn create_temp_config() -> (tempfile::TempDir, MailConfig) {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let mail_directory = temp_dir.path().to_path_buf();
+        let mail_version = "V10".to_string();
+        let db_dir = mail_directory.join(&mail_version).join("MailData");
+        std::fs::create_dir_all(&db_dir).expect("mail data dir");
+        std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
+
+        let config = MailConfig::from_parts_with_accounts(
+            mail_directory,
+            mail_version,
+            None,
+            HashMap::new(),
+        )
+        .expect("config");
+        (temp_dir, config)
+    }
+
+    #[test]
+    fn get_info_returns_server_info() {
+        let (_temp_dir, config) = create_temp_config();
+        let server = MailMcpServer::new(config).expect("server creation");
+        let info = server.get_info();
+        // Just check that info is created, protocol_version type is ProtocolVersion enum
+        assert!(info.server_info.name.contains("apple-mail"));
+    }
+
+    #[test]
+    fn list_tools_returns_tool_definitions() {
+        let tools = MailMcpServer::tool_definitions();
+        assert!(!tools.is_empty());
+        // Should have at least search_messages, get_message, get_attachment_content, list_accounts, list_mailboxes
+        assert!(tools.len() >= 5);
+    }
+
+    #[test]
+    fn call_tool_by_name_unknown_tool() {
+        let (_temp_dir, config) = create_temp_config();
+        let server = MailMcpServer::new(config).expect("server creation");
+
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { server.call_tool_by_name("unknown_tool", Map::new()).await });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn call_tool_with_invalid_params() {
+        let (_temp_dir, config) = create_temp_config();
+        let server = MailMcpServer::new(config).expect("server creation");
+
+        // Pass invalid JSON for search_messages params
+        let mut args = Map::new();
+        args.insert("limit".to_string(), json!("not_a_number"));
+
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { server.call_tool_by_name("search_messages", args).await });
+
+        assert!(result.is_err());
     }
 }

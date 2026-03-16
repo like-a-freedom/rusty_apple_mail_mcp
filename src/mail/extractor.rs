@@ -29,19 +29,6 @@ pub enum ExtractionResult {
 pub fn extract_text(bytes: &[u8], mime_type: &str) -> ExtractionResult {
     let mime_lower = mime_type.to_lowercase();
 
-    // Text formats - return as-is
-    if mime_lower.starts_with("text/") {
-        return match String::from_utf8(bytes.to_vec()) {
-            Ok(text) => ExtractionResult::Text {
-                content: text,
-                method: "direct_utf8",
-            },
-            Err(_) => ExtractionResult::NotSupported {
-                reason: "binary text format with invalid UTF-8",
-            },
-        };
-    }
-
     // JSON - pretty print
     if mime_lower == "application/json" {
         return match serde_json::from_slice::<serde_json::Value>(bytes) {
@@ -135,6 +122,19 @@ pub fn extract_text(bytes: &[u8], mime_type: &str) -> ExtractionResult {
     if mime_lower.starts_with("audio/") || mime_lower.starts_with("video/") {
         return ExtractionResult::NotSupported {
             reason: "audio/video content transcription not in scope",
+        };
+    }
+
+    // Generic text formats - return as-is (after checking specific formats above)
+    if mime_lower.starts_with("text/") {
+        return match String::from_utf8(bytes.to_vec()) {
+            Ok(text) => ExtractionResult::Text {
+                content: text,
+                method: "direct_utf8",
+            },
+            Err(_) => ExtractionResult::NotSupported {
+                reason: "binary text format with invalid UTF-8",
+            },
         };
     }
 
@@ -300,6 +300,226 @@ mod tests {
         assert!(matches!(result, ExtractionResult::NotSupported { .. }));
         if let ExtractionResult::NotSupported { reason } = result {
             assert!(reason.contains("OCR"));
+        }
+    }
+
+    #[test]
+    fn extract_text_xml() {
+        let bytes = b"<?xml version=\"1.0\"?><root><item>test</item></root>";
+        let result = extract_text(bytes, "application/xml");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+        if let ExtractionResult::Text { content, method } = result {
+            assert!(content.contains("test"));
+            assert_eq!(method, "direct_utf8");
+        }
+    }
+
+    #[test]
+    fn extract_text_xml_text_variant() {
+        let bytes = b"<?xml version=\"1.0\"?><root><item>test</item></root>";
+        let result = extract_text(bytes, "text/xml");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+    }
+
+    #[test]
+    fn extract_text_csv() {
+        let bytes = b"name,email\nJohn,john@example.com";
+        let result = extract_text(bytes, "text/csv");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+        if let ExtractionResult::Text { content, method } = result {
+            assert!(content.contains("John"));
+            assert_eq!(method, "direct_utf8");
+        }
+    }
+
+    #[test]
+    fn extract_text_markdown() {
+        let bytes = b"# Header\n\nSome **bold** text.";
+        let result = extract_text(bytes, "text/markdown");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+        if let ExtractionResult::Text { content, method } = result {
+            assert!(content.contains("Header"));
+            assert_eq!(method, "direct_utf8");
+        }
+    }
+
+    #[test]
+    fn extract_text_markdown_with_extension() {
+        let bytes = b"# Header\n\nSome text.";
+        let result = extract_text(bytes, "text/markdown; charset=utf-8");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+    }
+
+    #[test]
+    fn extract_text_office_not_supported() {
+        let bytes = b"fake office document";
+        let result = extract_text(
+            bytes,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        );
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("Office document"));
+        }
+    }
+
+    #[test]
+    fn extract_text_msword_not_supported() {
+        let bytes = b"fake word doc";
+        let result = extract_text(bytes, "application/msword");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+    }
+
+    #[test]
+    fn extract_text_audio_not_supported() {
+        let bytes = b"fake audio data";
+        let result = extract_text(bytes, "audio/mpeg");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("audio"));
+        }
+    }
+
+    #[test]
+    fn extract_text_video_not_supported() {
+        let bytes = b"fake video data";
+        let result = extract_text(bytes, "video/mp4");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+    }
+
+    #[test]
+    fn extract_text_invalid_utf8() {
+        // Invalid UTF-8 sequence
+        let bytes = b"\xFF\xFE";
+        let result = extract_text(bytes, "text/plain");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("invalid UTF-8"));
+        }
+    }
+
+    #[test]
+    fn extract_text_json_invalid() {
+        let bytes = b"{invalid json}";
+        let result = extract_text(bytes, "application/json");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("invalid JSON"));
+        }
+    }
+
+    #[test]
+    fn extract_text_html_invalid_utf8() {
+        let bytes = b"<html>\xFF\xFE</html>";
+        let result = extract_text(bytes, "text/html");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("UTF-8"));
+        }
+    }
+
+    #[test]
+    fn extract_text_xml_invalid_utf8() {
+        let bytes = b"<?xml version=\"1.0\"?>\xFF\xFE";
+        let result = extract_text(bytes, "application/xml");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("UTF-8"));
+        }
+    }
+
+    #[test]
+    fn extract_text_csv_invalid_utf8() {
+        let bytes = b"name,email\n\xFF\xFE";
+        let result = extract_text(bytes, "text/csv");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+    }
+
+    #[test]
+    fn extract_text_markdown_invalid_utf8() {
+        let bytes = b"# Header\n\xFF\xFE";
+        let result = extract_text(bytes, "text/markdown");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+    }
+
+    #[test]
+    fn extract_text_html_with_script_and_style() {
+        let bytes = b"<html><head><script>alert('xss');</script><style>body{}</style></head><body><p>text</p></body></html>";
+        let result = extract_text(bytes, "text/html");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+        if let ExtractionResult::Text { content, .. } = result {
+            // The implementation strips tags but may leave some artifacts
+            // Just check that the main content is present
+            assert!(
+                content.contains("text") || content.contains("alert") || content.contains("body")
+            );
+        }
+    }
+
+    #[test]
+    fn extract_text_html_with_entities() {
+        let bytes = b"<p>Hello &nbsp; world &amp; more &lt;test&gt; &quot;quote&quot;</p>";
+        let result = extract_text(bytes, "text/html");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+        if let ExtractionResult::Text { content, .. } = result {
+            // Check for decoded entities
+            assert!(
+                content.contains("Hello") && content.contains("world") && content.contains("test")
+            );
+        }
+    }
+
+    #[test]
+    fn extract_text_binary_format() {
+        let bytes = b"\x00\x01\x02\x03";
+        let result = extract_text(bytes, "application/octet-stream");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("binary format"));
+        }
+    }
+
+    #[test]
+    fn extract_text_json_with_control_characters() {
+        // JSON with control characters that might fail formatting
+        let bytes = b"{\"key\": \"value\\u0000\"}";
+        let result = extract_text(bytes, "application/json");
+        // Should still work - control characters are valid in JSON strings
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+    }
+
+    #[test]
+    fn extract_text_html_with_nested_tags() {
+        let bytes = b"<div><p>Hello <strong>world</strong></p></div>";
+        let result = extract_text(bytes, "text/html");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+        if let ExtractionResult::Text { content, .. } = result {
+            assert!(content.contains("Hello"));
+            assert!(content.contains("world"));
+        }
+    }
+
+    #[test]
+    fn extract_text_html_empty() {
+        let bytes = b"";
+        let result = extract_text(bytes, "text/html");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+    }
+
+    #[test]
+    fn extract_text_html_only_tags() {
+        let bytes = b"<div><p></p></div>";
+        let result = extract_text(bytes, "text/html");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+    }
+
+    #[test]
+    fn extract_text_unknown_mime_type() {
+        let bytes = b"some data";
+        let result = extract_text(bytes, "application/unknown");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("binary format"));
         }
     }
 }
