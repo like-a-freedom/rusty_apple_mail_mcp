@@ -113,8 +113,7 @@ pub fn get_message_with_conn(
             status: "error".to_string(),
             message: None,
             guidance: Some(
-                "This message belongs to an account excluded by APPLE_MAIL_ACCOUNT."
-                    .to_string(),
+                "This message belongs to an account excluded by APPLE_MAIL_ACCOUNT.".to_string(),
             ),
         });
     }
@@ -210,7 +209,12 @@ pub fn get_message_with_conn(
                     });
                 }
                 Err(error) => {
-                    tracing::warn!(?error, "failed to parse emlx");
+                    tracing::warn!(
+                        "failed to parse emlx for message_id={} mailbox={}: {}",
+                        row.rowid,
+                        row.mailbox_url.as_deref().unwrap_or("unknown"),
+                        error
+                    );
                     return Ok(GetMessageResponse {
                         status: "partial".to_string(),
                         message: Some(result),

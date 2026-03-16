@@ -3,6 +3,8 @@
 use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::time::Instant;
 
 use crate::config::MailConfig;
 use crate::db::{
@@ -78,6 +80,46 @@ fn preview_text(body: &str) -> String {
     body.trim().chars().take(200).collect()
 }
 
+fn describe_search_filters(params: &SearchMessagesParams) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(subject_query) = params.subject_query.as_deref() {
+        parts.push(format!("subject_query={subject_query:?}"));
+    }
+    if let Some(date_from) = params.date_from.as_deref() {
+        parts.push(format!("date_from={date_from}"));
+    }
+    if let Some(date_to) = params.date_to.as_deref() {
+        parts.push(format!("date_to={date_to}"));
+    }
+    if let Some(sender) = params.sender.as_deref() {
+        parts.push(format!("sender={sender}"));
+    }
+    if let Some(participant) = params.participant.as_deref() {
+        parts.push(format!("participant={participant}"));
+    }
+    if let Some(account) = params.account.as_deref() {
+        parts.push(format!("account={account}"));
+    }
+    if let Some(mailbox) = params.mailbox.as_deref() {
+        parts.push(format!("mailbox={mailbox:?}"));
+    }
+
+    parts.push(format!(
+        "include_body_preview={}",
+        params.include_body_preview
+    ));
+    parts.push(format!("limit={}", params.limit));
+
+    parts.join(", ")
+}
+
+#[derive(Debug, Clone, Default)]
+struct SearchMetadata {
+    summary: Option<String>,
+    attachment_count: u32,
+}
+
 fn validate_params(params: &SearchMessagesParams) -> Result<(), String> {
     let has_any_filter = params.subject_query.is_some()
         || params.date_from.is_some()
@@ -132,9 +174,33 @@ fn hydrate_search_result(
     row: &crate::db::MessageRow,
     epoch_offset_s: i64,
     include_body_preview: bool,
+    metadata: Option<&SearchMetadata>,
 ) -> SearchMessageResult {
     let mut meta = MessageMeta::from_row(row, epoch_offset_s);
     meta.has_body = true;
+    if let Some(metadata) = metadata {
+        meta = meta.with_attachment_count(metadata.attachment_count);
+        if include_body_preview && let Some(summary) = metadata.summary.as_deref() {
+            let preview = preview_text(summary);
+            if !preview.is_empty() {
+                meta = meta.with_body_preview(preview);
+            }
+        }
+    }
+
+    if !include_body_preview || meta.body_preview.is_some() {
+        return SearchMessageResult {
+            id: meta.id,
+            subject: meta.subject,
+            from: meta.from,
+            date_sent: meta.date_sent,
+            date_received: meta.date_received,
+            mailbox: meta.mailbox,
+            has_body: meta.has_body,
+            attachment_count: meta.attachment_count,
+            body_preview: meta.body_preview,
+        };
+    }
 
     let mut numeric_hints = vec![row.rowid.to_string()];
     if let Some(global_message_id) = row.global_message_id {
@@ -158,13 +224,11 @@ fn hydrate_search_result(
                 .or(row.message_id.as_deref()),
         )
         && let Ok(parsed) = parse_emlx(&path)
+        && let Some(text) = parsed.body_text.or(parsed.body_html)
     {
-        meta = meta.with_attachment_count(parsed.attachments.len() as u32);
-        if include_body_preview && let Some(text) = parsed.body_text.or(parsed.body_html) {
-            let preview = preview_text(&text);
-            if !preview.is_empty() {
-                meta = meta.with_body_preview(preview);
-            }
+        let preview = preview_text(&text);
+        if !preview.is_empty() {
+            meta = meta.with_body_preview(preview);
         }
     }
 
@@ -181,12 +245,65 @@ fn hydrate_search_result(
     }
 }
 
+fn load_search_metadata(
+    conn: &Connection,
+    message_ids: &[i64],
+) -> Result<HashMap<i64, SearchMetadata>, MailMcpError> {
+    if message_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = std::iter::repeat_n("?", message_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        r#"
+        SELECT
+            m.ROWID,
+            sm.summary,
+            COUNT(att.ROWID)
+        FROM messages m
+        LEFT JOIN summaries sm ON sm.ROWID = m.summary
+        LEFT JOIN attachments att ON att.message = m.ROWID
+        WHERE m.ROWID IN ({placeholders})
+        GROUP BY m.ROWID, sm.summary
+        "#
+    );
+
+    let params: Vec<&dyn rusqlite::ToSql> = message_ids
+        .iter()
+        .map(|message_id| message_id as &dyn rusqlite::ToSql)
+        .collect();
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params.as_slice(), |row| {
+        let attachment_count = row.get::<_, i64>(2)?;
+        Ok((
+            row.get::<_, i64>(0)?,
+            SearchMetadata {
+                summary: row.get(1)?,
+                attachment_count: attachment_count.max(0) as u32,
+            },
+        ))
+    })?;
+
+    let mut metadata = HashMap::with_capacity(message_ids.len());
+    for row in rows {
+        let (message_id, entry) = row?;
+        metadata.insert(message_id, entry);
+    }
+
+    Ok(metadata)
+}
+
 /// Execute `search_messages` against an already-open SQLite connection.
 pub fn search_messages_with_conn(
     config: &MailConfig,
     conn: &Connection,
     params: SearchMessagesParams,
 ) -> Result<SearchMessagesResponse, MailMcpError> {
+    let total_started = Instant::now();
+    let filters_description = describe_search_filters(&params);
     if let Err(message) = validate_params(&params) {
         return Ok(SearchMessagesResponse {
             status: "error".to_string(),
@@ -228,6 +345,7 @@ pub fn search_messages_with_conn(
         });
     }
 
+    let sql_started = Instant::now();
     let rows = db_search(
         conn,
         params.subject_query.as_deref(),
@@ -241,8 +359,21 @@ pub fn search_messages_with_conn(
         params.limit,
         0,
     )?;
+    let sql_elapsed = sql_started.elapsed();
+
+    let metadata_started = Instant::now();
+    let message_ids = rows.iter().map(|row| row.rowid).collect::<Vec<_>>();
+    let search_metadata = load_search_metadata(conn, &message_ids)?;
+    let metadata_elapsed = metadata_started.elapsed();
 
     if rows.is_empty() {
+        tracing::debug!(
+            "search_messages completed: 0 result(s), sql={} ms, metadata={} ms, hydration=0 ms, total={} ms; filters: {}",
+            sql_elapsed.as_millis(),
+            metadata_elapsed.as_millis(),
+            total_started.elapsed().as_millis(),
+            filters_description,
+        );
         let guidance = if let Some(sender) = params.sender.as_deref() {
             if !address_exists(conn, sender)? {
                 format!("Sender address {sender} is not present in Apple Mail's address index.")
@@ -271,12 +402,31 @@ pub fn search_messages_with_conn(
         });
     }
 
+    let hydration_started = Instant::now();
     let messages = rows
         .iter()
-        .map(|row| hydrate_search_result(config, row, epoch_offset_s, params.include_body_preview))
+        .map(|row| {
+            hydrate_search_result(
+                config,
+                row,
+                epoch_offset_s,
+                params.include_body_preview,
+                search_metadata.get(&row.rowid),
+            )
+        })
         .collect::<Vec<_>>();
+    let hydration_elapsed = hydration_started.elapsed();
 
     let has_more = rows.len() as u32 >= params.limit;
+    tracing::debug!(
+        "search_messages completed: {} result(s), sql={} ms, metadata={} ms, hydration={} ms, total={} ms; filters: {}",
+        messages.len(),
+        sql_elapsed.as_millis(),
+        metadata_elapsed.as_millis(),
+        hydration_elapsed.as_millis(),
+        total_started.elapsed().as_millis(),
+        filters_description,
+    );
     Ok(SearchMessagesResponse {
         status: "success".to_string(),
         total_count: messages.len() as u32,
@@ -348,5 +498,31 @@ mod tests {
         let result = search_messages(&config, params).unwrap();
         assert_eq!(result.status, "error");
         assert!(result.guidance.is_some());
+    }
+
+    #[test]
+    fn describe_search_filters_formats_only_present_values() {
+        let params = SearchMessagesParams {
+            subject_query: Some("invoice".to_string()),
+            date_from: Some("2026-03-16".to_string()),
+            date_to: None,
+            sender: None,
+            participant: Some("user@example.com".to_string()),
+            account: Some("ews://account-b".to_string()),
+            mailbox: Some("Inbox".to_string()),
+            limit: 50,
+            include_body_preview: true,
+        };
+
+        let description = describe_search_filters(&params);
+        assert!(description.contains("subject_query=\"invoice\""));
+        assert!(description.contains("date_from=2026-03-16"));
+        assert!(description.contains("participant=user@example.com"));
+        assert!(description.contains("account=ews://account-b"));
+        assert!(description.contains("mailbox=\"Inbox\""));
+        assert!(description.contains("include_body_preview=true"));
+        assert!(description.contains("limit=50"));
+        assert!(!description.contains("date_to="));
+        assert!(!description.contains("sender="));
     }
 }

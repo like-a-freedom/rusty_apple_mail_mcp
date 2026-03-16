@@ -117,8 +117,7 @@ pub fn get_attachment_content_with_conn(
             status: "error".to_string(),
             attachment: None,
             guidance: Some(
-                "This attachment belongs to an account excluded by APPLE_MAIL_ACCOUNT."
-                    .to_string(),
+                "This attachment belongs to an account excluded by APPLE_MAIL_ACCOUNT.".to_string(),
             ),
         });
     }
@@ -142,7 +141,13 @@ pub fn get_attachment_content_with_conn(
     let parsed = match parse_emlx(&emlx_path) {
         Ok(parsed) => parsed,
         Err(error) => {
-            tracing::warn!(?error, "failed to parse message for attachment extraction");
+            tracing::warn!(
+                "failed to parse message for attachment extraction: message_id={} attachment_id={} path={}: {}",
+                message_id,
+                params.attachment_id,
+                emlx_path.display(),
+                error
+            );
             return Ok(GetAttachmentResponse {
                 status: "error".to_string(),
                 attachment: None,
