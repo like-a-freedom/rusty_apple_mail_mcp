@@ -112,10 +112,7 @@ pub fn get_message_with_conn(
         .as_ref()
         .map(|url| url.rsplit('/').next().unwrap_or(url).to_string())
         .unwrap_or_else(|| "Unknown".to_string());
-    let _account_id = row
-        .mailbox_url
-        .as_deref()
-        .and_then(mailbox_account_id);
+    let _account_id = row.mailbox_url.as_deref().and_then(mailbox_account_id);
 
     let mut to = Vec::new();
     let mut cc = Vec::new();
@@ -163,7 +160,9 @@ pub fn get_message_with_conn(
             row.mailbox_url.as_deref().unwrap_or(""),
             row.rowid,
             &numeric_hints,
-            row.message_id_header.as_deref().or(row.message_id.as_deref()),
+            row.message_id_header
+                .as_deref()
+                .or(row.message_id.as_deref()),
         );
 
         if let Some(path) = emlx_path {

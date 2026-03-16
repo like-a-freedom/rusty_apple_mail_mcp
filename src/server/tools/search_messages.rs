@@ -10,7 +10,7 @@ use crate::db::{
 };
 use crate::domain::MessageMeta;
 use crate::error::MailMcpError;
-use crate::mail::{locate_emlx_quick, parse_emlx};
+use crate::mail::{locate_emlx_quick_with_hints, parse_emlx};
 
 /// Parameters for the search_messages tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -136,18 +136,31 @@ fn hydrate_search_result(
     let mut meta = MessageMeta::from_row(row, epoch_offset_s);
     meta.has_body = true;
 
-    if include_body_preview
-        && let Some(mailbox_url) = row.mailbox_url.as_deref()
-        && let Some(path) = locate_emlx_quick(
+    let mut numeric_hints = vec![row.rowid.to_string()];
+    if let Some(global_message_id) = row.global_message_id {
+        numeric_hints.push(global_message_id.to_string());
+    }
+    if let Some(message_id) = row.message_id.as_ref() {
+        numeric_hints.push(message_id.clone());
+    }
+    numeric_hints.sort();
+    numeric_hints.dedup();
+
+    if let Some(mailbox_url) = row.mailbox_url.as_deref()
+        && let Some(path) = locate_emlx_quick_with_hints(
             &config.mail_directory,
             &config.mail_version,
             mailbox_url,
             row.rowid,
+            &numeric_hints,
+            row.message_id_header
+                .as_deref()
+                .or(row.message_id.as_deref()),
         )
         && let Ok(parsed) = parse_emlx(&path)
     {
         meta = meta.with_attachment_count(parsed.attachments.len() as u32);
-        if let Some(text) = parsed.body_text.or(parsed.body_html) {
+        if include_body_preview && let Some(text) = parsed.body_text.or(parsed.body_html) {
             let preview = preview_text(&text);
             if !preview.is_empty() {
                 meta = meta.with_body_preview(preview);

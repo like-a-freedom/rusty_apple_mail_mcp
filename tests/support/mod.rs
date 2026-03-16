@@ -1,7 +1,7 @@
 //! Test support utilities for integration tests.
 
-use rusty_apple_mail_mcp::config::MailConfig;
 use rusqlite::Connection;
+use rusty_apple_mail_mcp::config::MailConfig;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -65,12 +65,9 @@ pub fn make_test_config() -> (TempDir, MailConfig) {
     std::fs::create_dir_all(&db_dir).expect("mail data dir");
     std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
 
-    let config = MailConfig::from_parts(
-        mail_directory,
-        mail_version,
-        "user@example.com".to_string(),
-    )
-    .expect("config");
+    let config =
+        MailConfig::from_parts(mail_directory, mail_version, "user@example.com".to_string())
+            .expect("config");
     (temp_dir, config)
 }
 
@@ -104,7 +101,10 @@ pub fn seed_emlx_in_nested_mailbox(
     file_stem: &str,
     raw_email: &str,
 ) -> PathBuf {
-    let mut mailbox_dir = config.mail_directory.join(&config.mail_version).join(account_dir);
+    let mut mailbox_dir = config
+        .mail_directory
+        .join(&config.mail_version)
+        .join(account_dir);
     for segment in mailbox_segments {
         mailbox_dir = mailbox_dir.join(format!("{segment}.mbox"));
     }

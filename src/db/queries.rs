@@ -171,12 +171,15 @@ pub fn search_messages(
             mb.url,
             m.date_sent,
             m.date_received,
-            m.message_id
+            m.message_id,
+            m.global_message_id,
+            mgd.message_id_header
         FROM messages m
         LEFT JOIN subjects s ON m.subject = s.ROWID
         LEFT JOIN sender_addresses sa ON m.sender = sa.ROWID
         LEFT JOIN addresses a ON sa.address = a.ROWID
         LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID
+        LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
         {}
         ORDER BY m.date_received DESC LIMIT ? OFFSET ?
         "#,
@@ -200,8 +203,8 @@ pub fn search_messages(
             date_sent: row.get(4)?,
             date_received: row.get(5)?,
             message_id: read_optional_string(row, 6)?,
-            global_message_id: None,
-            message_id_header: None,
+            global_message_id: row.get(7)?,
+            message_id_header: read_optional_string(row, 8)?,
         })
     })?;
 

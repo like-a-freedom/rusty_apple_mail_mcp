@@ -145,6 +145,29 @@ pub fn locate_emlx_quick(
     mailbox_url: &str,
     message_rowid: i64,
 ) -> Option<PathBuf> {
+    locate_emlx_quick_with_hints(
+        mail_dir,
+        mail_version,
+        mailbox_url,
+        message_rowid,
+        &[message_rowid.to_string()],
+        None,
+    )
+}
+
+/// Locate the `.emlx` file using fast hints and mailbox-local indexes only.
+///
+/// This variant avoids recursive directory walking, making it suitable for list
+/// operations that still need reliable matching by `Message-ID` or alternate
+/// numeric stems.
+pub fn locate_emlx_quick_with_hints(
+    mail_dir: &Path,
+    mail_version: &str,
+    mailbox_url: &str,
+    message_rowid: i64,
+    numeric_hints: &[String],
+    message_id_header: Option<&str>,
+) -> Option<PathBuf> {
     let cache_key = CacheKey {
         mail_root: mail_dir.join(mail_version),
         message_rowid,
@@ -159,13 +182,44 @@ pub fn locate_emlx_quick(
         }
     }
 
-    find_emlx_file(
-        mail_dir,
-        mail_version,
-        mailbox_url,
-        &[message_rowid.to_string()],
-        false,
-    )
+    let mut candidate_ids = numeric_hints.to_vec();
+    if !candidate_ids
+        .iter()
+        .any(|candidate| candidate == &message_rowid.to_string())
+    {
+        candidate_ids.push(message_rowid.to_string());
+    }
+
+    let mailbox_dirs = candidate_mailbox_directories(&mail_dir.join(mail_version), mailbox_url);
+
+    if let Some(header) = message_id_header {
+        for mailbox_dir in &mailbox_dirs {
+            if let Some(path) = lookup_mailbox_header(mailbox_dir, header) {
+                if let Ok(mut cache) = PATH_CACHE.lock() {
+                    cache.insert(cache_key.clone(), path.clone());
+                }
+                return Some(path);
+            }
+        }
+    }
+
+    if let Some(path) = find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, false) {
+        if let Ok(mut cache) = PATH_CACHE.lock() {
+            cache.insert(cache_key.clone(), path.clone());
+        }
+        return Some(path);
+    }
+
+    for mailbox_dir in &mailbox_dirs {
+        if let Some(path) = lookup_mailbox_index(mailbox_dir, &candidate_ids, message_id_header) {
+            if let Ok(mut cache) = PATH_CACHE.lock() {
+                cache.insert(cache_key.clone(), path.clone());
+            }
+            return Some(path);
+        }
+    }
+
+    None
 }
 
 /// Internal function to find the .emlx file.
