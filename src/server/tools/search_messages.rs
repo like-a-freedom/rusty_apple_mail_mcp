@@ -525,4 +525,89 @@ mod tests {
         assert!(!description.contains("date_to="));
         assert!(!description.contains("sender="));
     }
+
+    #[test]
+    fn validate_params_rejects_no_filters() {
+        let params = SearchMessagesParams {
+            subject_query: None,
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            include_body_preview: false,
+        };
+
+        let result = validate_params(&params);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("At least one filter must be provided")
+        );
+    }
+
+    #[test]
+    fn validate_params_rejects_high_limit() {
+        let params = SearchMessagesParams {
+            subject_query: Some("test".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 101,
+            include_body_preview: false,
+        };
+
+        let result = validate_params(&params);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("limit must be between 1 and 100")
+        );
+    }
+
+    #[test]
+    fn parse_date_range_handles_invalid_format() {
+        let params = SearchMessagesParams {
+            subject_query: None,
+            date_from: Some("invalid-date".to_string()),
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            include_body_preview: false,
+        };
+
+        let result = parse_date_range(&params);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_date_range_with_both_dates() {
+        let params = SearchMessagesParams {
+            subject_query: Some("test".to_string()),
+            date_from: Some("2026-03-15".to_string()),
+            date_to: Some("2026-03-16".to_string()),
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            include_body_preview: false,
+        };
+
+        let result = parse_date_range(&params);
+        assert!(result.is_ok());
+        let (from_ts, to_ts) = result.unwrap();
+        assert!(from_ts.is_some());
+        assert!(to_ts.is_some());
+    }
 }

@@ -218,4 +218,109 @@ mod tests {
         assert_eq!(meta.from, "sender@example.com");
         assert_eq!(meta.mailbox, "INBOX");
     }
+
+    #[test]
+    fn message_full_from_row_with_recipients() {
+        let row = MessageRow {
+            rowid: 42,
+            subject: Some("Test Subject".to_string()),
+            sender: Some("sender@example.com".to_string()),
+            mailbox_url: Some("imap://user@mail.example.com/INBOX".to_string()),
+            date_sent: Some(2704665600),
+            date_received: Some(2704665600),
+            message_id: Some("<test@mail>".to_string()),
+            global_message_id: Some(7),
+            message_id_header: Some("<test@mail>".to_string()),
+        };
+
+        let recipients = vec![
+            ("to1@example.com".to_string(), 1),
+            ("to2@example.com".to_string(), 1),
+            ("cc1@example.com".to_string(), 2),
+            ("bcc1@example.com".to_string(), 3), // Should be ignored
+        ];
+
+        let full = MessageFull::from_row_with_recipients(&row, &recipients, COREDATA_EPOCH_OFFSET);
+        assert_eq!(full.id, "42");
+        assert_eq!(full.subject, "Test Subject");
+        assert_eq!(full.from, "sender@example.com");
+        assert_eq!(full.mailbox, "INBOX");
+        assert_eq!(full.to.len(), 2);
+        assert_eq!(full.cc.len(), 1);
+        assert!(full.to.contains(&"to1@example.com".to_string()));
+        assert!(full.to.contains(&"to2@example.com".to_string()));
+        assert!(full.cc.contains(&"cc1@example.com".to_string()));
+        assert!(!full.to.contains(&"bcc1@example.com".to_string()));
+    }
+
+    #[test]
+    fn message_full_with_body() {
+        let row = MessageRow {
+            rowid: 42,
+            subject: Some("Test Subject".to_string()),
+            sender: Some("sender@example.com".to_string()),
+            mailbox_url: Some("imap://user@mail.example.com/INBOX".to_string()),
+            date_sent: Some(2704665600),
+            date_received: Some(2704665600),
+            message_id: Some("<test@mail>".to_string()),
+            global_message_id: Some(7),
+            message_id_header: Some("<test@mail>".to_string()),
+        };
+
+        let full = MessageFull::from_row_with_recipients(&row, &[], COREDATA_EPOCH_OFFSET)
+            .with_body("Test body content");
+        assert_eq!(full.body, Some("Test body content".to_string()));
+    }
+
+    #[test]
+    fn message_full_with_attachments() {
+        use crate::domain::attachment::AttachmentMeta;
+
+        let row = MessageRow {
+            rowid: 42,
+            subject: Some("Test Subject".to_string()),
+            sender: Some("sender@example.com".to_string()),
+            mailbox_url: Some("imap://user@mail.example.com/INBOX".to_string()),
+            date_sent: Some(2704665600),
+            date_received: Some(2704665600),
+            message_id: Some("<test@mail>".to_string()),
+            global_message_id: Some(7),
+            message_id_header: Some("<test@mail>".to_string()),
+        };
+
+        let attachments = vec![AttachmentMeta {
+            id: "42:0".to_string(),
+            filename: "document.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size_bytes: 1024,
+            is_inline: false,
+        }];
+
+        let full = MessageFull::from_row_with_recipients(&row, &[], COREDATA_EPOCH_OFFSET)
+            .with_attachments(attachments.clone());
+        assert_eq!(full.attachments.len(), 1);
+        assert_eq!(full.attachments[0].filename, "document.pdf");
+    }
+
+    #[test]
+    fn message_full_with_empty_recipients() {
+        let row = MessageRow {
+            rowid: 42,
+            subject: Some("Test Subject".to_string()),
+            sender: Some("sender@example.com".to_string()),
+            mailbox_url: None,
+            date_sent: None,
+            date_received: None,
+            message_id: None,
+            global_message_id: None,
+            message_id_header: None,
+        };
+
+        let full = MessageFull::from_row_with_recipients(&row, &[], COREDATA_EPOCH_OFFSET);
+        assert_eq!(full.mailbox, "Unknown");
+        assert_eq!(full.to.len(), 0);
+        assert_eq!(full.cc.len(), 0);
+        assert_eq!(full.body, None);
+        assert_eq!(full.attachments.len(), 0);
+    }
 }
