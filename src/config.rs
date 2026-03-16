@@ -33,7 +33,11 @@ impl MailConfig {
         let accounts_db_path = default_accounts_db_path();
         let account_metadata = if let Some(path) = accounts_db_path.as_deref() {
             if path.exists() {
-                load_account_metadata(path)?
+                match load_account_metadata(path) {
+                    Ok(metadata) => metadata,
+                    Err(_) if account_selectors.is_empty() => HashMap::new(),
+                    Err(e) => return Err(e),
+                }
             } else if account_selectors.is_empty() {
                 HashMap::new()
             } else {
@@ -214,15 +218,23 @@ mod tests {
     #[test]
     fn from_env_uses_env_vars() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let (_temp_dir, mail_directory, _mail_version) = make_valid_config_inputs();
+        let (temp_dir, mail_directory, _mail_version) = make_valid_config_inputs();
         unsafe {
             std::env::set_var("APPLE_MAIL_DIR", &mail_directory);
             std::env::set_var("APPLE_MAIL_VERSION", "V9");
-            let db_dir = mail_directory.join("V9").join("MailData");
-            std::fs::create_dir_all(&db_dir).expect("mail data dir");
-            std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder")
-                .expect("db placeholder");
+            // Set HOME to temp_dir so default_accounts_db_path points inside temp_dir
+            std::env::set_var("HOME", temp_dir.path());
+            // Create a dummy Accounts4.sqlite (empty file) to avoid "unable to open database file"
+            let accounts_dir = temp_dir.path().join("Library").join("Accounts");
+            std::fs::create_dir_all(&accounts_dir).expect("accounts dir");
+            std::fs::write(accounts_dir.join("Accounts4.sqlite"), b"")
+                .expect("accounts db placeholder");
         }
+        // Create the Envelope Index for V9
+        let v9_db_dir = mail_directory.join("V9").join("MailData");
+        std::fs::create_dir_all(&v9_db_dir).expect("mail data dir");
+        std::fs::write(v9_db_dir.join("Envelope Index"), b"sqlite placeholder")
+            .expect("db placeholder");
         let cfg = MailConfig::from_env().unwrap();
         assert_eq!(cfg.mail_version, "V9");
         assert_eq!(cfg.mail_directory, mail_directory);
@@ -231,10 +243,17 @@ mod tests {
     #[test]
     fn from_env_loads_without_extra_email_configuration() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let (_temp_dir, mail_directory, _mail_version) = make_valid_config_inputs();
+        let (temp_dir, mail_directory, _mail_version) = make_valid_config_inputs();
         unsafe {
             std::env::set_var("APPLE_MAIL_DIR", &mail_directory);
             std::env::set_var("APPLE_MAIL_VERSION", "V10");
+            // Set HOME to temp_dir so default_accounts_db_path points inside temp_dir
+            std::env::set_var("HOME", temp_dir.path());
+            // Create a dummy Accounts4.sqlite (empty file) to avoid "unable to open database file"
+            let accounts_dir = temp_dir.path().join("Library").join("Accounts");
+            std::fs::create_dir_all(&accounts_dir).expect("accounts dir");
+            std::fs::write(accounts_dir.join("Accounts4.sqlite"), b"")
+                .expect("accounts db placeholder");
         }
 
         let cfg = MailConfig::from_env().expect("config should load without extra email config");

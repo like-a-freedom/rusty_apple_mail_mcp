@@ -86,3 +86,151 @@ pub fn list_accounts(config: &MailConfig) -> Result<ListAccountsResponse, MailMc
     let conn = open_readonly(&db_path)?;
     list_accounts_with_conn(config, &conn)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::accounts::AccountMetadata;
+    use rusqlite::Connection;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    /// Create an in-memory test database with mailboxes and messages.
+    fn make_test_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (
+                ROWID INTEGER PRIMARY KEY,
+                mailbox INTEGER REFERENCES mailboxes,
+                date_sent INTEGER,
+                date_received INTEGER,
+                message_id TEXT,
+                global_message_id INTEGER
+            );
+            INSERT INTO mailboxes VALUES
+                (1, 'imap://account-a/INBOX'),
+                (2, 'ews://account-b/Inbox');
+            INSERT INTO messages VALUES
+                (1, 1, 0, 0, 'msg1', NULL),
+                (2, 1, 0, 0, 'msg2', NULL),
+                (3, 2, 0, 0, 'msg3', NULL);
+            "#,
+        )
+        .expect("seed test schema");
+        conn
+    }
+
+    fn make_test_config() -> (TempDir, MailConfig) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mail_directory = temp_dir.path().to_path_buf();
+        let mail_version = "V10".to_string();
+        let db_dir = mail_directory.join(&mail_version).join("MailData");
+        std::fs::create_dir_all(&db_dir).expect("mail data dir");
+        std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
+
+        let config = MailConfig::from_parts_with_accounts(
+            mail_directory,
+            mail_version,
+            None,
+            HashMap::new(),
+        )
+        .expect("config");
+        (temp_dir, config)
+    }
+
+    #[test]
+    fn list_accounts_with_conn_returns_accounts() {
+        let conn = make_test_db();
+        let (_temp_dir, config) = make_test_config();
+        let response = list_accounts_with_conn(&config, &conn).unwrap();
+
+        assert_eq!(response.status, "success");
+        assert_eq!(response.total_count, Some(2));
+        assert_eq!(response.accounts.len(), 2);
+        // Verify account IDs
+        let account_ids: Vec<_> = response.accounts.iter().map(|a| &a.account_id).collect();
+        assert!(account_ids.contains(&&"imap://account-a".to_string()));
+        assert!(account_ids.contains(&&"ews://account-b".to_string()));
+    }
+
+    #[test]
+    fn list_accounts_with_conn_filters_by_allowed_accounts() {
+        let conn = make_test_db();
+        let (temp_dir, _config) = make_test_config();
+        let config = MailConfig::from_parts_with_accounts(
+            temp_dir.path().to_path_buf(),
+            "V10".to_string(),
+            Some(vec!["ews://account-b".to_string()]),
+            HashMap::new(),
+        )
+        .expect("valid config");
+        let response = list_accounts_with_conn(&config, &conn).unwrap();
+
+        assert_eq!(response.status, "success");
+        assert_eq!(response.total_count, Some(1));
+        assert_eq!(response.accounts.len(), 1);
+        assert_eq!(response.accounts[0].account_id, "ews://account-b");
+    }
+
+    #[test]
+    fn list_accounts_with_conn_returns_not_found_when_empty() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (
+                ROWID INTEGER PRIMARY KEY,
+                mailbox INTEGER REFERENCES mailboxes,
+                date_sent INTEGER,
+                date_received INTEGER,
+                message_id TEXT,
+                global_message_id INTEGER
+            );
+            "#,
+        )
+        .expect("seed empty schema");
+        let (_temp_dir, config) = make_test_config();
+        let response = list_accounts_with_conn(&config, &conn).unwrap();
+
+        assert_eq!(response.status, "not_found");
+        assert_eq!(response.total_count, Some(0));
+        assert!(response.guidance.is_some());
+    }
+
+    #[test]
+    fn list_accounts_with_conn_includes_metadata() {
+        let conn = make_test_db();
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "imap://account-a".to_string(),
+            AccountMetadata {
+                account_id: "imap://account-a".to_string(),
+                account_name: Some("Personal Gmail".to_string()),
+                email: Some("user@example.com".to_string()),
+                username: Some("user@example.com".to_string()),
+                source_identifier: "account-a".to_string(),
+                account_type: "imap".to_string(),
+            },
+        );
+        let (temp_dir, _config) = make_test_config();
+        let config = MailConfig::from_parts_with_accounts(
+            temp_dir.path().to_path_buf(),
+            "V10".to_string(),
+            None,
+            metadata,
+        )
+        .expect("valid config");
+        let response = list_accounts_with_conn(&config, &conn).unwrap();
+
+        assert_eq!(response.status, "success");
+        let account_a = response
+            .accounts
+            .iter()
+            .find(|a| a.account_id == "imap://account-a")
+            .expect("account-a exists");
+        assert_eq!(account_a.account_name.as_deref(), Some("Personal Gmail"));
+        assert_eq!(account_a.email.as_deref(), Some("user@example.com"));
+    }
+}
