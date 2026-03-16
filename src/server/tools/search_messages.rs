@@ -12,7 +12,7 @@ use crate::db::{
 };
 use crate::domain::MessageMeta;
 use crate::error::MailMcpError;
-use crate::mail::{locate_emlx_quick_with_hints, parse_emlx};
+use crate::mail::{locate_emlx_quick_with_hints, parse_emlx_without_attachment_content};
 
 /// Parameters for the search_messages tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -223,7 +223,7 @@ fn hydrate_search_result(
                 .as_deref()
                 .or(row.message_id.as_deref()),
         )
-        && let Ok(parsed) = parse_emlx(&path)
+        && let Ok(parsed) = parse_emlx_without_attachment_content(&path)
         && let Some(text) = parsed.body_text.or(parsed.body_html)
     {
         let preview = preview_text(&text);

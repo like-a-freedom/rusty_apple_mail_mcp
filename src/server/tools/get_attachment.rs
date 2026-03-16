@@ -177,8 +177,16 @@ pub fn get_attachment_content_with_conn(
             .clone()
             .unwrap_or_else(|| "unnamed".to_string()),
         mime_type: raw_attachment.mime_type.clone(),
-        size_bytes: raw_attachment.content.len() as u64,
+        size_bytes: raw_attachment.size_bytes,
         is_inline: raw_attachment.is_inline,
+    };
+
+    let Some(content) = raw_attachment.content.as_deref() else {
+        return Ok(GetAttachmentResponse {
+            status: "error".to_string(),
+            attachment: None,
+            guidance: Some("Attachment content is unavailable in the parsed message.".to_string()),
+        });
     };
 
     let base_result = GetAttachmentResult {
@@ -192,7 +200,7 @@ pub fn get_attachment_content_with_conn(
         extraction_method: None,
     };
 
-    match extract_text(&raw_attachment.content, &raw_attachment.mime_type) {
+    match extract_text(content, &raw_attachment.mime_type) {
         crate::mail::ExtractionResult::Text { content, method } => Ok(GetAttachmentResponse {
             status: "success".to_string(),
             attachment: Some(GetAttachmentResult {
