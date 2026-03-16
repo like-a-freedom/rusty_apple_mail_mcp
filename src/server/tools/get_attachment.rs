@@ -110,6 +110,19 @@ pub fn get_attachment_content_with_conn(
         }
     };
 
+    if let Some(mailbox_url) = row.mailbox_url.as_deref()
+        && !config.is_mailbox_allowed(mailbox_url)
+    {
+        return Ok(GetAttachmentResponse {
+            status: "error".to_string(),
+            attachment: None,
+            guidance: Some(
+                "This attachment belongs to an account excluded by APPLE_MAIL_ACCOUNT."
+                    .to_string(),
+            ),
+        });
+    }
+
     let emlx_path = match locate_emlx(
         &config.mail_directory,
         &config.mail_version,

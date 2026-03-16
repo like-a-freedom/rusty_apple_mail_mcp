@@ -213,6 +213,21 @@ pub fn search_messages_with_conn(
     };
 
     let epoch_offset_s = detect_epoch_offset_seconds(conn)?;
+    if let Some(account) = params.account.as_deref()
+        && !config.is_account_allowed(account)
+    {
+        return Ok(SearchMessagesResponse {
+            status: "error".to_string(),
+            guidance: Some(format!(
+                "The requested account filter {account} is excluded by APPLE_MAIL_ACCOUNT."
+            )),
+            messages: Vec::new(),
+            total_count: 0,
+            has_more: false,
+            next_offset: None,
+        });
+    }
+
     let rows = db_search(
         conn,
         params.subject_query.as_deref(),
@@ -221,6 +236,7 @@ pub fn search_messages_with_conn(
         params.sender.as_deref(),
         params.participant.as_deref(),
         params.account.as_deref(),
+        config.allowed_account_ids(),
         params.mailbox.as_deref(),
         params.limit,
         0,
@@ -313,6 +329,8 @@ mod tests {
         let config = MailConfig {
             mail_directory: PathBuf::from("/tmp"),
             mail_version: "V10".to_string(),
+            allowed_account_ids: None,
+            account_metadata: Default::default(),
         };
 
         let params = SearchMessagesParams {
