@@ -62,13 +62,13 @@ This installs the binary under the name `rusty_apple_mail_mcp`.
 To start from source:
 
 ```bash
-APPLE_MAIL_PRIMARY_EMAIL="you@example.com" cargo run --release
+cargo run --release
 ```
 
 Or with the installed binary:
 
 ```bash
-APPLE_MAIL_PRIMARY_EMAIL="you@example.com" rusty_apple_mail_mcp
+rusty_apple_mail_mcp
 ```
 
 For interactive experimentation, use the MCP Inspector:
@@ -85,14 +85,12 @@ The server is configured **only** through environment variables:
 |---|---|---|---|
 | `APPLE_MAIL_DIR` | no | `~/Library/Mail` | Root folder of the Mail data |
 | `APPLE_MAIL_VERSION` | no | `V10` | Envelope Index version subdirectory |
-| `APPLE_MAIL_PRIMARY_EMAIL` | yes | — | Primary account email for startup validation |
 
 Example setup:
 
 ```bash
 export APPLE_MAIL_DIR="$HOME/Library/Mail"
 export APPLE_MAIL_VERSION="V10"
-export APPLE_MAIL_PRIMARY_EMAIL="you@example.com"
 ```
 
 ## VS Code integration
@@ -107,8 +105,7 @@ Example minimum `.vscode/mcp.json` configuration:
             "args": [],
             "env": {
                 "APPLE_MAIL_DIR": "/Users/your-user/Library/Mail",
-                "APPLE_MAIL_VERSION": "V10",
-                "APPLE_MAIL_PRIMARY_EMAIL": "you@example.com"
+                "APPLE_MAIL_VERSION": "V10"
             }
         }
     }

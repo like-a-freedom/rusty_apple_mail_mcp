@@ -65,9 +65,7 @@ pub fn make_test_config() -> (TempDir, MailConfig) {
     std::fs::create_dir_all(&db_dir).expect("mail data dir");
     std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
 
-    let config =
-        MailConfig::from_parts(mail_directory, mail_version, "user@example.com".to_string())
-            .expect("config");
+    let config = MailConfig::from_parts(mail_directory, mail_version).expect("config");
     (temp_dir, config)
 }
 
