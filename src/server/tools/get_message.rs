@@ -1,8 +1,11 @@
 //! get_message tool implementation.
 
+use lru::LruCache;
 use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroUsize;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::config::MailConfig;
@@ -15,6 +18,19 @@ use crate::error::MailMcpError;
 use crate::mail::{
     locate_emlx_with_hints, parse_emlx_without_attachment_content, raw_attachments_to_meta,
 };
+
+/// LRU cache for parsed .emlx bodies keyed by resolved path.
+static BODY_CACHE: once_cell::sync::Lazy<Mutex<LruCache<std::path::PathBuf, CachedMessage>>> =
+    once_cell::sync::Lazy::new(|| {
+        Mutex::new(LruCache::new(NonZeroUsize::new(256).expect("cache size")))
+    });
+
+#[derive(Clone)]
+struct CachedMessage {
+    body_text: Option<String>,
+    body_html: Option<String>,
+    attachments: Vec<AttachmentMeta>,
+}
 
 /// Parameters for the get_message tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -187,63 +203,78 @@ pub fn get_message_with_conn(
 
         if let Some(path) = emlx_path {
             let parse_started = Instant::now();
-            match parse_emlx_without_attachment_content(&path) {
-                Ok(parsed) => {
-                    if params.include_body {
-                        result.body = match params.body_format {
-                            BodyFormat::Text => parsed.body_text.clone(),
-                            BodyFormat::Html => parsed.body_html.clone(),
-                            BodyFormat::Both => {
-                                parsed.body_text.clone().or(parsed.body_html.clone())
-                            }
+            let cached = {
+                let mut cache = BODY_CACHE.lock().expect("body cache lock");
+                cache.get(&path).cloned()
+            };
+
+            let (body_text, body_html, attachments) = if let Some(cached) = cached {
+                (cached.body_text, cached.body_html, cached.attachments)
+            } else {
+                match parse_emlx_without_attachment_content(&path) {
+                    Ok(parsed) => {
+                        let attachments = raw_attachments_to_meta(row.rowid, &parsed.attachments);
+                        let cached = CachedMessage {
+                            body_text: parsed.body_text,
+                            body_html: parsed.body_html,
+                            attachments,
                         };
-
-                        if matches!(params.body_format, BodyFormat::Both) {
-                            result.body_html = parsed.body_html.clone();
-                        }
+                        let mut cache = BODY_CACHE.lock().expect("body cache lock");
+                        cache.put(path.clone(), cached.clone());
+                        (cached.body_text, cached.body_html, cached.attachments)
                     }
-
-                    if params.include_attachments_summary {
-                        result.attachments =
-                            raw_attachments_to_meta(row.rowid, &parsed.attachments);
+                    Err(MailMcpError::BodyFileNotFound { .. }) => {
+                        return Ok(GetMessageResponse {
+                            status: "partial".to_string(),
+                            message: Some(result),
+                            guidance: Some(
+                                "Message body file not found on disk (emlx missing). The message index entry exists but the local file may have been deleted or not yet downloaded. Try another message or check Mail sync status.".to_string(),
+                            ),
+                        });
                     }
+                    Err(error) => {
+                        tracing::warn!(
+                            "failed to parse emlx for message_id={} mailbox={}: {}",
+                            row.rowid,
+                            row.mailbox_url.as_deref().unwrap_or("unknown"),
+                            error
+                        );
+                        return Ok(GetMessageResponse {
+                            status: "partial".to_string(),
+                            message: Some(result),
+                            guidance: Some(
+                                "Message metadata was loaded, but the body could not be parsed from the local message file.".to_string(),
+                            ),
+                        });
+                    }
+                }
+            };
 
-                    tracing::debug!(
-                        "get_message completed: message_id={}, db={} ms, locator={} ms, parse={} ms, total={} ms, include_body={}, include_attachments_summary={}",
-                        row.rowid,
-                        db_elapsed.as_millis(),
-                        locator_elapsed.as_millis(),
-                        parse_started.elapsed().as_millis(),
-                        total_started.elapsed().as_millis(),
-                        params.include_body,
-                        params.include_attachments_summary,
-                    );
-                }
-                Err(MailMcpError::BodyFileNotFound { .. }) => {
-                    return Ok(GetMessageResponse {
-                        status: "partial".to_string(),
-                        message: Some(result),
-                        guidance: Some(
-                            "Message body file not found on disk (emlx missing). The message index entry exists but the local file may have been deleted or not yet downloaded. Try another message or check Mail sync status.".to_string(),
-                        ),
-                    });
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        "failed to parse emlx for message_id={} mailbox={}: {}",
-                        row.rowid,
-                        row.mailbox_url.as_deref().unwrap_or("unknown"),
-                        error
-                    );
-                    return Ok(GetMessageResponse {
-                        status: "partial".to_string(),
-                        message: Some(result),
-                        guidance: Some(
-                            "Message metadata was loaded, but the body could not be parsed from the local message file.".to_string(),
-                        ),
-                    });
+            if params.include_body {
+                result.body = match params.body_format {
+                    BodyFormat::Text => body_text,
+                    BodyFormat::Html => body_html.clone(),
+                    BodyFormat::Both => body_text.or(body_html.clone()),
+                };
+                if matches!(params.body_format, BodyFormat::Both) {
+                    result.body_html = body_html;
                 }
             }
+
+            if params.include_attachments_summary {
+                result.attachments = attachments;
+            }
+
+            tracing::debug!(
+                "get_message completed: message_id={}, db={} ms, locator={} ms, parse={} ms, total={} ms, include_body={}, include_attachments_summary={}",
+                row.rowid,
+                db_elapsed.as_millis(),
+                locator_elapsed.as_millis(),
+                parse_started.elapsed().as_millis(),
+                total_started.elapsed().as_millis(),
+                params.include_body,
+                params.include_attachments_summary,
+            );
         } else {
             return Ok(GetMessageResponse {
                 status: "partial".to_string(),
