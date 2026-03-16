@@ -514,4 +514,122 @@ mod tests {
         assert!(msg.body.is_some());
         assert!(msg.body.unwrap().contains("Hello, World!"));
     }
+
+    #[test]
+    fn get_message_with_conn_body_format_html() {
+        let conn = make_test_db();
+        let temp_dir = TempDir::new().unwrap();
+        let config = make_test_config(&temp_dir, None);
+
+        // Create a fake .emlx file with HTML body
+        let mail_dir = temp_dir
+            .path()
+            .join("V10")
+            .join("account-a")
+            .join("INBOX.mbox")
+            .join("Messages");
+        fs::create_dir_all(&mail_dir).unwrap();
+        let emlx_path = mail_dir.join("1.emlx");
+        let email_content = concat!(
+            "From: sender@example.com\n",
+            "To: recipient@example.com\n",
+            "Subject: Test Subject\n",
+            "Content-Type: text/html; charset=utf-8\n",
+            "\n",
+            "<html><body><p>Hello HTML!</p></body></html>\n"
+        );
+        let emlx_content = format!("{}\n{}", email_content.len(), email_content);
+        fs::write(&emlx_path, emlx_content).unwrap();
+
+        let params = GetMessageParams {
+            message_id: "1".to_string(),
+            include_body: true,
+            include_attachments_summary: false,
+            body_format: BodyFormat::Html,
+        };
+
+        let response = get_message_with_conn(&config, &conn, params).unwrap();
+
+        assert_eq!(response.status, "success");
+        let msg = response.message.unwrap();
+        assert!(msg.body.is_some());
+        assert!(msg.body.unwrap().contains("<html>"));
+    }
+
+    #[test]
+    fn get_message_with_conn_body_format_both() {
+        let conn = make_test_db();
+        let temp_dir = TempDir::new().unwrap();
+        let config = make_test_config(&temp_dir, None);
+
+        // Create a fake .emlx file with both text and HTML
+        let mail_dir = temp_dir
+            .path()
+            .join("V10")
+            .join("account-a")
+            .join("INBOX.mbox")
+            .join("Messages");
+        fs::create_dir_all(&mail_dir).unwrap();
+        let emlx_path = mail_dir.join("1.emlx");
+        let email_content = concat!(
+            "From: sender@example.com\n",
+            "To: recipient@example.com\n",
+            "Subject: Test Subject\n",
+            "MIME-Version: 1.0\n",
+            "Content-Type: multipart/alternative; boundary=\"boundary\"\n",
+            "\n",
+            "--boundary\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Plain text body\n",
+            "--boundary\n",
+            "Content-Type: text/html; charset=utf-8\n",
+            "\n",
+            "<html><body>HTML body</body></html>\n",
+            "--boundary--\n"
+        );
+        let emlx_content = format!("{}\n{}", email_content.len(), email_content);
+        fs::write(&emlx_path, emlx_content).unwrap();
+
+        let params = GetMessageParams {
+            message_id: "1".to_string(),
+            include_body: true,
+            include_attachments_summary: false,
+            body_format: BodyFormat::Both,
+        };
+
+        let response = get_message_with_conn(&config, &conn, params).unwrap();
+
+        assert_eq!(response.status, "success");
+        let msg = response.message.unwrap();
+        // With BodyFormat::Both, body should contain text, and body_html should have HTML
+        assert!(msg.body.is_some());
+        assert!(msg.body_html.is_some());
+    }
+
+    #[test]
+    fn body_cache_stores_parsed_messages() {
+        use super::BODY_CACHE;
+
+        let test_path = std::path::PathBuf::from("/tmp/test.emlx");
+        let cached = CachedMessage {
+            body_text: Some("cached text".to_string()),
+            body_html: Some("<html>cached</html>".to_string()),
+            attachments: vec![],
+        };
+
+        // Insert into cache
+        {
+            let mut cache = BODY_CACHE.lock().expect("lock");
+            cache.put(test_path.clone(), cached.clone());
+        }
+
+        // Retrieve from cache
+        {
+            let mut cache = BODY_CACHE.lock().expect("lock");
+            let retrieved = cache.get(&test_path).expect("cached entry");
+            assert_eq!(retrieved.body_text, Some("cached text".to_string()));
+            assert_eq!(retrieved.body_html, Some("<html>cached</html>".to_string()));
+        }
+    }
 }

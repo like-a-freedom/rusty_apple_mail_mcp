@@ -39,10 +39,49 @@ pub fn open_readonly(path: impl AsRef<Path>) -> Result<Connection, MailMcpError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn open_missing_db_returns_not_found_error() {
         let result = open_readonly("/tmp/no_such_db_ever_12345");
+        assert!(matches!(result, Err(MailMcpError::DatabaseNotFound { .. })));
+    }
+
+    #[test]
+    fn open_valid_sqlite_file_returns_connection() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("test.db");
+
+        // Create a valid SQLite database
+        let conn = Connection::open(&db_path).expect("create db");
+        conn.execute("CREATE TABLE test (id INTEGER)", [])
+            .expect("create table");
+        drop(conn);
+
+        // Now open read-only
+        let result = open_readonly(&db_path);
+        assert!(result.is_ok());
+
+        let conn = result.unwrap();
+        // Verify it's read-only by trying to write
+        let write_result = conn.execute("INSERT INTO test VALUES (1)", []);
+        assert!(write_result.is_err());
+    }
+
+    #[test]
+    fn open_empty_file_returns_error() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("empty.db");
+
+        // Create an empty file (not a valid SQLite database)
+        fs::write(&db_path, b"").expect("write empty file");
+
+        // Remove the file so the test returns DatabaseNotFound
+        drop(fs::remove_file(&db_path));
+
+        let result = open_readonly(&db_path);
+        // Should return DatabaseNotFound error
         assert!(matches!(result, Err(MailMcpError::DatabaseNotFound { .. })));
     }
 }

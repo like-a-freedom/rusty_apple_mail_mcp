@@ -323,4 +323,91 @@ mod tests {
         assert_eq!(full.body, None);
         assert_eq!(full.attachments.len(), 0);
     }
+
+    #[test]
+    fn message_full_with_cc_and_bcc_recipients() {
+        let row = MessageRow {
+            rowid: 42,
+            subject: Some("Test Subject".to_string()),
+            sender: Some("sender@example.com".to_string()),
+            mailbox_url: Some("imap://test/INBOX".to_string()),
+            date_sent: Some(748051200),
+            date_received: Some(748051200),
+            message_id: Some("<test@mail>".to_string()),
+            global_message_id: Some(7),
+            message_id_header: Some("<test@mail>".to_string()),
+        };
+
+        // Recipients: (address, type) where type 1=To, 2=CC, 3=BCC
+        let recipients = vec![
+            ("to1@example.com".to_string(), 1),
+            ("to2@example.com".to_string(), 1),
+            ("cc1@example.com".to_string(), 2),
+            ("cc2@example.com".to_string(), 2),
+            ("bcc@example.com".to_string(), 3), // Should be ignored
+        ];
+
+        let full = MessageFull::from_row_with_recipients(&row, &recipients, COREDATA_EPOCH_OFFSET);
+
+        assert_eq!(full.to.len(), 2);
+        assert!(full.to.contains(&"to1@example.com".to_string()));
+        assert!(full.to.contains(&"to2@example.com".to_string()));
+
+        assert_eq!(full.cc.len(), 2);
+        assert!(full.cc.contains(&"cc1@example.com".to_string()));
+        assert!(full.cc.contains(&"cc2@example.com".to_string()));
+    }
+
+    #[test]
+    fn message_meta_with_body_preview_and_attachment_count_chain() {
+        let row = MessageRow {
+            rowid: 42,
+            subject: Some("Test".to_string()),
+            sender: Some("sender@example.com".to_string()),
+            mailbox_url: Some("imap://test/INBOX".to_string()),
+            date_sent: None,
+            date_received: None,
+            message_id: None,
+            global_message_id: None,
+            message_id_header: None,
+        };
+
+        let meta = MessageMeta::from_row(&row, 0)
+            .with_body_preview("Preview text")
+            .with_attachment_count(3);
+
+        assert_eq!(meta.body_preview, Some("Preview text".to_string()));
+        assert_eq!(meta.attachment_count, 3);
+    }
+
+    #[test]
+    fn message_full_with_body_and_attachments_chain() {
+        let row = MessageRow {
+            rowid: 42,
+            subject: Some("Test".to_string()),
+            sender: Some("sender@example.com".to_string()),
+            mailbox_url: Some("imap://test/INBOX".to_string()),
+            date_sent: None,
+            date_received: None,
+            message_id: None,
+            global_message_id: None,
+            message_id_header: None,
+        };
+
+        let attachment = AttachmentMeta {
+            id: "42:0".to_string(),
+            filename: "test.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size_bytes: 1024,
+            is_inline: false,
+        };
+
+        let full = MessageFull::from_row_with_recipients(&row, &[], 0)
+            .with_body("Test body content")
+            .with_attachments(vec![attachment.clone()]);
+
+        assert_eq!(full.body, Some("Test body content".to_string()));
+        assert_eq!(full.attachments.len(), 1);
+        assert_eq!(full.attachments[0].filename, "test.pdf");
+    }
 }

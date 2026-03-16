@@ -382,4 +382,89 @@ mod tests {
 
         assert!(error.to_string().contains("ambiguous"));
     }
+
+    #[test]
+    fn normalize_selector_trims_and_lowercases() {
+        assert_eq!(normalize_selector("  KASPERSKY  "), "kaspersky");
+        assert_eq!(normalize_selector("User@Example.com"), "user@example.com");
+        assert_eq!(normalize_selector(""), "");
+        assert_eq!(normalize_selector("  "), "");
+    }
+
+    #[test]
+    fn normalize_email_requires_at_symbol() {
+        assert_eq!(
+            normalize_email("user@example.com"),
+            Some("user@example.com".to_string())
+        );
+        assert_eq!(
+            normalize_email("  USER@EXAMPLE.COM  "),
+            Some("user@example.com".to_string())
+        );
+        assert_eq!(normalize_email("not-an-email"), None);
+        assert_eq!(normalize_email(""), None);
+        assert_eq!(normalize_email("  "), None);
+    }
+
+    #[test]
+    fn extract_printable_fragments_skips_short_sequences() {
+        // Sequences < 3 bytes are skipped
+        let bytes = b"AB\x00CD\x00XYZ";
+        let fragments = extract_printable_fragments(bytes);
+        assert_eq!(fragments, vec!["XYZ"]);
+
+        // Empty bytes
+        let fragments = extract_printable_fragments(b"");
+        assert!(fragments.is_empty());
+
+        // All non-printable
+        let fragments = extract_printable_fragments(&[0x00, 0x01, 0x02]);
+        assert!(fragments.is_empty());
+    }
+
+    #[test]
+    fn is_archive_noise_detects_common_patterns() {
+        assert!(is_archive_noise("$null"));
+        assert!(is_archive_noise("$objects"));
+        assert!(is_archive_noise("$top"));
+        assert!(is_archive_noise("$class"));
+        assert!(is_archive_noise("NSKeyedArchiver"));
+        assert!(is_archive_noise("NSDictionary"));
+        assert!(is_archive_noise("NSArray"));
+        assert!(is_archive_noise("NSString"));
+        assert!(is_archive_noise("NSObject"));
+        assert!(is_archive_noise("NS.keys"));
+        assert!(is_archive_noise("NS.objects"));
+        assert!(is_archive_noise("$custom"));
+        assert!(!is_archive_noise("John Doe"));
+        assert!(!is_archive_noise("Hello World"));
+    }
+
+    #[test]
+    fn selector_matches_checks_all_fields() {
+        let account = AccountMetadata {
+            account_id: "ews://test-uuid".to_string(),
+            account_name: Some("Test Account".to_string()),
+            email: Some("test@example.com".to_string()),
+            username: Some("testuser".to_string()),
+            source_identifier: "test-uuid".to_string(),
+            account_type: "ews".to_string(),
+        };
+
+        // Match by account name (case-insensitive)
+        assert!(selector_matches(&account, "test account"));
+
+        // Match by email
+        assert!(selector_matches(&account, "test@example.com"));
+
+        // Match by username
+        assert!(selector_matches(&account, "testuser"));
+
+        // Match by account_id
+        assert!(selector_matches(&account, "ews://test-uuid"));
+
+        // No match
+        assert!(!selector_matches(&account, "unknown"));
+        assert!(!selector_matches(&account, "other@example.com"));
+    }
 }
