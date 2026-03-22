@@ -85,7 +85,7 @@ The server is configured **only** through environment variables:
 |---|---|---|---|
 | `APPLE_MAIL_DIR` | no | `~/Library/Mail` | Root folder of the Mail data |
 | `APPLE_MAIL_VERSION` | no | `V10` | Envelope Index version subdirectory |
-| `APPLE_MAIL_ACCOUNT` | no | unset | Comma-separated account selectors such as `Kaspersky` or `anton.solovey@kaspersky.com`; when set, the whole server is restricted to the resolved account(s) |
+| `APPLE_MAIL_ACCOUNT` | no | unset | Comma-separated account selectors such as `Work Email` or `user@example.com`; when set, the whole server is restricted to the resolved account(s) |
 | `RUST_LOG` | no | unset | Standard Rust tracing filter used by `tracing_subscriber`; controls server logs written to stderr |
 
 Example setup:
@@ -93,7 +93,7 @@ Example setup:
 ```bash
 export APPLE_MAIL_DIR="$HOME/Library/Mail"
 export APPLE_MAIL_VERSION="V10"
-export APPLE_MAIL_ACCOUNT="Kaspersky"
+export APPLE_MAIL_ACCOUNT="Work Email"
 export RUST_LOG="warn"
 ```
 
@@ -146,7 +146,7 @@ Example minimum `.vscode/mcp.json` configuration:
             "env": {
                 "APPLE_MAIL_DIR": "/Users/your-user/Library/Mail",
                 "APPLE_MAIL_VERSION": "V10",
-                "APPLE_MAIL_ACCOUNT": "Kaspersky",
+                "APPLE_MAIL_ACCOUNT": "Work Email",
                 "RUST_LOG": "warn"
             }
         }

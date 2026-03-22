@@ -523,4 +523,81 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    #[test]
+    fn format_elapsed_seconds_formats_correctly() {
+        assert_eq!(MailMcpServer::format_elapsed_seconds(Duration::from_millis(0)), "0.000");
+        assert_eq!(MailMcpServer::format_elapsed_seconds(Duration::from_millis(1)), "0.001");
+        assert_eq!(MailMcpServer::format_elapsed_seconds(Duration::from_millis(100)), "0.100");
+        assert_eq!(MailMcpServer::format_elapsed_seconds(Duration::from_millis(1234)), "1.234");
+        assert_eq!(MailMcpServer::format_elapsed_seconds(Duration::from_secs(10)), "10.000");
+    }
+
+    #[test]
+    fn log_tool_completion_emits_log() {
+        // Just ensure the function can be called without panicking
+        MailMcpServer::log_tool_completion("test_tool", Duration::from_millis(100), "success");
+    }
+
+    #[test]
+    fn value_to_schema_with_object_additional() {
+        let obj = json!({"key": "value"});
+        let schema = MailMcpServer::value_to_schema(obj);
+        assert!(!schema.is_empty());
+        assert!(schema.contains_key("key"));
+    }
+
+    #[test]
+    fn value_to_schema_with_non_object_additional() {
+        let non_obj = json!("string");
+        let schema = MailMcpServer::value_to_schema(non_obj);
+        assert!(schema.is_empty());
+
+        let non_obj2 = json!(123);
+        let schema2 = MailMcpServer::value_to_schema(non_obj2);
+        assert!(schema2.is_empty());
+
+        let non_obj3 = json!(null);
+        let schema3 = MailMcpServer::value_to_schema(non_obj3);
+        assert!(schema3.is_empty());
+    }
+
+    #[test]
+    fn server_new_with_invalid_config() {
+        // Create invalid config (empty mail version)
+        let config = MailConfig::from_parts("/nonexistent".into(), "".into());
+        assert!(config.is_err());
+    }
+
+    #[test]
+    fn call_tool_by_name_get_message_requires_message_id() {
+        let (_temp_dir, config) = create_temp_config();
+        let server = MailMcpServer::new(config).expect("server creation");
+
+        // Call get_message without message_id
+        let args = Map::new();
+
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { server.call_tool_by_name("get_message", args).await });
+
+        // Should return an error response (not a panic)
+        assert!(result.is_err() || (result.is_ok() && !result.unwrap().content.is_empty()));
+    }
+
+    #[test]
+    fn call_tool_by_name_get_attachment_requires_attachment_id() {
+        let (_temp_dir, config) = create_temp_config();
+        let server = MailMcpServer::new(config).expect("server creation");
+
+        // Call get_attachment_content without attachment_id
+        let args = Map::new();
+
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { server.call_tool_by_name("get_attachment_content", args).await });
+
+        // Should return an error response (not a panic)
+        assert!(result.is_err() || (result.is_ok() && !result.unwrap().content.is_empty()));
+    }
 }

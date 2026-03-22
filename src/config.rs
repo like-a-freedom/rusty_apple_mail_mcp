@@ -265,32 +265,32 @@ mod tests {
     fn from_parts_with_accounts_enforces_allowlist_helpers() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
         let metadata = HashMap::from([(
-            "ews://kaspersky".to_string(),
+            "ews://work".to_string(),
             AccountMetadata {
-                account_id: "ews://kaspersky".to_string(),
-                account_name: Some("Kaspersky".to_string()),
-                email: Some("anton.solovey@kaspersky.com".to_string()),
-                username: Some("KL\\solovey".to_string()),
-                source_identifier: "kaspersky".to_string(),
+                account_id: "ews://work".to_string(),
+                account_name: Some("Work Email".to_string()),
+                email: Some("user@work.example.com".to_string()),
+                username: Some("user\\work".to_string()),
+                source_identifier: "work".to_string(),
                 account_type: "ews".to_string(),
             },
         )]);
         let cfg = MailConfig::from_parts_with_accounts(
             mail_directory,
             mail_version,
-            Some(vec!["ews://kaspersky".to_string()]),
+            Some(vec!["ews://work".to_string()]),
             metadata,
         )
         .expect("config with allowlist");
 
-        assert!(cfg.is_account_allowed("ews://kaspersky"));
+        assert!(cfg.is_account_allowed("ews://work"));
         assert!(!cfg.is_account_allowed("imap://personal"));
-        assert!(cfg.is_mailbox_allowed("ews://kaspersky/Inbox"));
+        assert!(cfg.is_mailbox_allowed("ews://work/Inbox"));
         assert!(!cfg.is_mailbox_allowed("imap://personal/INBOX"));
         assert_eq!(
-            cfg.account_metadata("ews://kaspersky")
+            cfg.account_metadata("ews://work")
                 .and_then(|account| account.email.as_deref()),
-            Some("anton.solovey@kaspersky.com")
+            Some("user@work.example.com")
         );
     }
 
@@ -318,15 +318,15 @@ mod tests {
     #[test]
     fn parse_account_selectors_splits_and_trims_values() {
         let selectors = parse_account_selectors(Some(
-            " Kaspersky, anton.solovey@kaspersky.com ,imap://personal ",
+            " Work Email, user@work.example.com ,imap://personal ",
         ))
         .expect("selectors should parse");
 
         assert_eq!(
             selectors,
             vec![
-                "Kaspersky",
-                "anton.solovey@kaspersky.com",
+                "Work Email",
+                "user@work.example.com",
                 "imap://personal"
             ]
         );

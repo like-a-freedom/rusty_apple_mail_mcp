@@ -32,11 +32,11 @@ fn list_accounts_returns_distinct_accounts() {
     assert_eq!(response.accounts[1].account_id, "imap://account-a");
     assert_eq!(
         response.accounts[0].account_name.as_deref(),
-        Some("Kaspersky")
+        Some("Work Email")
     );
     assert_eq!(
         response.accounts[0].email.as_deref(),
-        Some("anton.solovey@kaspersky.com")
+        Some("user@work.example.com")
     );
 }
 

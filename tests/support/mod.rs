@@ -126,9 +126,9 @@ pub fn make_account_metadata() -> HashMap<String, AccountMetadata> {
             "ews://account-b".to_string(),
             AccountMetadata {
                 account_id: "ews://account-b".to_string(),
-                account_name: Some("Kaspersky".to_string()),
-                email: Some("anton.solovey@kaspersky.com".to_string()),
-                username: Some("KL\\solovey".to_string()),
+                account_name: Some("Work Email".to_string()),
+                email: Some("user@work.example.com".to_string()),
+                username: Some("user\\work".to_string()),
                 source_identifier: "account-b".to_string(),
                 account_type: "ews".to_string(),
             },

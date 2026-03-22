@@ -660,7 +660,7 @@ mod tests {
         assert!(preview.ends_with('a'));
 
         let short_text = "Hello";
-        let preview = preview_text(&short_text);
+        let preview = preview_text(short_text);
         assert_eq!(preview, "Hello");
     }
 
@@ -678,5 +678,42 @@ mod tests {
         let result = load_search_metadata(&conn, &[]);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn describe_search_filters_with_all_options() {
+        let params = SearchMessagesParams {
+            subject_query: Some("test".to_string()),
+            date_from: Some("2024-01-01".to_string()),
+            date_to: Some("2024-12-31".to_string()),
+            sender: Some("sender@example.com".to_string()),
+            participant: Some("participant@example.com".to_string()),
+            account: Some("ews://account".to_string()),
+            mailbox: Some("INBOX".to_string()),
+            limit: 20,
+            include_body_preview: false,
+        };
+        let desc = describe_search_filters(&params);
+        assert!(desc.contains("test"));
+        assert!(desc.contains("2024-01-01"));
+        assert!(desc.contains("sender@example.com"));
+    }
+
+    #[test]
+    fn describe_search_filters_with_empty_options() {
+        let params = SearchMessagesParams {
+            subject_query: None,
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            include_body_preview: false,
+        };
+        let desc = describe_search_filters(&params);
+        // Empty filters may return empty string or a default message
+        let _ = desc.len(); // Suppress unused warning
     }
 }

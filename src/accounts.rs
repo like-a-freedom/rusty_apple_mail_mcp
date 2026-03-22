@@ -307,13 +307,13 @@ mod tests {
                 (3, 'com.apple.account.OnMyDevice', 'On My Device');
 
             INSERT INTO ZACCOUNT VALUES
-                (10, 'Kaspersky', 'KL\\solovey', 'EWS-UUID', 1),
+                (10, 'Work Email', 'user\\work', 'EWS-UUID', 1),
                 (20, 'Personal Gmail', 'solovey.anton@gmail.com', 'IMAP-UUID', 2),
                 (30, 'On My Mac', NULL, 'LOCAL-UUID', 3);
 
             INSERT INTO ZACCOUNTPROPERTY VALUES
-                (1, 10, 'IdentityEmailAddress', x'616E746F6E2E736F6C6F766579406B6173706572736B792E636F6D'),
-                (2, 10, 'ACPropertyFullName', x'416E746F6E20536F6C6F766579202D204B6173706572736B79'),
+                (1, 10, 'IdentityEmailAddress', x'7573657240776F726B2E6578616D706C652E636F6D'),
+                (2, 10, 'ACPropertyFullName', x'576F726B2055736572'),
                 (3, 20, 'IdentityEmailAddress', x'736F6C6F7665792E616E746F6E40676D61696C2E636F6D');
             "#,
         )
@@ -329,10 +329,10 @@ mod tests {
 
         assert_eq!(accounts.len(), 3);
         let exchange = accounts.get("ews://EWS-UUID").expect("exchange account");
-        assert_eq!(exchange.account_name.as_deref(), Some("Kaspersky"));
+        assert_eq!(exchange.account_name.as_deref(), Some("Work Email"));
         assert_eq!(
             exchange.email.as_deref(),
-            Some("anton.solovey@kaspersky.com")
+            Some("user@work.example.com")
         );
 
         let imap = accounts.get("imap://IMAP-UUID").expect("imap account");
@@ -346,7 +346,7 @@ mod tests {
 
         let resolved = resolve_account_selectors(
             &[
-                "Kaspersky".to_string(),
+                "Work Email".to_string(),
                 "solovey.anton@gmail.com".to_string(),
             ],
             &accounts,
@@ -371,13 +371,13 @@ mod tests {
     fn resolve_account_selectors_rejects_ambiguous_selector() {
         let conn = make_accounts_db();
         conn.execute(
-            "INSERT INTO ZACCOUNT VALUES (40, 'Kaspersky', 'other@example.com', 'IMAP-UUID-2', 2)",
+            "INSERT INTO ZACCOUNT VALUES (40, 'Work Email', 'other@example.com', 'IMAP-UUID-2', 2)",
             [],
         )
         .expect("insert extra account");
 
         let accounts = load_account_metadata_with_conn(&conn).expect("accounts metadata");
-        let error = resolve_account_selectors(&["Kaspersky".to_string()], &accounts)
+        let error = resolve_account_selectors(&["Work Email".to_string()], &accounts)
             .expect_err("ambiguous selector should fail");
 
         assert!(error.to_string().contains("ambiguous"));
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn normalize_selector_trims_and_lowercases() {
-        assert_eq!(normalize_selector("  KASPERSKY  "), "kaspersky");
+        assert_eq!(normalize_selector("  WORK EMAIL  "), "work email");
         assert_eq!(normalize_selector("User@Example.com"), "user@example.com");
         assert_eq!(normalize_selector(""), "");
         assert_eq!(normalize_selector("  "), "");

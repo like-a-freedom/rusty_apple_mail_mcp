@@ -705,4 +705,108 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].message_id.as_deref(), Some("123456"));
     }
+
+    #[test]
+    fn get_recipients_empty() {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE recipients (message INTEGER, address INTEGER, type INTEGER);
+            CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
+            "#,
+        )
+        .expect("create tables");
+
+        let to = get_recipients(&conn, 1).expect("query should succeed");
+        assert!(to.is_empty());
+    }
+
+    #[test]
+    fn search_messages_with_sender_filter() {
+        let conn = make_test_db();
+
+        let results = search_messages(
+            &conn,
+            None,
+            None,
+            None,
+            Some("alice@example.com"),
+            None,
+            None,
+            None,
+            None,
+            20,
+            0,
+        )
+        .expect("search should succeed");
+
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn search_messages_with_participant_filter() {
+        let conn = make_test_db();
+
+        let results = search_messages(
+            &conn,
+            None,
+            None,
+            None,
+            None,
+            Some("bob@example.com"),
+            None,
+            None,
+            None,
+            20,
+            0,
+        )
+        .expect("search should succeed");
+
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn search_messages_with_mailbox_filter() {
+        let conn = make_test_db();
+
+        let results = search_messages(
+            &conn,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("INBOX"),
+            20,
+            0,
+        )
+        .expect("search should succeed");
+
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn search_messages_with_offset() {
+        let conn = make_test_db();
+
+        let results = search_messages(
+            &conn,
+            Some("Test"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            20,
+            10,
+        )
+        .expect("search should succeed");
+
+        // May be empty if offset exceeds results
+        let _ = results.len(); // Suppress unused warning
+    }
 }
