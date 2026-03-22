@@ -155,97 +155,57 @@ fn extract_text_from_html(bytes: &[u8]) -> ExtractionResult {
         }
     };
 
-    // Simple HTML to text conversion
-    // Strip tags and decode common HTML entities
-    let text = strip_html_tags(&html);
+    let text = html_to_plain_text(&html);
 
     ExtractionResult::Text {
         content: text,
-        method: "html_tag_stripping",
+        method: "html_to_plain_text",
     }
 }
 
-/// Strip HTML tags from a string and decode common entities.
-fn strip_html_tags(html: &str) -> String {
-    // Remove script and style elements
-    let mut result = html.to_string();
-    result = regex_replace(&result, r"(?s)<script[^>]*>.*?</script>", "");
-    result = regex_replace(&result, r"(?s)<style[^>]*>.*?</style>", "");
+/// Convert HTML to clean plain text via DOM parsing.
+///
+/// Removes script/style blocks, decodes entities, normalises whitespace.
+/// Use instead of returning raw HTML for LLM consumption.
+pub fn html_to_plain_text(html: &str) -> String {
+    use scraper::Html;
 
-    // Remove all other tags
-    result = regex_replace(&result, r"<[^>]*>", "");
+    let document = Html::parse_document(html);
 
-    // Decode common HTML entities
-    result = result.replace("&nbsp;", " ");
-    result = result.replace("&amp;", "&");
-    result = result.replace("&lt;", "<");
-    result = result.replace("&gt;", ">");
-    result = result.replace("&quot;", "\"");
-    result = result.replace("&#39;", "'");
-    result = result.replace("&apos;", "'");
+    let mut output = String::with_capacity(html.len() / 3);
 
-    // Normalize whitespace
-    result
-        .lines()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+    for node in document.root_element().descendants() {
+        // Skip script and style element text
+        if let Some(parent) = node.parent()
+            && let Some(elem) = parent.value().as_element()
+            && (elem.name() == "script" || elem.name() == "style")
+        {
+            continue;
+        }
+        if let Some(elem) = node.value().as_element()
+            && (elem.name() == "script" || elem.name() == "style")
+        {
+            continue;
+        }
 
-/// Simple regex-like replacement (handles basic patterns).
-fn regex_replace(text: &str, pattern: &str, replacement: &str) -> String {
-    // This is a very simplified replacement - for production use,
-    // consider adding the `regex` crate
-    if pattern.contains("(?s)") {
-        // Multiline mode - handle .*? matching
-        let pattern = pattern.replace("(?s)", "");
-        if pattern.contains(".*?") {
-            // Non-greedy match - simple implementation
-            let parts: Vec<&str> = pattern.split(".*?").collect();
-            if parts.len() == 2 {
-                return remove_between(text, parts[0], parts[1], replacement);
+        if let Some(text) = node.value().as_text() {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                output.push_str(trimmed);
+                output.push('\n');
             }
         }
     }
 
-    if pattern.contains("<[^>]*>") {
-        // Tag removal - character by character
-        let mut result = String::new();
-        let mut in_tag = false;
-        for c in text.chars() {
-            if c == '<' {
-                in_tag = true;
-            } else if c == '>' {
-                in_tag = false;
-            } else if !in_tag {
-                result.push(c);
-            }
-        }
-        return result;
+    // Collapse 3+ newlines → 2
+    let mut prev_len = 0;
+    while output.len() != prev_len {
+        prev_len = output.len();
+        let collapsed = output.replace("\n\n\n", "\n\n");
+        output = collapsed;
     }
 
-    text.to_string()
-}
-
-/// Remove content between start and end markers.
-fn remove_between(text: &str, start: &str, end: &str, replacement: &str) -> String {
-    let mut result = String::new();
-    let mut remaining = text;
-
-    while let Some(start_pos) = remaining.find(start) {
-        result.push_str(&remaining[..start_pos + start.len()]);
-        remaining = &remaining[start_pos + start.len()..];
-
-        if let Some(end_pos) = remaining.find(end) {
-            remaining = &remaining[end_pos + end.len()..];
-        } else {
-            break;
-        }
-    }
-
-    result.push_str(remaining);
-    result.replace(&format!("{start}{end}"), replacement)
+    output
 }
 
 #[cfg(test)]
@@ -448,10 +408,14 @@ mod tests {
         let result = extract_text(bytes, "text/html");
         assert!(matches!(result, ExtractionResult::Text { .. }));
         if let ExtractionResult::Text { content, .. } = result {
-            // The implementation strips tags but may leave some artifacts
-            // Just check that the main content is present
+            assert!(content.contains("text"), "should contain body text");
             assert!(
-                content.contains("text") || content.contains("alert") || content.contains("body")
+                !content.contains("alert"),
+                "script content should be stripped"
+            );
+            assert!(
+                !content.contains("body{}"),
+                "style content should be stripped"
             );
         }
     }
@@ -665,5 +629,41 @@ mod tests {
         if let ExtractionResult::NotSupported { reason } = result {
             assert!(reason.contains("PDF"));
         }
+    }
+
+    #[test]
+    fn html_to_plain_text_strips_tracker_pixel() {
+        let html = "<html><body><p>Real content</p><img src=\"https://tracker.example.com/pixel.gif\" width=\"1\" height=\"1\"></body></html>";
+        let text = html_to_plain_text(html);
+        assert!(text.contains("Real content"));
+        assert!(!text.contains("tracker.example.com"));
+        assert!(!text.contains("pixel.gif"));
+    }
+
+    #[test]
+    fn html_to_plain_text_strips_inline_css() {
+        let html = "<html><head><style>.header { color: red; font-size: 14px; }</style></head><body><div style=\"margin: 0;\">Hello</div></body></html>";
+        let text = html_to_plain_text(html);
+        assert!(text.contains("Hello"));
+        assert!(!text.contains("color: red"));
+        assert!(!text.contains("font-size"));
+    }
+
+    #[test]
+    fn html_to_plain_text_handles_corporate_email() {
+        let html = r#"<html>
+            <head><style>body { font-family: Arial; }</style></head>
+            <body>
+                <table>
+                    <tr><td><img src="logo.png" alt="Logo"></td></tr>
+                    <tr><td><p>Dear team,</p><p>Please review the attached document.</p></td></tr>
+                    <tr><td style="font-size:10px">Footer text</td></tr>
+                </table>
+            </body></html>"#;
+        let text = html_to_plain_text(html);
+        assert!(text.contains("Dear team,"));
+        assert!(text.contains("Please review the attached document."));
+        assert!(text.contains("Footer text"));
+        assert!(!text.contains("font-family"));
     }
 }

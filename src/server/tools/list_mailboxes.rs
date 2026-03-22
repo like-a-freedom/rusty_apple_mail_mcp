@@ -10,11 +10,13 @@ use crate::db::{
     open_readonly,
 };
 use crate::error::MailMcpError;
+use crate::server::tools::ResponseStatus;
 
 /// Response for list_mailboxes tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ListMailboxesResponse {
-    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ResponseStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mailboxes: Vec<MailboxResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,7 +50,7 @@ pub fn list_mailboxes_with_conn(
 
     if mailboxes.is_empty() {
         return Ok(ListMailboxesResponse {
-            status: "not_found".to_string(),
+            status: Some(ResponseStatus::NotFound),
             mailboxes: vec![],
             total_count: Some(0),
             guidance: Some("No mailboxes found. Apple Mail may not be configured.".to_string()),
@@ -71,7 +73,7 @@ pub fn list_mailboxes_with_conn(
         .collect::<Vec<_>>();
 
     Ok(ListMailboxesResponse {
-        status: "success".to_string(),
+        status: None,
         total_count: Some(results.len() as u32),
         guidance: None,
         mailboxes: results,
@@ -143,7 +145,7 @@ mod tests {
         let (_temp_dir, config) = make_test_config();
         let response = list_mailboxes_with_conn(&config, &conn).unwrap();
 
-        assert_eq!(response.status, "success");
+        assert_eq!(response.status, None);
         assert_eq!(response.total_count, Some(2));
         assert_eq!(response.mailboxes.len(), 2);
         // Verify mailbox names
@@ -165,7 +167,7 @@ mod tests {
         .expect("valid config");
         let response = list_mailboxes_with_conn(&config, &conn).unwrap();
 
-        assert_eq!(response.status, "success");
+        assert_eq!(response.status, None);
         assert_eq!(response.total_count, Some(1));
         assert_eq!(response.mailboxes.len(), 1);
         assert_eq!(response.mailboxes[0].name, "Inbox");
@@ -195,7 +197,7 @@ mod tests {
         let (_temp_dir, config) = make_test_config();
         let response = list_mailboxes_with_conn(&config, &conn).unwrap();
 
-        assert_eq!(response.status, "not_found");
+        assert_eq!(response.status, Some(ResponseStatus::NotFound));
         assert_eq!(response.total_count, Some(0));
         assert!(response.guidance.is_some());
     }
@@ -206,7 +208,7 @@ mod tests {
         let (_temp_dir, config) = make_test_config();
         let response = list_mailboxes_with_conn(&config, &conn).unwrap();
 
-        assert_eq!(response.status, "success");
+        assert_eq!(response.status, None);
         let inbox = response
             .mailboxes
             .iter()

@@ -18,6 +18,7 @@ use crate::error::MailMcpError;
 use crate::mail::{
     locate_emlx_with_hints, parse_emlx_without_attachment_content, raw_attachments_to_meta,
 };
+use crate::server::tools::ResponseStatus;
 
 /// LRU cache for parsed .emlx bodies keyed by resolved path.
 static BODY_CACHE: once_cell::sync::Lazy<Mutex<LruCache<std::path::PathBuf, CachedMessage>>> =
@@ -46,6 +47,10 @@ pub struct GetMessageParams {
     /// Body format: "text", "html", or "both"
     #[serde(default)]
     pub body_format: BodyFormat,
+    /// Include To/CC recipients lists (default false).
+    /// Enable when you need to check who received the message.
+    #[serde(default)]
+    pub include_recipients: bool,
 }
 
 fn default_true() -> bool {
@@ -65,7 +70,8 @@ pub enum BodyFormat {
 /// Response for get_message tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct GetMessageResponse {
-    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ResponseStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<GetMessageResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -101,7 +107,7 @@ pub fn get_message_with_conn(
         Ok(id) => id,
         Err(_) => {
             return Ok(GetMessageResponse {
-                status: "error".to_string(),
+                status: Some(ResponseStatus::Error),
                 message: None,
                 guidance: Some(
                     "Invalid message_id format. Expected a numeric ID from search results."
@@ -117,7 +123,7 @@ pub fn get_message_with_conn(
         Some(row) => row,
         None => {
             return Ok(GetMessageResponse {
-                status: "not_found".to_string(),
+                status: Some(ResponseStatus::NotFound),
                 message: None,
                 guidance: Some(
                     "Message not found in the index. The message_id may be incorrect or the message was deleted."
@@ -131,7 +137,7 @@ pub fn get_message_with_conn(
         && !config.is_mailbox_allowed(mailbox_url)
     {
         return Ok(GetMessageResponse {
-            status: "error".to_string(),
+            status: Some(ResponseStatus::Error),
             message: None,
             guidance: Some(
                 "This message belongs to an account excluded by APPLE_MAIL_ACCOUNT.".to_string(),
@@ -163,8 +169,16 @@ pub fn get_message_with_conn(
         message_id_header: row.message_id_header.clone().or(row.message_id.clone()),
         subject: row.subject.clone().unwrap_or_default(),
         from: row.sender.clone().unwrap_or_default(),
-        to,
-        cc,
+        to: if params.include_recipients {
+            to
+        } else {
+            Vec::new()
+        },
+        cc: if params.include_recipients {
+            cc
+        } else {
+            Vec::new()
+        },
         date_sent: row
             .date_sent
             .map(|ts| crate::domain::timestamp_to_iso(ts, epoch_offset_s)),
@@ -225,7 +239,7 @@ pub fn get_message_with_conn(
                     }
                     Err(MailMcpError::BodyFileNotFound { .. }) => {
                         return Ok(GetMessageResponse {
-                            status: "partial".to_string(),
+                            status: Some(ResponseStatus::Partial),
                             message: Some(result),
                             guidance: Some(
                                 "Message body file not found on disk (emlx missing). The message index entry exists but the local file may have been deleted or not yet downloaded. Try another message or check Mail sync status.".to_string(),
@@ -240,7 +254,7 @@ pub fn get_message_with_conn(
                             error
                         );
                         return Ok(GetMessageResponse {
-                            status: "partial".to_string(),
+                            status: Some(ResponseStatus::Partial),
                             message: Some(result),
                             guidance: Some(
                                 "Message metadata was loaded, but the body could not be parsed from the local message file.".to_string(),
@@ -252,13 +266,18 @@ pub fn get_message_with_conn(
 
             if params.include_body {
                 result.body = match params.body_format {
-                    BodyFormat::Text => body_text,
+                    BodyFormat::Text => body_text
+                        .or_else(|| body_html.as_deref().map(crate::mail::html_to_plain_text)),
                     BodyFormat::Html => body_html.clone(),
-                    BodyFormat::Both => body_text.or(body_html.clone()),
+                    BodyFormat::Both => {
+                        let text = body_text
+                            .or_else(|| body_html.as_deref().map(crate::mail::html_to_plain_text));
+                        if matches!(params.body_format, BodyFormat::Both) {
+                            result.body_html = body_html;
+                        }
+                        text
+                    }
                 };
-                if matches!(params.body_format, BodyFormat::Both) {
-                    result.body_html = body_html;
-                }
             }
 
             if params.include_attachments_summary {
@@ -277,7 +296,7 @@ pub fn get_message_with_conn(
             );
         } else {
             return Ok(GetMessageResponse {
-                status: "partial".to_string(),
+                status: Some(ResponseStatus::Partial),
                 message: Some(result),
                 guidance: Some(
                     "No local message file matched this message inside the mailbox subtree. The message may not be downloaded, may only exist as a partial cache entry, or the local Mail storage layout may differ from the indexed metadata.".to_string(),
@@ -296,7 +315,7 @@ pub fn get_message_with_conn(
     );
 
     Ok(GetMessageResponse {
-        status: "success".to_string(),
+        status: None,
         message: Some(result),
         guidance: None,
     })
@@ -392,11 +411,12 @@ mod tests {
             include_body: false,
             include_attachments_summary: false,
             body_format: BodyFormat::Text,
+            include_recipients: false,
         };
 
         let response = get_message_with_conn(&config, &conn, params).unwrap();
 
-        assert_eq!(response.status, "error");
+        assert_eq!(response.status, Some(ResponseStatus::Error));
         assert!(response.guidance.is_some());
         assert!(
             response
@@ -416,11 +436,12 @@ mod tests {
             include_body: false,
             include_attachments_summary: false,
             body_format: BodyFormat::Text,
+            include_recipients: false,
         };
 
         let response = get_message_with_conn(&config, &conn, params).unwrap();
 
-        assert_eq!(response.status, "not_found");
+        assert_eq!(response.status, Some(ResponseStatus::NotFound));
         assert!(response.guidance.is_some());
         assert!(response.guidance.unwrap().contains("Message not found"));
     }
@@ -435,11 +456,12 @@ mod tests {
             include_body: false,
             include_attachments_summary: false,
             body_format: BodyFormat::Text,
+            include_recipients: false,
         };
 
         let response = get_message_with_conn(&config, &conn, params).unwrap();
 
-        assert_eq!(response.status, "error");
+        assert_eq!(response.status, Some(ResponseStatus::Error));
         assert!(response.guidance.is_some());
         assert!(
             response
@@ -459,11 +481,12 @@ mod tests {
             include_body: false,
             include_attachments_summary: false,
             body_format: BodyFormat::Text,
+            include_recipients: false,
         };
 
         let response = get_message_with_conn(&config, &conn, params).unwrap();
 
-        assert_eq!(response.status, "success");
+        assert_eq!(response.status, None);
         assert!(response.message.is_some());
         let msg = response.message.unwrap();
         assert_eq!(msg.id, "1");
@@ -504,11 +527,12 @@ mod tests {
             include_body: true,
             include_attachments_summary: false,
             body_format: BodyFormat::Text,
+            include_recipients: false,
         };
 
         let response = get_message_with_conn(&config, &conn, params).unwrap();
 
-        assert_eq!(response.status, "success");
+        assert_eq!(response.status, None);
         assert!(response.message.is_some());
         let msg = response.message.unwrap();
         assert!(msg.body.is_some());
@@ -546,11 +570,12 @@ mod tests {
             include_body: true,
             include_attachments_summary: false,
             body_format: BodyFormat::Html,
+            include_recipients: false,
         };
 
         let response = get_message_with_conn(&config, &conn, params).unwrap();
 
-        assert_eq!(response.status, "success");
+        assert_eq!(response.status, None);
         let msg = response.message.unwrap();
         assert!(msg.body.is_some());
         assert!(msg.body.unwrap().contains("<html>"));
@@ -596,11 +621,12 @@ mod tests {
             include_body: true,
             include_attachments_summary: false,
             body_format: BodyFormat::Both,
+            include_recipients: false,
         };
 
         let response = get_message_with_conn(&config, &conn, params).unwrap();
 
-        assert_eq!(response.status, "success");
+        assert_eq!(response.status, None);
         let msg = response.message.unwrap();
         // With BodyFormat::Both, body should contain text, and body_html should have HTML
         assert!(msg.body.is_some());

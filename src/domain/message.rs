@@ -19,12 +19,12 @@ use crate::domain::attachment::AttachmentMeta;
 ///
 /// # Returns
 ///
-/// ISO 8601 formatted string (RFC 3339)
+/// Compact ISO 8601 string without seconds (e.g. `2024-09-15T00:00Z`)
 pub fn timestamp_to_iso(ts: i64, epoch_offset_s: i64) -> String {
     let unix_ts = ts + epoch_offset_s;
     Utc.timestamp_opt(unix_ts, 0)
         .single()
-        .map(|dt: DateTime<Utc>| dt.to_rfc3339())
+        .map(|dt: DateTime<Utc>| dt.format("%Y-%m-%dT%H:%MZ").to_string())
         .unwrap_or_else(|| format!("invalid_ts:{ts}"))
 }
 
@@ -43,8 +43,6 @@ pub struct MessageMeta {
     pub date_received: Option<String>,
     /// Mailbox name (extracted from mailbox URL)
     pub mailbox: String,
-    /// Whether the message has a body available
-    pub has_body: bool,
     /// Number of attachments
     pub attachment_count: u32,
     /// Preview of the body text (~200 characters), if requested
@@ -72,7 +70,6 @@ impl MessageMeta {
                 .date_received
                 .map(|ts| timestamp_to_iso(ts, epoch_offset_s)),
             mailbox,
-            has_body: true,      // Assume true; actual check happens when reading emlx
             attachment_count: 0, // Will be populated from emlx parsing
             body_preview: None,
         }
@@ -193,9 +190,8 @@ mod tests {
         // Very negative timestamps will produce dates far in the past
         // but chrono is permissive, so we just check it produces a valid ISO string
         let iso = timestamp_to_iso(-999999999999, COREDATA_EPOCH_OFFSET);
-        // Should still produce a valid ISO 8601 string (contains 'T' and timezone)
+        // Should still produce a valid ISO 8601 string (contains 'T')
         assert!(iso.contains('T'));
-        assert!(iso.contains('+') || iso.contains('-'));
     }
 
     #[test]

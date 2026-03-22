@@ -24,9 +24,9 @@ fn tool_definitions_are_all_read_only() {
 fn list_accounts_returns_distinct_accounts() {
     let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
-    let response = list_accounts_with_conn(&config, &conn).unwrap();
+    let response = list_accounts_with_conn(&config, &conn, ListAccountsParams::default()).unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     assert_eq!(response.total_count, Some(2));
     assert_eq!(response.accounts[0].account_id, "ews://account-b");
     assert_eq!(response.accounts[1].account_id, "imap://account-a");
@@ -45,9 +45,9 @@ fn list_accounts_hides_disallowed_accounts() {
     let conn = make_test_db();
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
 
-    let response = list_accounts_with_conn(&config, &conn).unwrap();
+    let response = list_accounts_with_conn(&config, &conn, ListAccountsParams::default()).unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     assert_eq!(response.total_count, Some(1));
     assert_eq!(response.accounts[0].account_id, "ews://account-b");
 }
@@ -74,7 +74,7 @@ fn search_by_subject_returns_matching_messages() {
     )
     .unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     assert_eq!(response.total_count, 1);
     assert_eq!(response.messages[0].subject, "Q3 Review");
 }
@@ -101,7 +101,7 @@ fn search_by_account_returns_only_matching_messages() {
     )
     .unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     assert_eq!(response.total_count, 1);
     assert_eq!(response.messages[0].mailbox, "Inbox");
     assert_eq!(response.messages[0].subject, "Budget Planning");
@@ -129,7 +129,7 @@ fn search_messages_defaults_to_allowed_accounts_only() {
     )
     .unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     assert_eq!(response.total_count, 1);
     assert_eq!(response.messages[0].id, "2");
 }
@@ -156,7 +156,7 @@ fn search_messages_rejects_disallowed_explicit_account_filter() {
     )
     .unwrap();
 
-    assert_eq!(response.status, "error");
+    assert_eq!(response.status, Some(ResponseStatus::Error));
     assert!(
         response
             .guidance
@@ -216,7 +216,7 @@ fn search_messages_reports_attachment_count_without_body_preview() {
     )
     .unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     assert_eq!(response.total_count, 1);
     assert_eq!(response.messages[0].attachment_count, 1);
     assert_eq!(response.messages[0].body_preview, None);
@@ -252,7 +252,7 @@ fn search_messages_prefers_database_summary_and_attachment_metadata() {
     )
     .unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     assert_eq!(response.total_count, 1);
     assert_eq!(response.messages[0].attachment_count, 2);
     assert_eq!(
@@ -297,7 +297,7 @@ fn search_messages_falls_back_to_emlx_preview_when_database_summary_is_missing()
     )
     .unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     assert_eq!(response.total_count, 1);
     assert_eq!(
         response.messages[0].body_preview.as_deref(),
@@ -357,7 +357,7 @@ fn search_messages_counts_attachments_from_database_for_nested_mailbox_results()
     )
     .unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     assert_eq!(response.total_count, 1);
     assert_eq!(response.messages[0].attachment_count, 1);
 }
@@ -384,7 +384,7 @@ fn search_with_no_filters_returns_validation_error() {
     )
     .unwrap();
 
-    assert_eq!(response.status, "error");
+    assert_eq!(response.status, Some(ResponseStatus::Error));
     assert!(response.guidance.unwrap().contains("At least one filter"));
 }
 
@@ -425,11 +425,12 @@ fn get_message_returns_body_and_attachment_summary() {
             include_body: true,
             include_attachments_summary: true,
             body_format: BodyFormat::Text,
+            include_recipients: false,
         },
     )
     .unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     let message = response.message.expect("message payload");
     assert_eq!(message.subject, "Q3 Review");
     assert!(message.body.expect("body").contains("Hello from emlx body"));
@@ -476,7 +477,7 @@ fn get_attachment_content_returns_text_for_text_attachment() {
     )
     .unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     let attachment = response.attachment.expect("attachment payload");
     assert_eq!(attachment.mime_type, "text/plain");
     assert_eq!(attachment.content.expect("content"), "Attached text");
@@ -488,7 +489,7 @@ fn list_mailboxes_returns_all_mailboxes() {
     let (_temp_dir, config) = make_test_config();
     let response = list_mailboxes_with_conn(&config, &conn).unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     assert_eq!(response.total_count, Some(2));
     assert_eq!(response.mailboxes[0].name, "Inbox");
 }
@@ -500,7 +501,7 @@ fn list_mailboxes_hides_disallowed_accounts() {
 
     let response = list_mailboxes_with_conn(&config, &conn).unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     assert_eq!(response.total_count, Some(1));
     assert_eq!(
         response.mailboxes[0].account_id.as_deref(),
@@ -521,11 +522,12 @@ fn get_message_blocks_disallowed_accounts() {
             include_body: false,
             include_attachments_summary: false,
             body_format: BodyFormat::Text,
+            include_recipients: false,
         },
     )
     .unwrap();
 
-    assert_eq!(response.status, "error");
+    assert_eq!(response.status, Some(ResponseStatus::Error));
     assert!(
         response
             .guidance
@@ -573,7 +575,7 @@ fn get_attachment_blocks_disallowed_accounts() {
     )
     .unwrap();
 
-    assert_eq!(response.status, "error");
+    assert_eq!(response.status, Some(ResponseStatus::Error));
     assert!(
         response
             .guidance
@@ -615,11 +617,12 @@ fn get_message_reads_body_from_nested_mailbox_uuid_data_layout() {
             include_body: true,
             include_attachments_summary: true,
             body_format: BodyFormat::Text,
+            include_recipients: false,
         },
     )
     .unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     let message = response.message.expect("message payload");
     assert_eq!(message.mailbox, "Confluence");
     assert_eq!(message.body.as_deref(), Some("Nested mailbox body\n"));
@@ -679,11 +682,12 @@ fn get_message_prefers_message_id_match_over_wrong_numeric_hint() {
             include_body: true,
             include_attachments_summary: false,
             body_format: BodyFormat::Text,
+            include_recipients: false,
         },
     )
     .unwrap();
 
-    assert_eq!(response.status, "success");
+    assert_eq!(response.status, None);
     let message = response.message.expect("message payload");
     assert_eq!(message.body.as_deref(), Some("Correct Message-ID body\n"));
 }
@@ -722,10 +726,11 @@ fn get_message_uses_cache_for_repeated_calls() {
         include_body: true,
         include_attachments_summary: true,
         body_format: BodyFormat::Text,
+        include_recipients: false,
     };
 
     let first = get_message_with_conn(&config, &conn, params.clone()).unwrap();
-    assert_eq!(first.status, "success");
+    assert_eq!(first.status, None);
     let first_message = first.message.expect("first message");
     assert!(
         first_message
@@ -735,7 +740,7 @@ fn get_message_uses_cache_for_repeated_calls() {
     );
 
     let second = get_message_with_conn(&config, &conn, params).unwrap();
-    assert_eq!(second.status, "success");
+    assert_eq!(second.status, None);
     let second_message = second.message.expect("second message");
     assert!(
         second_message
