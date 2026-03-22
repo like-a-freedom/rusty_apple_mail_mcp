@@ -30,8 +30,8 @@ The current tool set is intentionally compact:
 | Tool | What it does |
 |---|---|
 | `search_messages` | Search by subject, dates, sender, participant, account, or mailbox |
-| `list_accounts` | Discover account identifiers like `imap://...` or `ews://...` |
-| `get_message` | Read one message in full |
+| `list_accounts` | Discover account identifiers; set `include_mailboxes=true` for combined account+mailbox discovery |
+| `get_message` | Read one message in full; recipients omitted by default (`include_recipients=true` to include) |
 | `get_attachment_content` | Extract readable attachment content |
 | `list_mailboxes` | List mailboxes/folders with message counts |
 
@@ -158,10 +158,21 @@ Example minimum `.vscode/mcp.json` configuration:
 
 Typical usage pattern:
 
-1. Call `list_accounts` to see available account identifiers plus human-friendly `account_name` / `email` values.
+1. Call `list_accounts` (optionally with `include_mailboxes=true`) to discover accounts and mailboxes.
 2. Use `search_messages` to build a shortlist of candidates.
 3. Call `get_message` to fetch the full message you care about.
 4. Use `get_attachment_content` when you need the text of a particular attachment.
+
+### Token efficiency
+
+The server is optimized to minimize token consumption:
+
+- **Compact tool descriptions** — routing hints live in `ServerInfo.instructions` (loaded once), not repeated per-tool on every request.
+- **HTML → plain text** — HTML email bodies are converted to clean text via DOM parsing (using `scraper`), typically 10–20× smaller than raw HTML.
+- **`status: "success"` omitted** — the status field only appears on error/not_found/partial responses.
+- **Recipients omitted by default** — `get_message` skips To/CC lists unless `include_recipients=true`.
+- **Compact dates** — ISO 8601 without seconds (`2024-09-15T00:00Z`).
+- **`has_body` removed** — always true for indexed messages; no longer wasting tokens.
 
 ### Sample search request
 
@@ -180,9 +191,24 @@ Typical usage pattern:
     "message_id": "12345",
     "include_body": true,
     "include_attachments_summary": true,
-    "body_format": "text"
+    "body_format": "text",
+    "include_recipients": false
 }
 ```
+
+`include_recipients` defaults to `false` — set it to `true` when you need the To/CC lists (saves tokens on corporate mail with 50+ recipients).
+
+### Combined account + mailbox discovery
+
+Instead of calling `list_accounts` then `list_mailboxes` separately, use `include_mailboxes=true`:
+
+```json
+{
+    "include_mailboxes": true
+}
+```
+
+This returns accounts with their mailboxes grouped, saving one round-trip.
 
 ## How it works
 

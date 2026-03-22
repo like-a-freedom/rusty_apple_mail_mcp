@@ -85,7 +85,9 @@ pub struct GetMessageResult {
     pub message_id_header: Option<String>,
     pub subject: String,
     pub from: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub to: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cc: Vec<String>,
     pub date_sent: Option<String>,
     pub date_received: Option<String>,
