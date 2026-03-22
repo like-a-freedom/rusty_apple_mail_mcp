@@ -296,6 +296,7 @@ mod tests {
 
     #[test]
     fn expand_mail_directory_expands_tilde_prefix() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let expected = dirs::home_dir().expect("home dir").join("Library/Mail");
 
         assert_eq!(expand_mail_directory("~/Library/Mail"), expected);
