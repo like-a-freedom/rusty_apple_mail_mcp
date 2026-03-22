@@ -103,6 +103,11 @@ impl MailMcpServer {
                             "type": "boolean",
                             "description": "Include ~200 character body preview",
                             "default": false
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Offset for pagination (use next_offset from previous response)",
+                            "default": 0
                         }
                     }
                 })),
@@ -148,7 +153,7 @@ impl MailMcpServer {
                         "body_format": {
                             "type": "string",
                             "enum": ["text", "html", "both"],
-                            "description": "Body format (default: text)",
+                            "description": "Body format (default: text). 'both' is deprecated, use 'text'.",
                             "default": "text"
                         },
                         "include_recipients": {
@@ -183,8 +188,8 @@ impl MailMcpServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "list_mailboxes",
-                "List all mailboxes with message counts. \
-                 Prefer list_accounts with include_mailboxes=true for combined discovery.",
+                "Deprecated: prefer list_accounts with include_mailboxes=true. \
+                 List all mailboxes with message counts.",
                 Self::value_to_schema(json!({
                     "type": "object",
                     "properties": {}
@@ -253,6 +258,7 @@ impl ServerHandler for MailMcpServer {
             },
             "instructions": "Read-only access to Apple Mail. \
              Workflow: 1) list_accounts/list_mailboxes for discovery. \
+             Use account_id as the `account` filter in search_messages. \
              2) search_messages to find emails — use message_id from results. \
              3) get_message to read full email. \
              4) get_attachment_content for attachment text. \

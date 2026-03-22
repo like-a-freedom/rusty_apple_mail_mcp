@@ -82,6 +82,7 @@ pub struct GetMessageResponse {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct GetMessageResult {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message_id_header: Option<String>,
     pub subject: String,
     pub from: String,

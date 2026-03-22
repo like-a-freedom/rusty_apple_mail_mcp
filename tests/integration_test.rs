@@ -70,12 +70,13 @@ fn search_by_subject_returns_matching_messages() {
             mailbox: None,
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         },
     )
     .unwrap();
 
     assert_eq!(response.status, None);
-    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_count, None);
     assert_eq!(response.messages[0].subject, "Q3 Review");
 }
 
@@ -97,12 +98,13 @@ fn search_by_account_returns_only_matching_messages() {
             mailbox: None,
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         },
     )
     .unwrap();
 
     assert_eq!(response.status, None);
-    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_count, None);
     assert_eq!(response.messages[0].mailbox, "Inbox");
     assert_eq!(response.messages[0].subject, "Budget Planning");
 }
@@ -125,12 +127,13 @@ fn search_messages_defaults_to_allowed_accounts_only() {
             mailbox: None,
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         },
     )
     .unwrap();
 
     assert_eq!(response.status, None);
-    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_count, None);
     assert_eq!(response.messages[0].id, "2");
 }
 
@@ -152,6 +155,7 @@ fn search_messages_rejects_disallowed_explicit_account_filter() {
             mailbox: None,
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         },
     )
     .unwrap();
@@ -212,12 +216,13 @@ fn search_messages_reports_attachment_count_without_body_preview() {
             mailbox: None,
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         },
     )
     .unwrap();
 
     assert_eq!(response.status, None);
-    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_count, None);
     assert_eq!(response.messages[0].attachment_count, 1);
     assert_eq!(response.messages[0].body_preview, None);
 }
@@ -248,12 +253,13 @@ fn search_messages_prefers_database_summary_and_attachment_metadata() {
             mailbox: None,
             limit: 20,
             include_body_preview: true,
+            offset: 0,
         },
     )
     .unwrap();
 
     assert_eq!(response.status, None);
-    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_count, None);
     assert_eq!(response.messages[0].attachment_count, 2);
     assert_eq!(
         response.messages[0].body_preview.as_deref(),
@@ -293,12 +299,13 @@ fn search_messages_falls_back_to_emlx_preview_when_database_summary_is_missing()
             mailbox: None,
             limit: 20,
             include_body_preview: true,
+            offset: 0,
         },
     )
     .unwrap();
 
     assert_eq!(response.status, None);
-    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_count, None);
     assert_eq!(
         response.messages[0].body_preview.as_deref(),
         Some("Fallback preview from emlx body")
@@ -353,12 +360,13 @@ fn search_messages_counts_attachments_from_database_for_nested_mailbox_results()
             mailbox: None,
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         },
     )
     .unwrap();
 
     assert_eq!(response.status, None);
-    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_count, None);
     assert_eq!(response.messages[0].attachment_count, 1);
 }
 
@@ -380,6 +388,7 @@ fn search_with_no_filters_returns_validation_error() {
             mailbox: None,
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         },
     )
     .unwrap();

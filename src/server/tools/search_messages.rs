@@ -35,6 +35,9 @@ pub struct SearchMessagesParams {
     /// Maximum number of results (default 20, max 100)
     #[serde(default = "default_limit")]
     pub limit: u32,
+    /// Offset for pagination (use next_offset from previous response)
+    #[serde(default)]
+    pub offset: u32,
     /// Include ~200 character body preview
     #[serde(default)]
     pub include_body_preview: bool,
@@ -51,10 +54,15 @@ pub struct SearchMessageResult {
     pub subject: String,
     pub from: String,
     pub date_sent: Option<String>,
-    pub date_received: Option<String>,
     pub mailbox: String,
+    #[serde(skip_serializing_if = "is_zero")]
     pub attachment_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub body_preview: Option<String>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// Response for search_messages tool.
@@ -63,7 +71,8 @@ pub struct SearchMessagesResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<ResponseStatus>,
     pub messages: Vec<SearchMessageResult>,
-    pub total_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_count: Option<u32>,
     pub has_more: bool,
     pub next_offset: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -194,7 +203,6 @@ fn hydrate_search_result(
             subject: meta.subject,
             from: meta.from,
             date_sent: meta.date_sent,
-            date_received: meta.date_received,
             mailbox: meta.mailbox,
             attachment_count: meta.attachment_count,
             body_preview: meta.body_preview,
@@ -236,7 +244,6 @@ fn hydrate_search_result(
         subject: meta.subject,
         from: meta.from,
         date_sent: meta.date_sent,
-        date_received: meta.date_received,
         mailbox: meta.mailbox,
         attachment_count: meta.attachment_count,
         body_preview: meta.body_preview,
@@ -307,7 +314,7 @@ pub fn search_messages_with_conn(
             status: Some(ResponseStatus::Error),
             guidance: Some(message),
             messages: Vec::new(),
-            total_count: 0,
+            total_count: None,
             has_more: false,
             next_offset: None,
         });
@@ -320,7 +327,7 @@ pub fn search_messages_with_conn(
                 status: Some(ResponseStatus::Error),
                 guidance: Some(message),
                 messages: Vec::new(),
-                total_count: 0,
+                total_count: None,
                 has_more: false,
                 next_offset: None,
             });
@@ -337,7 +344,7 @@ pub fn search_messages_with_conn(
                 "The requested account filter {account} is excluded by APPLE_MAIL_ACCOUNT."
             )),
             messages: Vec::new(),
-            total_count: 0,
+            total_count: None,
             has_more: false,
             next_offset: None,
         });
@@ -355,7 +362,7 @@ pub fn search_messages_with_conn(
         config.allowed_account_ids(),
         params.mailbox.as_deref(),
         params.limit,
-        0,
+        params.offset,
     )?;
     let sql_elapsed = sql_started.elapsed();
 
@@ -394,7 +401,7 @@ pub fn search_messages_with_conn(
             status: Some(ResponseStatus::NotFound),
             guidance: Some(guidance),
             messages: Vec::new(),
-            total_count: 0,
+            total_count: None,
             has_more: false,
             next_offset: None,
         });
@@ -427,9 +434,13 @@ pub fn search_messages_with_conn(
     );
     Ok(SearchMessagesResponse {
         status: None,
-        total_count: messages.len() as u32,
+        total_count: if has_more {
+            Some(messages.len() as u32)
+        } else {
+            None
+        },
         has_more,
-        next_offset: has_more.then_some(params.limit),
+        next_offset: has_more.then_some(params.offset + params.limit),
         guidance: None,
         messages,
     })
@@ -445,7 +456,7 @@ pub fn search_messages(
             status: Some(ResponseStatus::Error),
             guidance: Some(message),
             messages: Vec::new(),
-            total_count: 0,
+            total_count: None,
             has_more: false,
             next_offset: None,
         });
@@ -456,7 +467,7 @@ pub fn search_messages(
             status: Some(ResponseStatus::Error),
             guidance: Some(message),
             messages: Vec::new(),
-            total_count: 0,
+            total_count: None,
             has_more: false,
             next_offset: None,
         });
@@ -491,6 +502,7 @@ mod tests {
             mailbox: None,
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         };
 
         let result = search_messages(&config, params).unwrap();
@@ -510,6 +522,7 @@ mod tests {
             mailbox: Some("Inbox".to_string()),
             limit: 50,
             include_body_preview: true,
+            offset: 0,
         };
 
         let description = describe_search_filters(&params);
@@ -536,6 +549,7 @@ mod tests {
             mailbox: None,
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         };
 
         let result = validate_params(&params);
@@ -559,6 +573,7 @@ mod tests {
             mailbox: None,
             limit: 101,
             include_body_preview: false,
+            offset: 0,
         };
 
         let result = validate_params(&params);
@@ -582,6 +597,7 @@ mod tests {
             mailbox: None,
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         };
 
         let result = parse_date_range(&params);
@@ -600,6 +616,7 @@ mod tests {
             mailbox: None,
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         };
 
         let result = parse_date_range(&params);
@@ -638,6 +655,7 @@ mod tests {
             mailbox: None,
             limit: 101,
             include_body_preview: false,
+            offset: 0,
         };
 
         let result = validate_params(&params);
@@ -690,6 +708,7 @@ mod tests {
             mailbox: Some("INBOX".to_string()),
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         };
         let desc = describe_search_filters(&params);
         assert!(desc.contains("test"));
@@ -709,6 +728,7 @@ mod tests {
             mailbox: None,
             limit: 20,
             include_body_preview: false,
+            offset: 0,
         };
         let desc = describe_search_filters(&params);
         // Empty filters may return empty string or a default message
