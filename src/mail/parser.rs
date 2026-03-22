@@ -290,4 +290,126 @@ Hello, World!
         );
         assert_eq!(result.attachments[0].content, None);
     }
+
+    #[test]
+    fn parse_emlx_invalid_byte_count() {
+        let temp_dir = TempDir::new().unwrap();
+        let emlx_path = temp_dir.path().join("invalid.emlx");
+
+        // Invalid: byte count is not a number
+        let emlx_content = "not_a_number\nFrom: test@example.com\n\nBody";
+        fs::write(&emlx_path, emlx_content).unwrap();
+
+        let result = parse_emlx(&emlx_path);
+        assert!(matches!(result, Err(MailMcpError::BodyFileNotFound { .. })));
+    }
+
+    #[test]
+    fn parse_emlx_missing_newline_after_byte_count() {
+        let temp_dir = TempDir::new().unwrap();
+        let emlx_path = temp_dir.path().join("missing_newline.emlx");
+
+        // Invalid: no newline after byte count
+        let emlx_content = "100From: test@example.com\n\nBody";
+        fs::write(&emlx_path, emlx_content).unwrap();
+
+        let result = parse_emlx(&emlx_path);
+        assert!(matches!(result, Err(MailMcpError::BodyFileNotFound { .. })));
+    }
+
+    #[test]
+    fn parse_emlx_byte_count_exceeds_file_size() {
+        let temp_dir = TempDir::new().unwrap();
+        let emlx_path = temp_dir.path().join("truncated.emlx");
+
+        // Byte count says 1000 but file is shorter
+        let emlx_content = "1000\nFrom: test@example.com\n\nBody";
+        fs::write(&emlx_path, emlx_content).unwrap();
+
+        let result = parse_emlx(&emlx_path);
+        assert!(matches!(result, Err(MailMcpError::BodyFileNotFound { .. })));
+    }
+
+    #[test]
+    fn parse_simple_emlx_with_html_body() {
+        let temp_dir = TempDir::new().unwrap();
+        let emlx_path = temp_dir.path().join("html.emlx");
+
+        let email_content = concat!(
+            "From: sender@example.com\n",
+            "To: recipient@example.com\n",
+            "Subject: HTML Email\n",
+            "MIME-Version: 1.0\n",
+            "Content-Type: text/html; charset=utf-8\n",
+            "\n",
+            "<html><body><p>Hello HTML!</p></body></html>\n"
+        );
+        let emlx_content = format!("{}\n{}", email_content.len(), email_content);
+        fs::write(&emlx_path, emlx_content).unwrap();
+
+        let result = parse_emlx(&emlx_path).unwrap();
+        assert!(result.body_html.is_some());
+        // HTML-only emails may have body_text extracted from HTML
+        assert!(result.body_text.is_some() || result.body_html.is_some());
+    }
+
+    #[test]
+    fn parse_emlx_with_inline_attachment() {
+        let temp_dir = TempDir::new().unwrap();
+        let emlx_path = temp_dir.path().join("inline.emlx");
+
+        let email_content = concat!(
+            "From: sender@example.com\n",
+            "To: recipient@example.com\n",
+            "Subject: Inline attachment\n",
+            "MIME-Version: 1.0\n",
+            "Content-Type: multipart/related; boundary=\"boundary\"\n",
+            "\n",
+            "--boundary\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Body with inline image\n",
+            "--boundary\n",
+            "Content-Type: image/png; name=\"image.png\"\n",
+            "Content-Disposition: inline; filename=\"image.png\"\n",
+            "Content-Transfer-Encoding: base64\n",
+            "\n",
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\n",
+            "--boundary--\n"
+        );
+        let emlx_content = format!("{}\n{}", email_content.len(), email_content);
+        fs::write(&emlx_path, emlx_content).unwrap();
+
+        let result = parse_emlx(&emlx_path).unwrap();
+        assert_eq!(result.attachments.len(), 1);
+        assert!(result.attachments[0].is_inline);
+        assert_eq!(result.attachments[0].filename.as_deref(), Some("image.png"));
+        assert_eq!(result.attachments[0].mime_type, "image/png");
+    }
+
+    #[test]
+    fn parsed_email_debug_format() {
+        let email = ParsedEmail {
+            body_text: Some("test body".to_string()),
+            body_html: Some("<p>test</p>".to_string()),
+            attachments: vec![],
+        };
+        let debug_str = format!("{:?}", email);
+        assert!(debug_str.contains("body_text"));
+        assert!(debug_str.contains("body_html"));
+    }
+
+    #[test]
+    fn raw_attachment_debug_format() {
+        let attachment = RawAttachment {
+            filename: Some("test.txt".to_string()),
+            mime_type: "text/plain".to_string(),
+            size_bytes: 100,
+            content: Some(b"test".to_vec()),
+            is_inline: false,
+        };
+        let debug_str = format!("{:?}", attachment);
+        assert!(debug_str.contains("test.txt"));
+        assert!(debug_str.contains("text/plain"));
+    }
 }

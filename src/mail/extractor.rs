@@ -522,4 +522,148 @@ mod tests {
             assert!(reason.contains("binary format"));
         }
     }
+
+    #[test]
+    fn extract_text_plain_empty() {
+        let bytes = b"";
+        let result = extract_text(bytes, "text/plain");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+        if let ExtractionResult::Text { content, .. } = result {
+            assert!(content.is_empty());
+        }
+    }
+
+    #[test]
+    fn extract_text_plain_with_unicode() {
+        let bytes = "Hello 世界 🌍".as_bytes();
+        let result = extract_text(bytes, "text/plain");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+        if let ExtractionResult::Text { content, .. } = result {
+            assert!(content.contains("世界"));
+            assert!(content.contains("🌍"));
+        }
+    }
+
+    #[test]
+    fn extract_text_csv_empty() {
+        let bytes = b"";
+        let result = extract_text(bytes, "text/csv");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+    }
+
+    #[test]
+    fn extract_text_csv_with_headers_only() {
+        let bytes = b"name,email,age\n";
+        let result = extract_text(bytes, "text/csv");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+        if let ExtractionResult::Text { content, .. } = result {
+            assert!(content.contains("name"));
+            assert!(content.contains("email"));
+        }
+    }
+
+    #[test]
+    fn extract_text_json_empty_object() {
+        let bytes = b"{}";
+        let result = extract_text(bytes, "application/json");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+    }
+
+    #[test]
+    fn extract_text_json_array() {
+        let bytes = b"[1, 2, 3]";
+        let result = extract_text(bytes, "application/json");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+    }
+
+    #[test]
+    fn extract_text_json_nested() {
+        let bytes = b"{\"user\": {\"name\": \"John\", \"emails\": [\"a@b.com\"]}}";
+        let result = extract_text(bytes, "application/json");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+        if let ExtractionResult::Text { content, .. } = result {
+            assert!(content.contains("John"));
+        }
+    }
+
+    #[test]
+    fn extract_text_xml_empty() {
+        let bytes = b"<?xml version=\"1.0\"?><root></root>";
+        let result = extract_text(bytes, "application/xml");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+    }
+
+    #[test]
+    fn extract_text_xml_with_attributes() {
+        let bytes = b"<?xml version=\"1.0\"?><root attr=\"value\">text</root>";
+        let result = extract_text(bytes, "application/xml");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+        if let ExtractionResult::Text { content, .. } = result {
+            assert!(content.contains("text"));
+        }
+    }
+
+    #[test]
+    fn extract_text_markdown_empty() {
+        let bytes = b"";
+        let result = extract_text(bytes, "text/markdown");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+    }
+
+    #[test]
+    fn extract_text_markdown_with_headers() {
+        let bytes = b"# Header\n## Subheader\nContent";
+        let result = extract_text(bytes, "text/markdown");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+        if let ExtractionResult::Text { content, .. } = result {
+            assert!(content.contains("Header"));
+        }
+    }
+
+    #[test]
+    fn extract_text_markdown_with_links() {
+        let bytes = b"[link](https://example.com) and text";
+        let result = extract_text(bytes, "text/markdown");
+        assert!(matches!(result, ExtractionResult::Text { .. }));
+    }
+
+    #[test]
+    fn extraction_result_debug_format() {
+        let result = ExtractionResult::Text {
+            content: "test".to_string(),
+            method: "test_method",
+        };
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("Text"));
+    }
+
+    #[test]
+    fn extraction_result_not_supported_debug_format() {
+        let result = ExtractionResult::NotSupported {
+            reason: "test reason",
+        };
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("NotSupported"));
+        assert!(debug_str.contains("test reason"));
+    }
+
+    #[test]
+    fn extract_text_image_by_extension() {
+        let bytes = b"fake image data";
+        let result = extract_text(bytes, "image/jpeg");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("image"));
+        }
+    }
+
+    #[test]
+    fn extract_text_pdf_explicitly_not_supported() {
+        let bytes = b"%PDF fake pdf";
+        let result = extract_text(bytes, "application/pdf");
+        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("PDF"));
+        }
+    }
 }
