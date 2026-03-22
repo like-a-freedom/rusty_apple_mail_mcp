@@ -8,6 +8,7 @@ use crate::config::MailConfig;
 use crate::domain::{AttachmentMeta, ContentFormat};
 use crate::error::MailMcpError;
 use crate::mail::{extract_text, locate_emlx, parse_emlx};
+use crate::server::tools::ResponseStatus;
 
 /// Parameters for the get_attachment_content tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -21,7 +22,8 @@ pub struct GetAttachmentParams {
 /// Response for get_attachment_content tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct GetAttachmentResponse {
-    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ResponseStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachment: Option<GetAttachmentResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,7 +53,7 @@ pub fn get_attachment_content_with_conn(
         Ok(id) => id,
         Err(_) => {
             return Ok(GetAttachmentResponse {
-                status: "error".to_string(),
+                status: Some(ResponseStatus::Error),
                 attachment: None,
                 guidance: Some(
                     "Invalid message_id format. Expected a numeric ID from search results."
@@ -69,7 +71,7 @@ pub fn get_attachment_content_with_conn(
                 (Some(rowid), Some(index)) => (rowid, index),
                 _ => {
                     return Ok(GetAttachmentResponse {
-                        status: "error".to_string(),
+                        status: Some(ResponseStatus::Error),
                         attachment: None,
                         guidance: Some(
                             "Invalid attachment_id format. Expected \"{message_id}:{attachment_index}\"."
@@ -81,7 +83,7 @@ pub fn get_attachment_content_with_conn(
         }
         None => {
             return Ok(GetAttachmentResponse {
-                status: "error".to_string(),
+                status: Some(ResponseStatus::Error),
                 attachment: None,
                 guidance: Some(
                     "Invalid attachment_id format. Expected \"{message_id}:{attachment_index}\"."
@@ -93,7 +95,7 @@ pub fn get_attachment_content_with_conn(
 
     if attachment_rowid != message_id {
         return Ok(GetAttachmentResponse {
-            status: "error".to_string(),
+            status: Some(ResponseStatus::Error),
             attachment: None,
             guidance: Some("attachment_id does not belong to the provided message_id.".to_string()),
         });
@@ -103,7 +105,7 @@ pub fn get_attachment_content_with_conn(
         Some(row) => row,
         None => {
             return Ok(GetAttachmentResponse {
-                status: "not_found".to_string(),
+                status: Some(ResponseStatus::NotFound),
                 attachment: None,
                 guidance: Some("Message not found in the index.".to_string()),
             });
@@ -114,7 +116,7 @@ pub fn get_attachment_content_with_conn(
         && !config.is_mailbox_allowed(mailbox_url)
     {
         return Ok(GetAttachmentResponse {
-            status: "error".to_string(),
+            status: Some(ResponseStatus::Error),
             attachment: None,
             guidance: Some(
                 "This attachment belongs to an account excluded by APPLE_MAIL_ACCOUNT.".to_string(),
@@ -131,7 +133,7 @@ pub fn get_attachment_content_with_conn(
         Some(path) => path,
         None => {
             return Ok(GetAttachmentResponse {
-                status: "not_found".to_string(),
+                status: Some(ResponseStatus::NotFound),
                 attachment: None,
                 guidance: Some("Message body file not found on disk.".to_string()),
             });
@@ -149,7 +151,7 @@ pub fn get_attachment_content_with_conn(
                 error
             );
             return Ok(GetAttachmentResponse {
-                status: "error".to_string(),
+                status: Some(ResponseStatus::Error),
                 attachment: None,
                 guidance: Some("Failed to parse message body file.".to_string()),
             });
@@ -160,7 +162,7 @@ pub fn get_attachment_content_with_conn(
         Some(attachment) => attachment,
         None => {
             return Ok(GetAttachmentResponse {
-                status: "not_found".to_string(),
+                status: Some(ResponseStatus::NotFound),
                 attachment: None,
                 guidance: Some(format!(
                     "Attachment index {attachment_index} out of range. Message has {} attachment(s).",
@@ -183,7 +185,7 @@ pub fn get_attachment_content_with_conn(
 
     let Some(content) = raw_attachment.content.as_deref() else {
         return Ok(GetAttachmentResponse {
-            status: "error".to_string(),
+            status: Some(ResponseStatus::Error),
             attachment: None,
             guidance: Some("Attachment content is unavailable in the parsed message.".to_string()),
         });
@@ -202,7 +204,7 @@ pub fn get_attachment_content_with_conn(
 
     match extract_text(content, &raw_attachment.mime_type) {
         crate::mail::ExtractionResult::Text { content, method } => Ok(GetAttachmentResponse {
-            status: "success".to_string(),
+            status: None,
             attachment: Some(GetAttachmentResult {
                 content_format: ContentFormat::ExtractedText,
                 content: Some(content),
@@ -212,7 +214,7 @@ pub fn get_attachment_content_with_conn(
             guidance: None,
         }),
         crate::mail::ExtractionResult::NotSupported { reason } => Ok(GetAttachmentResponse {
-            status: "partial".to_string(),
+            status: Some(ResponseStatus::Partial),
             attachment: Some(GetAttachmentResult {
                 extraction_method: Some(reason.to_string()),
                 ..base_result
@@ -309,7 +311,7 @@ mod tests {
 
         let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
 
-        assert_eq!(response.status, "error");
+        assert_eq!(response.status, Some(ResponseStatus::Error));
         assert!(response.guidance.is_some());
         assert!(
             response
@@ -331,7 +333,7 @@ mod tests {
 
         let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
 
-        assert_eq!(response.status, "not_found");
+        assert_eq!(response.status, Some(ResponseStatus::NotFound));
         assert!(response.guidance.is_some());
         assert!(response.guidance.unwrap().contains("Message not found"));
     }
@@ -348,7 +350,7 @@ mod tests {
 
         let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
 
-        assert_eq!(response.status, "error");
+        assert_eq!(response.status, Some(ResponseStatus::Error));
         assert!(response.guidance.is_some());
         assert!(
             response
@@ -390,7 +392,7 @@ mod tests {
 
         let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
 
-        assert_eq!(response.status, "not_found");
+        assert_eq!(response.status, Some(ResponseStatus::NotFound));
         assert!(response.guidance.is_some());
         assert!(response.guidance.unwrap().contains("out of range"));
     }
@@ -437,7 +439,7 @@ mod tests {
 
         let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
 
-        assert_eq!(response.status, "success");
+        assert_eq!(response.status, None);
         assert!(response.attachment.is_some());
         let attachment = response.attachment.unwrap();
         assert_eq!(attachment.filename, "notes.txt");
@@ -490,7 +492,7 @@ mod tests {
         let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
 
         // Should return partial status with guidance about OCR
-        assert_eq!(response.status, "partial");
+        assert_eq!(response.status, Some(ResponseStatus::Partial));
         assert!(response.attachment.is_some());
         let attachment = response.attachment.unwrap();
         assert_eq!(attachment.filename, "image.png");

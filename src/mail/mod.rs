@@ -4,7 +4,7 @@ mod extractor;
 mod locator;
 mod parser;
 
-pub use extractor::{ExtractionResult, extract_text};
+pub use extractor::{ExtractionResult, extract_text, html_to_plain_text};
 pub use locator::{
     locate_emlx, locate_emlx_quick, locate_emlx_quick_with_hints, locate_emlx_with_hints,
 };

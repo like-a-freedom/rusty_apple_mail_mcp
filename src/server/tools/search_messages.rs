@@ -13,6 +13,7 @@ use crate::db::{
 use crate::domain::MessageMeta;
 use crate::error::MailMcpError;
 use crate::mail::{locate_emlx_quick_with_hints, parse_emlx_without_attachment_content};
+use crate::server::tools::ResponseStatus;
 
 /// Parameters for the search_messages tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -52,7 +53,6 @@ pub struct SearchMessageResult {
     pub date_sent: Option<String>,
     pub date_received: Option<String>,
     pub mailbox: String,
-    pub has_body: bool,
     pub attachment_count: u32,
     pub body_preview: Option<String>,
 }
@@ -60,7 +60,8 @@ pub struct SearchMessageResult {
 /// Response for search_messages tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SearchMessagesResponse {
-    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ResponseStatus>,
     pub messages: Vec<SearchMessageResult>,
     pub total_count: u32,
     pub has_more: bool,
@@ -177,7 +178,6 @@ fn hydrate_search_result(
     metadata: Option<&SearchMetadata>,
 ) -> SearchMessageResult {
     let mut meta = MessageMeta::from_row(row, epoch_offset_s);
-    meta.has_body = true;
     if let Some(metadata) = metadata {
         meta = meta.with_attachment_count(metadata.attachment_count);
         if include_body_preview && let Some(summary) = metadata.summary.as_deref() {
@@ -196,7 +196,6 @@ fn hydrate_search_result(
             date_sent: meta.date_sent,
             date_received: meta.date_received,
             mailbox: meta.mailbox,
-            has_body: meta.has_body,
             attachment_count: meta.attachment_count,
             body_preview: meta.body_preview,
         };
@@ -239,7 +238,6 @@ fn hydrate_search_result(
         date_sent: meta.date_sent,
         date_received: meta.date_received,
         mailbox: meta.mailbox,
-        has_body: meta.has_body,
         attachment_count: meta.attachment_count,
         body_preview: meta.body_preview,
     }
@@ -306,7 +304,7 @@ pub fn search_messages_with_conn(
     let filters_description = describe_search_filters(&params);
     if let Err(message) = validate_params(&params) {
         return Ok(SearchMessagesResponse {
-            status: "error".to_string(),
+            status: Some(ResponseStatus::Error),
             guidance: Some(message),
             messages: Vec::new(),
             total_count: 0,
@@ -319,7 +317,7 @@ pub fn search_messages_with_conn(
         Ok(range) => range,
         Err(message) => {
             return Ok(SearchMessagesResponse {
-                status: "error".to_string(),
+                status: Some(ResponseStatus::Error),
                 guidance: Some(message),
                 messages: Vec::new(),
                 total_count: 0,
@@ -334,7 +332,7 @@ pub fn search_messages_with_conn(
         && !config.is_account_allowed(account)
     {
         return Ok(SearchMessagesResponse {
-            status: "error".to_string(),
+            status: Some(ResponseStatus::Error),
             guidance: Some(format!(
                 "The requested account filter {account} is excluded by APPLE_MAIL_ACCOUNT."
             )),
@@ -393,7 +391,7 @@ pub fn search_messages_with_conn(
         };
 
         return Ok(SearchMessagesResponse {
-            status: "not_found".to_string(),
+            status: Some(ResponseStatus::NotFound),
             guidance: Some(guidance),
             messages: Vec::new(),
             total_count: 0,
@@ -428,7 +426,7 @@ pub fn search_messages_with_conn(
         filters_description,
     );
     Ok(SearchMessagesResponse {
-        status: "success".to_string(),
+        status: None,
         total_count: messages.len() as u32,
         has_more,
         next_offset: has_more.then_some(params.limit),
@@ -444,7 +442,7 @@ pub fn search_messages(
 ) -> Result<SearchMessagesResponse, MailMcpError> {
     if let Err(message) = validate_params(&params) {
         return Ok(SearchMessagesResponse {
-            status: "error".to_string(),
+            status: Some(ResponseStatus::Error),
             guidance: Some(message),
             messages: Vec::new(),
             total_count: 0,
@@ -455,7 +453,7 @@ pub fn search_messages(
 
     if let Err(message) = parse_date_range(&params) {
         return Ok(SearchMessagesResponse {
-            status: "error".to_string(),
+            status: Some(ResponseStatus::Error),
             guidance: Some(message),
             messages: Vec::new(),
             total_count: 0,
@@ -496,7 +494,7 @@ mod tests {
         };
 
         let result = search_messages(&config, params).unwrap();
-        assert_eq!(result.status, "error");
+        assert_eq!(result.status, Some(ResponseStatus::Error));
         assert!(result.guidance.is_some());
     }
 

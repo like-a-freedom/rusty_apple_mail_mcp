@@ -2,16 +2,29 @@
 
 use rusqlite::Connection;
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::MailConfig;
-use crate::db::{list_accounts as db_list_accounts, open_readonly};
+use crate::db::{
+    count_messages_in_mailbox, list_accounts as db_list_accounts,
+    list_mailboxes as db_list_mailboxes, mailbox_account_id, open_readonly,
+};
 use crate::error::MailMcpError;
+use crate::server::tools::ResponseStatus;
+
+/// Parameters for the list_accounts tool.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct ListAccountsParams {
+    /// Include mailboxes grouped by account (default false)
+    #[serde(default)]
+    pub include_mailboxes: bool,
+}
 
 /// Response for list_accounts tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ListAccountsResponse {
-    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ResponseStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -31,12 +44,23 @@ pub struct AccountResult {
     pub email: Option<String>,
     pub mailbox_count: i64,
     pub message_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mailboxes: Option<Vec<MailboxResult>>,
+}
+
+/// Mailbox result item (reused for account grouping).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct MailboxResult {
+    pub name: String,
+    pub url: String,
+    pub message_count: i64,
 }
 
 /// Execute `list_accounts` against an already-open SQLite connection.
 pub fn list_accounts_with_conn(
     config: &MailConfig,
     conn: &Connection,
+    params: ListAccountsParams,
 ) -> Result<ListAccountsResponse, MailMcpError> {
     let accounts = db_list_accounts(conn)?
         .into_iter()
@@ -45,7 +69,7 @@ pub fn list_accounts_with_conn(
 
     if accounts.is_empty() {
         return Ok(ListAccountsResponse {
-            status: "not_found".to_string(),
+            status: Some(ResponseStatus::NotFound),
             accounts: vec![],
             total_count: Some(0),
             guidance: Some(
@@ -55,8 +79,27 @@ pub fn list_accounts_with_conn(
         });
     }
 
+    // Pre-load mailboxes if requested
+    let mailboxes_by_account = if params.include_mailboxes {
+        let all_mailboxes = db_list_mailboxes(conn)?
+            .into_iter()
+            .filter(|(_, url)| config.is_mailbox_allowed(url))
+            .collect::<Vec<_>>();
+
+        let mut grouped: std::collections::BTreeMap<String, Vec<(i64, String)>> =
+            std::collections::BTreeMap::new();
+        for (id, url) in all_mailboxes {
+            if let Some(account_id) = mailbox_account_id(&url) {
+                grouped.entry(account_id).or_default().push((id, url));
+            }
+        }
+        grouped
+    } else {
+        std::collections::BTreeMap::new()
+    };
+
     Ok(ListAccountsResponse {
-        status: "success".to_string(),
+        status: None,
         total_count: Some(accounts.len() as u32),
         guidance: Some(
             "Use account_id as the `account` filter in search_messages, or set APPLE_MAIL_ACCOUNT to one of the listed account_name/email values to scope the whole server."
@@ -64,27 +107,52 @@ pub fn list_accounts_with_conn(
         ),
         accounts: accounts
             .into_iter()
-            .map(|account| AccountResult {
-                account_name: config
-                    .account_metadata(&account.account_id)
-                    .and_then(|metadata| metadata.account_name.clone()),
-                email: config
-                    .account_metadata(&account.account_id)
-                    .and_then(|metadata| metadata.email.clone()),
-                account_id: account.account_id,
-                account_type: account.account_type,
-                mailbox_count: account.mailbox_count,
-                message_count: account.message_count,
+            .map(|account| {
+                let mailboxes = if params.include_mailboxes {
+                    mailboxes_by_account.get(&account.account_id).map(|mbs| {
+                        mbs.iter()
+                            .map(|(id, url)| MailboxResult {
+                                name: url
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or(url)
+                                    .trim_end_matches(".mbox")
+                                    .to_string(),
+                                url: url.clone(),
+                                message_count: count_messages_in_mailbox(conn, *id).unwrap_or(0),
+                            })
+                            .collect()
+                    })
+                } else {
+                    None
+                };
+
+                AccountResult {
+                    account_name: config
+                        .account_metadata(&account.account_id)
+                        .and_then(|metadata| metadata.account_name.clone()),
+                    email: config
+                        .account_metadata(&account.account_id)
+                        .and_then(|metadata| metadata.email.clone()),
+                    account_id: account.account_id,
+                    account_type: account.account_type,
+                    mailbox_count: account.mailbox_count,
+                    message_count: account.message_count,
+                    mailboxes,
+                }
             })
             .collect(),
     })
 }
 
 /// Execute the list_accounts tool.
-pub fn list_accounts(config: &MailConfig) -> Result<ListAccountsResponse, MailMcpError> {
+pub fn list_accounts(
+    config: &MailConfig,
+    params: ListAccountsParams,
+) -> Result<ListAccountsResponse, MailMcpError> {
     let db_path = config.envelope_db_path();
     let conn = open_readonly(&db_path)?;
-    list_accounts_with_conn(config, &conn)
+    list_accounts_with_conn(config, &conn, params)
 }
 
 #[cfg(test)]
@@ -140,13 +208,19 @@ mod tests {
         (temp_dir, config)
     }
 
+    fn default_params() -> ListAccountsParams {
+        ListAccountsParams {
+            include_mailboxes: false,
+        }
+    }
+
     #[test]
     fn list_accounts_with_conn_returns_accounts() {
         let conn = make_test_db();
         let (_temp_dir, config) = make_test_config();
-        let response = list_accounts_with_conn(&config, &conn).unwrap();
+        let response = list_accounts_with_conn(&config, &conn, default_params()).unwrap();
 
-        assert_eq!(response.status, "success");
+        assert_eq!(response.status, None);
         assert_eq!(response.total_count, Some(2));
         assert_eq!(response.accounts.len(), 2);
         // Verify account IDs
@@ -166,9 +240,9 @@ mod tests {
             HashMap::new(),
         )
         .expect("valid config");
-        let response = list_accounts_with_conn(&config, &conn).unwrap();
+        let response = list_accounts_with_conn(&config, &conn, default_params()).unwrap();
 
-        assert_eq!(response.status, "success");
+        assert_eq!(response.status, None);
         assert_eq!(response.total_count, Some(1));
         assert_eq!(response.accounts.len(), 1);
         assert_eq!(response.accounts[0].account_id, "ews://account-b");
@@ -192,9 +266,9 @@ mod tests {
         )
         .expect("seed empty schema");
         let (_temp_dir, config) = make_test_config();
-        let response = list_accounts_with_conn(&config, &conn).unwrap();
+        let response = list_accounts_with_conn(&config, &conn, default_params()).unwrap();
 
-        assert_eq!(response.status, "not_found");
+        assert_eq!(response.status, Some(ResponseStatus::NotFound));
         assert_eq!(response.total_count, Some(0));
         assert!(response.guidance.is_some());
     }
@@ -222,9 +296,9 @@ mod tests {
             metadata,
         )
         .expect("valid config");
-        let response = list_accounts_with_conn(&config, &conn).unwrap();
+        let response = list_accounts_with_conn(&config, &conn, default_params()).unwrap();
 
-        assert_eq!(response.status, "success");
+        assert_eq!(response.status, None);
         let account_a = response
             .accounts
             .iter()
@@ -232,5 +306,29 @@ mod tests {
             .expect("account-a exists");
         assert_eq!(account_a.account_name.as_deref(), Some("Personal Gmail"));
         assert_eq!(account_a.email.as_deref(), Some("user@example.com"));
+    }
+
+    #[test]
+    fn list_accounts_with_conn_includes_mailboxes_when_requested() {
+        let conn = make_test_db();
+        let (_temp_dir, config) = make_test_config();
+        let params = ListAccountsParams {
+            include_mailboxes: true,
+        };
+        let response = list_accounts_with_conn(&config, &conn, params).unwrap();
+
+        assert_eq!(response.status, None);
+        assert_eq!(response.accounts.len(), 2);
+
+        // Account A should have mailboxes
+        let account_a = response
+            .accounts
+            .iter()
+            .find(|a| a.account_id == "imap://account-a")
+            .expect("account-a exists");
+        assert!(account_a.mailboxes.is_some());
+        let mailboxes = account_a.mailboxes.as_ref().unwrap();
+        assert_eq!(mailboxes.len(), 1);
+        assert_eq!(mailboxes[0].name, "INBOX");
     }
 }

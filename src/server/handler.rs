@@ -3,7 +3,7 @@
 use crate::config::MailConfig;
 use crate::error::MailMcpError;
 use crate::server::tools::{
-    GetAttachmentParams, GetMessageParams, SearchMessagesParams,
+    GetAttachmentParams, GetMessageParams, ListAccountsParams, SearchMessagesParams,
     get_attachment_content as tool_get_attachment, get_message as tool_get_message,
     list_accounts as tool_list_accounts, list_mailboxes as tool_list_mailboxes,
     search_messages as tool_search_messages,
@@ -61,10 +61,8 @@ impl MailMcpServer {
         vec![
             Tool::new(
                 "search_messages",
-                "Find emails in Apple Mail by subject, date range, sender, participant, account, or mailbox — or any combination.\n\n\
-                 Use this tool when: the agent needs to find one or more emails matching known criteria.\n\
-                 Do NOT use this tool when: the agent already has a message_id — use get_message instead.\n\n\
-                 At least one filter argument must be provided: subject_query, date_from, date_to, sender, participant, account, or mailbox.",
+                "Search Apple Mail by subject, date, sender, participant, account, or mailbox. \
+                 Returns id/subject/from/date/mailbox per result. At least one filter required.",
                 Self::value_to_schema(json!({
                     "type": "object",
                     "properties": {
@@ -112,20 +110,24 @@ impl MailMcpServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "list_accounts",
-                "List all mail accounts derived from Apple Mail mailbox URLs.\n\n\
-                 Use this tool when: the agent needs to choose a single account before calling search_messages.\n\
-                 Do NOT use this tool when: searching across all accounts is acceptable.",
+                "List available mail accounts for search_messages. \
+                 Set include_mailboxes=true to get mailboxes grouped by account.",
                 Self::value_to_schema(json!({
                     "type": "object",
-                    "properties": {}
+                    "properties": {
+                        "include_mailboxes": {
+                            "type": "boolean",
+                            "description": "Include mailboxes grouped by account (default false)",
+                            "default": false
+                        }
+                    }
                 })),
             )
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_message",
-                "Retrieve the full content of an email by its ID: metadata, body text, recipients, and attachment summary.\n\n\
-                 Use this tool when: the agent has a message_id (from search results) and needs to read the email.\n\
-                 Do NOT use this tool when: the agent needs to find emails — use search_messages first.",
+                "Get full email by message_id: body, recipients, attachments. \
+                 Recipients omitted by default; set include_recipients=true if needed.",
                 Self::value_to_schema(json!({
                     "type": "object",
                     "properties": {
@@ -148,6 +150,11 @@ impl MailMcpServer {
                             "enum": ["text", "html", "both"],
                             "description": "Body format (default: text)",
                             "default": "text"
+                        },
+                        "include_recipients": {
+                            "type": "boolean",
+                            "description": "Include To/CC recipients lists (default false)",
+                            "default": false
                         }
                     },
                     "required": ["message_id"]
@@ -156,9 +163,8 @@ impl MailMcpServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_attachment_content",
-                "Extract and return the readable content of an email attachment by its ID.\n\n\
-                 Use this tool when: the agent needs to read, summarise, or analyse a specific attachment.\n\
-                 Do NOT use this tool when: the agent only needs the attachment list — use get_message instead.",
+                "Extract text content from an attachment. \
+                 attachment_id format: \"{message_id}:{index}\" from get_message attachments list.",
                 Self::value_to_schema(json!({
                     "type": "object",
                     "properties": {
@@ -177,9 +183,8 @@ impl MailMcpServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "list_mailboxes",
-                "List all mailboxes in Apple Mail with their message counts.\n\n\
-                 Use this tool when: the agent needs to discover available mailboxes or verify mailbox names.\n\
-                 Do NOT use this tool when: the agent needs to search for specific emails — use search_messages instead.",
+                "List all mailboxes with message counts. \
+                 Prefer list_accounts with include_mailboxes=true for combined discovery.",
                 Self::value_to_schema(json!({
                     "type": "object",
                     "properties": {}
@@ -218,7 +223,10 @@ impl MailMcpServer {
                 Ok(CallToolResult::success(vec![Content::json(response)?]))
             }
             "list_accounts" => {
-                let response = tool_list_accounts(&self.config)
+                let params: ListAccountsParams =
+                    serde_json::from_value(Value::Object(arguments))
+                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let response = tool_list_accounts(&self.config, params)
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?;
                 Ok(CallToolResult::success(vec![Content::json(response)?]))
             }
@@ -243,7 +251,12 @@ impl ServerHandler for MailMcpServer {
                 "name": "apple-mail-mcp",
                 "version": env!("CARGO_PKG_VERSION")
             },
-            "instructions": "Read-only access to Apple Mail. Use search_messages to find emails, get_message to read one, get_attachment_content to read an attachment, list_mailboxes to see available mailboxes."
+            "instructions": "Read-only access to Apple Mail. \
+             Workflow: 1) list_accounts/list_mailboxes for discovery. \
+             2) search_messages to find emails — use message_id from results. \
+             3) get_message to read full email. \
+             4) get_attachment_content for attachment text. \
+             Skip search if message_id already known."
         });
         serde_json::from_value(json).expect("valid ServerInfo")
     }
@@ -404,6 +417,21 @@ mod tests {
         assert!(!tools.is_empty());
         // Should have at least search_messages, get_message, get_attachment_content, list_accounts, list_mailboxes
         assert!(tools.len() >= 5);
+    }
+
+    #[test]
+    fn tool_descriptions_are_concise() {
+        let tools = MailMcpServer::tool_definitions();
+        for tool in &tools {
+            let desc = tool.description.as_deref().unwrap_or("");
+            assert!(
+                desc.len() < 200,
+                "Tool '{}' description is {} chars (max 200): {}",
+                tool.name,
+                desc.len(),
+                desc
+            );
+        }
     }
 
     #[test]
