@@ -661,4 +661,108 @@ mod tests {
             assert_eq!(retrieved.body_html, Some("<html>cached</html>".to_string()));
         }
     }
+
+    // Serialization tests
+
+    #[test]
+    fn message_id_header_none_is_omitted() {
+        let result = GetMessageResult {
+            id: "1".into(),
+            message_id_header: None,
+            subject: "test".into(),
+            from: "a@b.com".into(),
+            to: vec![],
+            cc: vec![],
+            date_sent: Some("2024-01-01T00:00Z".into()),
+            date_received: Some("2024-01-01T00:00Z".into()),
+            mailbox: "INBOX".into(),
+            body: Some("text".into()),
+            body_html: None,
+            attachments: vec![],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(!json.contains("message_id_header"), "None should be omitted: {json}");
+    }
+
+    #[test]
+    fn message_id_header_some_is_present() {
+        let result = GetMessageResult {
+            id: "1".into(),
+            message_id_header: Some("<abc@example.com>".into()),
+            subject: "test".into(),
+            from: "a@b.com".into(),
+            to: vec![],
+            cc: vec![],
+            date_sent: Some("2024-01-01T00:00Z".into()),
+            date_received: Some("2024-01-01T00:00Z".into()),
+            mailbox: "INBOX".into(),
+            body: Some("text".into()),
+            body_html: None,
+            attachments: vec![],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("message_id_header"), "Some should be present: {json}");
+    }
+
+    #[test]
+    fn to_cc_empty_omitted() {
+        let result = GetMessageResult {
+            id: "1".into(),
+            message_id_header: None,
+            subject: "test".into(),
+            from: "a@b.com".into(),
+            to: vec![],
+            cc: vec![],
+            date_sent: Some("2024-01-01T00:00Z".into()),
+            date_received: Some("2024-01-01T00:00Z".into()),
+            mailbox: "INBOX".into(),
+            body: Some("text".into()),
+            body_html: None,
+            attachments: vec![],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(!json.contains("\"to\""), "empty to should be omitted: {json}");
+        assert!(!json.contains("\"cc\""), "empty cc should be omitted: {json}");
+    }
+
+    #[test]
+    fn to_cc_nonempty_present() {
+        let result = GetMessageResult {
+            id: "1".into(),
+            message_id_header: None,
+            subject: "test".into(),
+            from: "a@b.com".into(),
+            to: vec!["b@b.com".into()],
+            cc: vec!["c@c.com".into()],
+            date_sent: Some("2024-01-01T00:00Z".into()),
+            date_received: Some("2024-01-01T00:00Z".into()),
+            mailbox: "INBOX".into(),
+            body: Some("text".into()),
+            body_html: None,
+            attachments: vec![],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"to\""), "nonempty to should be present: {json}");
+        assert!(json.contains("\"cc\""), "nonempty cc should be present: {json}");
+    }
+
+    #[test]
+    fn body_html_none_is_omitted() {
+        let result = GetMessageResult {
+            id: "1".into(),
+            message_id_header: None,
+            subject: "test".into(),
+            from: "a@b.com".into(),
+            to: vec![],
+            cc: vec![],
+            date_sent: Some("2024-01-01T00:00Z".into()),
+            date_received: Some("2024-01-01T00:00Z".into()),
+            mailbox: "INBOX".into(),
+            body: Some("text".into()),
+            body_html: None,
+            attachments: vec![],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(!json.contains("body_html"), "None body_html should be omitted: {json}");
+    }
 }

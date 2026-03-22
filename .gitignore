@@ -2,6 +2,7 @@
 debug/
 target/
 .cargo/
+cargo_install.sh
 
 dev/
 docs/

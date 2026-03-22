@@ -328,4 +328,35 @@ mod tests {
         assert_eq!(mailboxes.len(), 1);
         assert_eq!(mailboxes[0].name, "INBOX");
     }
+
+    #[test]
+    fn list_accounts_success_has_no_guidance() {
+        let conn = make_test_db();
+        let (_temp_dir, config) = make_test_config();
+        let response = list_accounts_with_conn(&config, &conn, default_params()).unwrap();
+
+        assert_eq!(response.status, None);
+        assert!(
+            response.guidance.is_none(),
+            "guidance should be None on success"
+        );
+    }
+
+    #[test]
+    fn list_accounts_not_found_has_guidance() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, mailbox INTEGER, date_sent INTEGER, date_received INTEGER, message_id TEXT, global_message_id INTEGER);
+            "#,
+        ).expect("seed empty schema");
+        let (_temp_dir, config) = make_test_config();
+        let response = list_accounts_with_conn(&config, &conn, default_params()).unwrap();
+
+        assert!(
+            response.guidance.is_some(),
+            "guidance should be present on not_found"
+        );
+    }
 }

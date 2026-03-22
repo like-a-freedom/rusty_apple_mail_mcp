@@ -734,4 +734,146 @@ mod tests {
         // Empty filters may return empty string or a default message
         let _ = desc.len(); // Suppress unused warning
     }
+
+    // Serialization tests — ensure skip_serializing_if works correctly
+
+    #[test]
+    fn attachment_count_zero_is_omitted() {
+        let result = SearchMessageResult {
+            id: "1".into(),
+            subject: "test".into(),
+            from: "a@b.com".into(),
+            date_sent: Some("2024-01-01T00:00Z".into()),
+            mailbox: "INBOX".into(),
+            attachment_count: 0,
+            body_preview: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(
+            !json.contains("attachment_count"),
+            "zero should be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn attachment_count_nonzero_is_present() {
+        let result = SearchMessageResult {
+            id: "1".into(),
+            subject: "test".into(),
+            from: "a@b.com".into(),
+            date_sent: Some("2024-01-01T00:00Z".into()),
+            mailbox: "INBOX".into(),
+            attachment_count: 3,
+            body_preview: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(
+            json.contains("\"attachment_count\":3"),
+            "nonzero should be present: {json}"
+        );
+    }
+
+    #[test]
+    fn body_preview_none_is_omitted() {
+        let result = SearchMessageResult {
+            id: "1".into(),
+            subject: "test".into(),
+            from: "a@b.com".into(),
+            date_sent: Some("2024-01-01T00:00Z".into()),
+            mailbox: "INBOX".into(),
+            attachment_count: 1,
+            body_preview: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(
+            !json.contains("body_preview"),
+            "None should be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn date_received_not_in_search_result() {
+        let result = SearchMessageResult {
+            id: "1".into(),
+            subject: "test".into(),
+            from: "a@b.com".into(),
+            date_sent: Some("2024-01-01T00:00Z".into()),
+            mailbox: "INBOX".into(),
+            attachment_count: 0,
+            body_preview: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(
+            !json.contains("date_received"),
+            "date_received should not exist: {json}"
+        );
+    }
+
+    #[test]
+    fn total_count_omitted_when_no_more() {
+        let response = SearchMessagesResponse {
+            status: None,
+            messages: vec![],
+            total_count: None,
+            has_more: false,
+            next_offset: None,
+            guidance: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(
+            !json.contains("total_count"),
+            "None total_count should be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn total_count_present_when_has_more() {
+        let response = SearchMessagesResponse {
+            status: None,
+            messages: vec![],
+            total_count: Some(20),
+            has_more: true,
+            next_offset: Some(40),
+            guidance: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(
+            json.contains("\"total_count\":20"),
+            "Some total_count should be present: {json}"
+        );
+    }
+
+    #[test]
+    fn status_none_omitted_from_response() {
+        let response = SearchMessagesResponse {
+            status: None,
+            messages: vec![],
+            total_count: None,
+            has_more: false,
+            next_offset: None,
+            guidance: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(
+            !json.contains("status"),
+            "None status should be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn next_offset_is_offset_plus_limit() {
+        let response = SearchMessagesResponse {
+            status: None,
+            messages: vec![],
+            total_count: Some(20),
+            has_more: true,
+            next_offset: Some(30),
+            guidance: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(
+            json.contains("\"next_offset\":30"),
+            "next_offset should be offset+limit: {json}"
+        );
+    }
 }
