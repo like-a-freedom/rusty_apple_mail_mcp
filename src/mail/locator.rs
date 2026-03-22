@@ -1199,14 +1199,8 @@ mod tests {
     #[test]
     fn locate_emlx_with_hints_handles_empty_hints() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let result = locate_emlx_with_hints(
-            temp_dir.path(),
-            "V10",
-            "imap://test/INBOX",
-            42,
-            &[],
-            None,
-        );
+        let result =
+            locate_emlx_with_hints(temp_dir.path(), "V10", "imap://test/INBOX", 42, &[], None);
         // Should still work with message_rowid as default hint
         assert!(result.is_none()); // No actual file exists
     }
@@ -1285,12 +1279,7 @@ mod tests {
     #[test]
     fn locate_emlx_handles_nonexistent_mailbox() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let result = locate_emlx(
-            temp_dir.path(),
-            "V10",
-            "imap://test/NonExistentMailbox",
-            42,
-        );
+        let result = locate_emlx(temp_dir.path(), "V10", "imap://test/NonExistentMailbox", 42);
         assert!(result.is_none());
     }
 
@@ -1344,9 +1333,15 @@ mod tests {
         assert!(hashed_data_bucket_segments("123").is_none());
 
         // Four digits - should return 1 segment reversed
-        assert_eq!(hashed_data_bucket_segments("1234"), Some(vec!["1".to_string()]));
+        assert_eq!(
+            hashed_data_bucket_segments("1234"),
+            Some(vec!["1".to_string()])
+        );
 
         // Five digits - should return 2 segments reversed
-        assert_eq!(hashed_data_bucket_segments("12345"), Some(vec!["2".to_string(), "1".to_string()]));
+        assert_eq!(
+            hashed_data_bucket_segments("12345"),
+            Some(vec!["2".to_string(), "1".to_string()])
+        );
     }
 }

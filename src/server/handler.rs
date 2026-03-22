@@ -526,11 +526,26 @@ mod tests {
 
     #[test]
     fn format_elapsed_seconds_formats_correctly() {
-        assert_eq!(MailMcpServer::format_elapsed_seconds(Duration::from_millis(0)), "0.000");
-        assert_eq!(MailMcpServer::format_elapsed_seconds(Duration::from_millis(1)), "0.001");
-        assert_eq!(MailMcpServer::format_elapsed_seconds(Duration::from_millis(100)), "0.100");
-        assert_eq!(MailMcpServer::format_elapsed_seconds(Duration::from_millis(1234)), "1.234");
-        assert_eq!(MailMcpServer::format_elapsed_seconds(Duration::from_secs(10)), "10.000");
+        assert_eq!(
+            MailMcpServer::format_elapsed_seconds(Duration::from_millis(0)),
+            "0.000"
+        );
+        assert_eq!(
+            MailMcpServer::format_elapsed_seconds(Duration::from_millis(1)),
+            "0.001"
+        );
+        assert_eq!(
+            MailMcpServer::format_elapsed_seconds(Duration::from_millis(100)),
+            "0.100"
+        );
+        assert_eq!(
+            MailMcpServer::format_elapsed_seconds(Duration::from_millis(1234)),
+            "1.234"
+        );
+        assert_eq!(
+            MailMcpServer::format_elapsed_seconds(Duration::from_secs(10)),
+            "10.000"
+        );
     }
 
     #[test]
@@ -593,9 +608,11 @@ mod tests {
         // Call get_attachment_content without attachment_id
         let args = Map::new();
 
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async { server.call_tool_by_name("get_attachment_content", args).await });
+        let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            server
+                .call_tool_by_name("get_attachment_content", args)
+                .await
+        });
 
         // Should return an error response (not a panic)
         assert!(result.is_err() || (result.is_ok() && !result.unwrap().content.is_empty()));

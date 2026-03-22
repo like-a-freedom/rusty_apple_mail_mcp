@@ -4,11 +4,6 @@ on:
   release:
     types: [created]
   workflow_dispatch:
-    inputs:
-      debug:
-        description: Enable debug mode
-        required: false
-        default: false
   pull_request:
     branches: [main, master]
 
@@ -30,19 +25,16 @@ jobs:
             ~/.cargo/git
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Cache cargo target (host + linux target)
-        if: runner.os == 'Linux'
+      - name: Cache cargo target directory
         uses: actions/cache@v5
         with:
-          path: |
-            target
-            target/x86_64-unknown-linux-gnu
-          key: ${{ runner.os }}-cargo-target-x86_64-unknown-linux-gnu-${{ hashFiles('**/Cargo.lock') }}
+          path: target
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-target-x86_64-unknown-linux-gnu-
+            ${{ runner.os }}-cargo-target-
 
       - name: Set up Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1.15.2
+        uses: actions-rust-lang/setup-rust-toolchain@v1.15.4
         with:
           toolchain: stable
           components: rustfmt,clippy
@@ -94,22 +86,14 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - os_name: Linux-x86_64
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            bin: intervals_icu_mcp_linux_x86_64
           - os_name: macOS-x86_64
-            os: macos-latest
+            os: macos-13
             target: x86_64-apple-darwin
-            bin: intervals_icu_mcp_macos_x86_64
+            bin: rusty_apple_mail_mcp_macos_x86_64
           - os_name: macOS-aarch64
-            os: macos-latest
+            os: macos-14
             target: aarch64-apple-darwin
-            bin: intervals_icu_mcp_macos_aarch64
-          - os_name: Windows-x86_64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            bin: intervals_icu_mcp_windows_x86_64.exe
+            bin: rusty_apple_mail_mcp_macos_aarch64
     steps:
       - uses: actions/checkout@v6
 
@@ -138,42 +122,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-target-${{ matrix.platform.target }}-
 
-      - name: Build Linux release (if Linux)
-        if: matrix.platform.target == 'x86_64-unknown-linux-gnu'
-        run: |
-          cargo build -p intervals_icu_mcp --release --target x86_64-unknown-linux-gnu
-          mkdir -p app/${{ matrix.platform.target }}
-          cp target/${{ matrix.platform.target }}/release/intervals_icu_mcp app/${{ matrix.platform.target }}/${{ matrix.platform.bin }}
-
       - name: Build binary
-        if: matrix.platform.target != 'x86_64-unknown-linux-gnu'
-        run: cargo build -p intervals_icu_mcp --release --target ${{ matrix.platform.target }}
+        run: cargo build --bin rusty_apple_mail_mcp --release --target ${{ matrix.platform.target }}
 
-      - name: Prepare artifact (Unix)
-        if: matrix.platform.os != 'windows-latest'
+      - name: Prepare artifact
         run: |
           mkdir -p app/${{ matrix.platform.target }}
-          if [ ! -f app/${{ matrix.platform.target }}/${{ matrix.platform.bin }} ]; then
-            cp target/${{ matrix.platform.target }}/release/intervals_icu_mcp app/${{ matrix.platform.target }}/${{ matrix.platform.bin }}
-          fi
+          cp target/${{ matrix.platform.target }}/release/rusty_apple_mail_mcp app/${{ matrix.platform.target }}/${{ matrix.platform.bin }}
 
-      - name: Prepare artifact (Windows)
-        if: matrix.platform.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path app/${{ matrix.platform.target }}
-          Copy-Item target/${{ matrix.platform.target }}/release/intervals_icu_mcp.exe app/${{ matrix.platform.target }}/${{ matrix.platform.bin }}
-
-      - name: Generate SHA-256 (Unix)
-        if: matrix.platform.os != 'windows-latest'
+      - name: Generate SHA-256
         run: |
           shasum -a 256 app/${{ matrix.platform.target }}/${{ matrix.platform.bin }} | cut -d ' ' -f 1 > app/${{ matrix.platform.target }}/${{ matrix.platform.bin }}.sha256
-
-      - name: Generate SHA-256 (Windows)
-        if: matrix.platform.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          (Get-FileHash -Algorithm SHA256 app/${{ matrix.platform.target }}/${{ matrix.platform.bin }}).Hash.ToLower() | Out-File -Encoding ascii app/${{ matrix.platform.target }}/${{ matrix.platform.bin }}.sha256
 
       - name: Upload release assets
         if: github.event_name == 'release'
@@ -185,40 +144,3 @@ jobs:
             app/${{ matrix.platform.target }}/${{ matrix.platform.bin }}.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build_docker_images:
-    name: Build Docker images
-    if: github.event_name == 'release'
-    needs: checks
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3.7.0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3.11.1
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push multi-arch image
-        uses: docker/build-push-action@v6.18.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/rusty-intervals-mcp:latest
-            ghcr.io/${{ github.repository_owner }}/rusty-intervals-mcp:${{ github.ref_name }}

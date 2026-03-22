@@ -317,18 +317,13 @@ mod tests {
 
     #[test]
     fn parse_account_selectors_splits_and_trims_values() {
-        let selectors = parse_account_selectors(Some(
-            " Work Email, user@work.example.com ,imap://personal ",
-        ))
-        .expect("selectors should parse");
+        let selectors =
+            parse_account_selectors(Some(" Work Email, user@work.example.com ,imap://personal "))
+                .expect("selectors should parse");
 
         assert_eq!(
             selectors,
-            vec![
-                "Work Email",
-                "user@work.example.com",
-                "imap://personal"
-            ]
+            vec!["Work Email", "user@work.example.com", "imap://personal"]
         );
     }
 }

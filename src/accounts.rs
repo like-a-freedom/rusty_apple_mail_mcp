@@ -330,10 +330,7 @@ mod tests {
         assert_eq!(accounts.len(), 3);
         let exchange = accounts.get("ews://EWS-UUID").expect("exchange account");
         assert_eq!(exchange.account_name.as_deref(), Some("Work Email"));
-        assert_eq!(
-            exchange.email.as_deref(),
-            Some("user@work.example.com")
-        );
+        assert_eq!(exchange.email.as_deref(), Some("user@work.example.com"));
 
         let imap = accounts.get("imap://IMAP-UUID").expect("imap account");
         assert_eq!(imap.email.as_deref(), Some("solovey.anton@gmail.com"));
