@@ -86,12 +86,8 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - os_name: macOS-x86_64
-            os: macos-13
-            target: x86_64-apple-darwin
-            bin: rusty_apple_mail_mcp_macos_x86_64
           - os_name: macOS-aarch64
-            os: macos-14
+            os: macos-26
             target: aarch64-apple-darwin
             bin: rusty_apple_mail_mcp_macos_aarch64
     steps:
