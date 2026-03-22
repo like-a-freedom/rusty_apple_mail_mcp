@@ -101,10 +101,7 @@ pub fn list_accounts_with_conn(
     Ok(ListAccountsResponse {
         status: None,
         total_count: Some(accounts.len() as u32),
-        guidance: Some(
-            "Use account_id as the `account` filter in search_messages, or set APPLE_MAIL_ACCOUNT to one of the listed account_name/email values to scope the whole server."
-                .to_string(),
-        ),
+        guidance: None,
         accounts: accounts
             .into_iter()
             .map(|account| {
