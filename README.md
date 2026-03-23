@@ -229,13 +229,6 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo doc --no-deps
 ```
 
-## Documentation
-
-- `docs/APPLE_MAIL_MCP_SRS.md` — product and behavior requirements
-- `docs/APPLE_MAIL_MCP_IMPL_PLAN.md` — implementation notes and architecture
-- `docs/SMOKE_TEST.md` — real-data smoke testing on macOS
-- `docs/INTENT_DRIVEN_MCP_DESIGN_GUIDE.md` — design guidance for focused MCP tools
-
 ## Limitations
 
 - macOS only
