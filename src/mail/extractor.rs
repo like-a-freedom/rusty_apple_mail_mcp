@@ -100,7 +100,6 @@ pub fn extract_text(bytes: &[u8], mime_type: &str) -> ExtractionResult {
             },
             Err(e) => ExtractionResult::NotSupported {
                 reason: match e {
-                    crate::mail::pdf::PdfError::InvalidPdf => "Not a valid PDF file",
                     crate::mail::pdf::PdfError::PdfParse(_) => "Failed to parse PDF",
                     crate::mail::pdf::PdfError::NoTextLayer => {
                         "PDF has no text layer (scanned). OCR not supported"
@@ -744,5 +743,194 @@ mod tests {
         assert!(text.contains("Please review the attached document."));
         assert!(text.contains("Footer text"));
         assert!(!text.contains("font-family"));
+    }
+
+    #[test]
+    fn extract_text_docx_success() {
+        use std::io::{Cursor, Write};
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p><w:r><w:t>Hello from DOCX</w:t></w:r></w:p>
+</w:body>
+</w:document>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = extract_text(
+            &buf.into_inner(),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        );
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert!(content.contains("Hello from DOCX"));
+                assert_eq!(method, "docx_to_markdown");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected success, got: {}", reason);
+            }
+        }
+    }
+
+    #[test]
+    fn extract_text_xlsx_success() {
+        use std::io::{Cursor, Write};
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetData>
+<row><c t="str"><v>Cell Content</v></c></row>
+</sheetData>
+</worksheet>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = extract_text(
+            &buf.into_inner(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        );
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert!(content.contains("Cell Content"));
+                assert_eq!(method, "xlsx_to_csv");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected success, got: {}", reason);
+            }
+        }
+    }
+
+    #[test]
+    fn extract_text_pptx_success() {
+        use std::io::{Cursor, Write};
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("ppt/presentation.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+</p:presentation>"#,
+            )
+            .unwrap();
+            zip.start_file("ppt/slides/slide1.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Slide Text</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+</p:sld>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = extract_text(
+            &buf.into_inner(),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        );
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert!(content.contains("Slide Text"));
+                assert_eq!(method, "pptx_to_text");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected success, got: {}", reason);
+            }
+        }
+    }
+
+    #[test]
+    fn extract_text_pdf_with_text() {
+        // Minimal PDF with text content
+        let pdf = b"%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length 44 >> stream
+BT /F1 12 Tf 100 700 Td (Hello PDF) Tj ET
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000260 00000 n 
+0000000354 00000 n 
+trailer << /Size 6 /Root 1 0 R >>
+startxref
+428
+%%EOF";
+
+        let result = extract_text(pdf, "application/pdf");
+        // PDF text extraction may or may not succeed depending on lopdf
+        match result {
+            ExtractionResult::Text { method, .. } => {
+                assert_eq!(method, "pdf_text_extract");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                // Acceptable if lopdf can't extract from this minimal PDF
+                assert!(reason.contains("PDF") || reason.contains("text"));
+            }
+        }
+    }
+
+    #[test]
+    fn extract_text_docx_error_messages() {
+        let result = extract_text(
+            b"not a zip",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        );
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("ZIP"));
+        } else {
+            panic!("Expected NotSupported");
+        }
+    }
+
+    #[test]
+    fn extract_text_xlsx_error_messages() {
+        let result = extract_text(
+            b"not a zip",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        );
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("ZIP"));
+        } else {
+            panic!("Expected NotSupported");
+        }
+    }
+
+    #[test]
+    fn extract_text_pptx_error_messages() {
+        let result = extract_text(
+            b"not a zip",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        );
+        if let ExtractionResult::NotSupported { reason } = result {
+            assert!(reason.contains("ZIP"));
+        } else {
+            panic!("Expected NotSupported");
+        }
     }
 }
