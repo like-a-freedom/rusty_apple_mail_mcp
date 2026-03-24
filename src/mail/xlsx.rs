@@ -536,4 +536,142 @@ mod tests {
         let result = xlsx_to_csv(&buf.into_inner()).unwrap();
         assert!(result.contains("Direct,123"));
     }
+
+    #[test]
+    fn test_xlsx_empty_worksheet() {
+        use std::io::Write;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+
+            zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:worksheet xmlns:w="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetData>
+</sheetData>
+</w:worksheet>"#,
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let result = xlsx_to_csv(&buf.into_inner());
+        assert!(matches!(result, Err(XlsxError::EmptyWorksheet)));
+    }
+
+    #[test]
+    fn test_xlsx_xml_parse_error() {
+        use std::io::Write;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+
+            zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+            zip.write_all(b"<invalid xml without closing").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = xlsx_to_csv(&buf.into_inner());
+        assert!(matches!(result, Err(XlsxError::XmlParse(_))));
+    }
+
+    #[test]
+    fn test_xlsx_with_boolean_cells() {
+        use std::io::Write;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+
+            zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetData>
+<row r="1">
+<c r="A1" t="b"><v>1</v></c>
+<c r="B1" t="b"><v>0</v></c>
+</row>
+</sheetData>
+</worksheet>"#,
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let result = xlsx_to_csv(&buf.into_inner()).unwrap();
+        assert!(result.contains("TRUE,FALSE"));
+    }
+
+    #[test]
+    fn test_xlsx_with_inline_string() {
+        use std::io::Write;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+
+            zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetData>
+<row r="1">
+<c r="A1"><is><t>Inline Text</t></is></c>
+</row>
+</sheetData>
+</worksheet>"#,
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let result = xlsx_to_csv(&buf.into_inner()).unwrap();
+        assert!(result.contains("Inline Text"));
+    }
+
+    #[test]
+    fn test_resolve_cell_value_invalid_shared_string_index() {
+        let shared: Vec<String> = vec![];
+        // Invalid index - should return empty string (no shared string at that index)
+        assert_eq!(resolve_cell_value("999", Some("s"), &shared), "");
+        // Non-numeric value with 's' type - returns the value as-is since parsing fails
+        assert_eq!(resolve_cell_value("abc", Some("s"), &shared), "abc");
+    }
+
+    #[test]
+    fn test_escape_csv_cell_with_carriage_return() {
+        assert_eq!(escape_csv_cell("with\rCR"), "\"with\rCR\"");
+    }
+
+    #[test]
+    fn test_xlsx_error_display() {
+        let err = XlsxError::InvalidZip;
+        assert_eq!(format!("{}", err), "Not a valid ZIP archive");
+
+        let err = XlsxError::MissingWorksheet("sheet1.xml".to_string());
+        assert_eq!(format!("{}", err), "Missing worksheet: sheet1.xml");
+
+        let err = XlsxError::XmlParse("test error".to_string());
+        assert_eq!(format!("{}", err), "XML parse error: test error");
+
+        let err = XlsxError::SharedStrings("test".to_string());
+        assert_eq!(format!("{}", err), "Shared strings error: test");
+
+        let err = XlsxError::Utf8Error;
+        assert_eq!(format!("{}", err), "UTF-8 decoding error");
+
+        let err = XlsxError::EmptyWorksheet;
+        assert_eq!(format!("{}", err), "Empty worksheet");
+    }
 }
