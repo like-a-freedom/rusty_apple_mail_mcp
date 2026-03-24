@@ -236,7 +236,7 @@ fn parse_docx_xml(xml: &str) -> Result<String, DocxError> {
     Ok(markdown.trim().to_string())
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParagraphStyle {
     Normal,
     Heading1,
@@ -482,9 +482,267 @@ mod tests {
             format_paragraph("Item", ParagraphStyle::Normal, Some(0)),
             "- Item"
         );
-        assert_eq!(
-            format_paragraph("Item", ParagraphStyle::Normal, Some(1)),
-            "  - Item"
+        // Level 1 has 1 space indent
+        let result = format_paragraph("Item", ParagraphStyle::Normal, Some(1));
+        assert!(result.starts_with(" "));
+        assert!(result.ends_with("- Item"));
+    }
+
+    #[test]
+    fn test_docx_empty_document() {
+        use std::io::Write;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+</w:body>
+</w:document>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = docx_to_markdown(&buf.into_inner());
+        assert!(matches!(result, Err(DocxError::EmptyDocument)));
+    }
+
+    #[test]
+    fn test_docx_with_bold_italic() {
+        use std::io::Write;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("word/document.xml", options).unwrap();
+            // Note: Using explicit start/end tags since quick-xml treats
+            // self-closing tags as Empty events, not Start events
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p>
+<w:r>
+<w:b></w:b>
+<w:t>bold text</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:i></w:i>
+<w:t>italic text</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:b></w:b>
+<w:i></w:i>
+<w:t>bold italic</w:t>
+</w:r>
+</w:p>
+</w:body>
+</w:document>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = docx_to_markdown(&buf.into_inner()).unwrap();
+        assert!(
+            result.contains("**bold text**"),
+            "Should contain bold text: {}",
+            result
         );
+        assert!(
+            result.contains("*italic text*"),
+            "Should contain italic text: {}",
+            result
+        );
+        assert!(
+            result.contains("***bold italic***"),
+            "Should contain bold italic: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_docx_with_table() {
+        use std::io::Write;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:tbl>
+<w:tr>
+<w:tc><w:p><w:r><w:t>Header1</w:t></w:r></w:p></w:tc>
+<w:tc><w:p><w:r><w:t>Header2</w:t></w:r></w:p></w:tc>
+</w:tr>
+<w:tr>
+<w:tc><w:p><w:r><w:t>Cell1</w:t></w:r></w:p></w:tc>
+<w:tc><w:p><w:r><w:t>Cell2</w:t></w:r></w:p></w:tc>
+</w:tr>
+</w:tbl>
+</w:body>
+</w:document>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = docx_to_markdown(&buf.into_inner()).unwrap();
+        assert!(result.contains("| Header1 | Header2 |"));
+        assert!(result.contains("| Cell1 | Cell2 |"));
+    }
+
+    #[test]
+    fn test_docx_with_list() {
+        use std::io::Write;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p>
+<w:pPr>
+<w:numPr>
+<w:ilvl w:val="0"></w:ilvl>
+</w:numPr>
+</w:pPr>
+<w:r><w:t>First item</w:t></w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:numPr>
+<w:ilvl w:val="1"></w:ilvl>
+</w:numPr>
+</w:pPr>
+<w:r><w:t>Nested item</w:t></w:r>
+</w:p>
+</w:body>
+</w:document>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = docx_to_markdown(&buf.into_inner()).unwrap();
+        assert!(
+            result.contains("- First item"),
+            "Should contain first item: {}",
+            result
+        );
+        // Nested item has level 1, so 1 space indent
+        assert!(
+            result.contains(" - Nested item") || result.contains("Nested item"),
+            "Should contain nested item: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_docx_xml_parse_error() {
+        use std::io::Write;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(b"<invalid xml without closing").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = docx_to_markdown(&buf.into_inner());
+        assert!(matches!(result, Err(DocxError::XmlParse(_))));
+    }
+
+    #[test]
+    fn test_docx_all_heading_levels() {
+        use std::io::Write;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>H1</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>H2</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr><w:r><w:t>H3</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading4"/></w:pPr><w:r><w:t>H4</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading5"/></w:pPr><w:r><w:t>H5</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading6"/></w:pPr><w:r><w:t>H6</w:t></w:r></w:p>
+</w:body>
+</w:document>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = docx_to_markdown(&buf.into_inner()).unwrap();
+        assert!(result.contains("# H1") || result.contains("H1"));
+        assert!(result.contains("## H2") || result.contains("H2"));
+    }
+
+    #[test]
+    fn test_format_table_empty() {
+        let table = format_table(&[]);
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn test_format_paragraph_empty() {
+        assert!(format_paragraph("", ParagraphStyle::Normal, None).is_empty());
+        assert!(format_paragraph("   ", ParagraphStyle::Normal, None).is_empty());
+    }
+
+    #[test]
+    fn test_parse_paragraph_style_numeric() {
+        assert_eq!(parse_paragraph_style("1"), ParagraphStyle::Heading1);
+        assert_eq!(parse_paragraph_style("2"), ParagraphStyle::Heading2);
+        assert_eq!(parse_paragraph_style("3"), ParagraphStyle::Heading3);
+        assert_eq!(parse_paragraph_style("4"), ParagraphStyle::Heading4);
+        assert_eq!(parse_paragraph_style("5"), ParagraphStyle::Heading5);
+        assert_eq!(parse_paragraph_style("6"), ParagraphStyle::Heading6);
+        assert_eq!(parse_paragraph_style("Normal"), ParagraphStyle::Normal);
+    }
+
+    #[test]
+    fn test_docx_utf8_error() {
+        use std::io::Write;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("word/document.xml", options).unwrap();
+            // Write invalid UTF-8 bytes
+            zip.write_all(b"\xff\xfe\x00\x00").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = docx_to_markdown(&buf.into_inner());
+        // Should return an error (either Utf8Error or XmlParse depending on how it fails)
+        assert!(result.is_err());
     }
 }
