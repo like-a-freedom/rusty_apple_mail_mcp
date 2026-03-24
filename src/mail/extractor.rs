@@ -98,16 +98,57 @@ pub fn extract_text(bytes: &[u8], mime_type: &str) -> ExtractionResult {
         };
     }
 
-    // Office documents - not supported in v1.0
-    if mime_lower.contains("wordprocessingml")
-        || mime_lower.contains("spreadsheetml")
-        || mime_lower.contains("presentationml")
+    // DOCX - convert to Markdown
+    if mime_lower == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
+        return match crate::mail::docx::docx_to_markdown(bytes) {
+            Ok(markdown) => ExtractionResult::Text {
+                content: markdown,
+                method: "docx_to_markdown",
+            },
+            Err(e) => ExtractionResult::NotSupported {
+                reason: match e {
+                    crate::mail::docx::DocxError::InvalidZip => "DOCX is not a valid ZIP archive",
+                    crate::mail::docx::DocxError::MissingDocumentXml => {
+                        "DOCX is missing word/document.xml"
+                    }
+                    crate::mail::docx::DocxError::XmlParse(_) => "Failed to parse DOCX XML",
+                    crate::mail::docx::DocxError::EmptyDocument => "DOCX document is empty",
+                    crate::mail::docx::DocxError::Utf8Error => "DOCX contains invalid UTF-8",
+                },
+            },
+        };
+    }
+
+    // XLSX - convert to CSV
+    if mime_lower == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" {
+        return match crate::mail::xlsx::xlsx_to_csv(bytes) {
+            Ok(csv) => ExtractionResult::Text {
+                content: csv,
+                method: "xlsx_to_csv",
+            },
+            Err(e) => ExtractionResult::NotSupported {
+                reason: match e {
+                    crate::mail::xlsx::XlsxError::InvalidZip => "XLSX is not a valid ZIP archive",
+                    crate::mail::xlsx::XlsxError::MissingWorksheet(_) => "XLSX worksheet not found",
+                    crate::mail::xlsx::XlsxError::XmlParse(_) => "Failed to parse XLSX XML",
+                    crate::mail::xlsx::XlsxError::SharedStrings(_) => {
+                        "Failed to read XLSX shared strings"
+                    }
+                    crate::mail::xlsx::XlsxError::Utf8Error => "XLSX contains invalid UTF-8",
+                    crate::mail::xlsx::XlsxError::EmptyWorksheet => "XLSX worksheet is empty",
+                },
+            },
+        };
+    }
+
+    // Legacy Office documents - not supported
+    if mime_lower.contains("presentationml")
         || mime_lower == "application/msword"
         || mime_lower == "application/vnd.ms-excel"
         || mime_lower == "application/vnd.ms-powerpoint"
     {
         return ExtractionResult::NotSupported {
-            reason: "Office document text extraction not in v1.0 scope",
+            reason: "Legacy Office document formats not supported",
         };
     }
 
@@ -319,7 +360,11 @@ mod tests {
         );
         assert!(matches!(result, ExtractionResult::NotSupported { .. }));
         if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("Office document"));
+            assert!(
+                reason.contains("ZIP"),
+                "Expected ZIP-related error for invalid DOCX, got: {}",
+                reason
+            );
         }
     }
 
