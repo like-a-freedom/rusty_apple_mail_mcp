@@ -681,7 +681,10 @@ mod tests {
             attachments: vec![],
         };
         let json = serde_json::to_string(&result).unwrap();
-        assert!(!json.contains("message_id_header"), "None should be omitted: {json}");
+        assert!(
+            !json.contains("message_id_header"),
+            "None should be omitted: {json}"
+        );
     }
 
     #[test]
@@ -701,7 +704,10 @@ mod tests {
             attachments: vec![],
         };
         let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("message_id_header"), "Some should be present: {json}");
+        assert!(
+            json.contains("message_id_header"),
+            "Some should be present: {json}"
+        );
     }
 
     #[test]
@@ -721,8 +727,14 @@ mod tests {
             attachments: vec![],
         };
         let json = serde_json::to_string(&result).unwrap();
-        assert!(!json.contains("\"to\""), "empty to should be omitted: {json}");
-        assert!(!json.contains("\"cc\""), "empty cc should be omitted: {json}");
+        assert!(
+            !json.contains("\"to\""),
+            "empty to should be omitted: {json}"
+        );
+        assert!(
+            !json.contains("\"cc\""),
+            "empty cc should be omitted: {json}"
+        );
     }
 
     #[test]
@@ -742,8 +754,14 @@ mod tests {
             attachments: vec![],
         };
         let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("\"to\""), "nonempty to should be present: {json}");
-        assert!(json.contains("\"cc\""), "nonempty cc should be present: {json}");
+        assert!(
+            json.contains("\"to\""),
+            "nonempty to should be present: {json}"
+        );
+        assert!(
+            json.contains("\"cc\""),
+            "nonempty cc should be present: {json}"
+        );
     }
 
     #[test]
@@ -763,6 +781,9 @@ mod tests {
             attachments: vec![],
         };
         let json = serde_json::to_string(&result).unwrap();
-        assert!(!json.contains("body_html"), "None body_html should be omitted: {json}");
+        assert!(
+            !json.contains("body_html"),
+            "None body_html should be omitted: {json}"
+        );
     }
 }
