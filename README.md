@@ -1,4 +1,4 @@
-# rusty_apple_mail_mcp
+# Rusty Apple Mail MCP Server
 
 ![Rust 2024](https://img.shields.io/badge/rust-2024-orange?style=flat-square&logo=rust)
 ![Protocol MCP](https://img.shields.io/badge/protocol-MCP-6f42c1?style=flat-square)
