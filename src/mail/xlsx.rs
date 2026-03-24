@@ -83,8 +83,8 @@ fn read_shared_strings(
 
 /// Parse shared strings XML.
 fn parse_shared_strings(xml: &str) -> Result<Vec<String>, XlsxError> {
-    use quick_xml::events::Event;
     use quick_xml::Reader;
+    use quick_xml::events::Event;
 
     let mut reader = Reader::from_str(xml);
 
@@ -171,8 +171,8 @@ fn read_worksheet(
 
 /// Parse worksheet XML and convert to CSV.
 fn parse_worksheet_to_csv(xml: &str, shared_strings: &[String]) -> Result<String, XlsxError> {
-    use quick_xml::events::Event;
     use quick_xml::Reader;
+    use quick_xml::events::Event;
 
     let mut reader = Reader::from_str(xml);
 
