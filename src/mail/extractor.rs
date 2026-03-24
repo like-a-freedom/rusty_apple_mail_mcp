@@ -91,10 +91,23 @@ pub fn extract_text(bytes: &[u8], mime_type: &str) -> ExtractionResult {
         return extract_text_from_html(bytes);
     }
 
-    // PDF - not supported in v1.0 (requires PDF parsing library)
+    // PDF - extract text layer (no OCR)
     if mime_lower == "application/pdf" {
-        return ExtractionResult::NotSupported {
-            reason: "PDF text extraction requires external library, not in v1.0 scope",
+        return match crate::mail::pdf::pdf_to_text(bytes) {
+            Ok(text) => ExtractionResult::Text {
+                content: text,
+                method: "pdf_text_extract",
+            },
+            Err(e) => ExtractionResult::NotSupported {
+                reason: match e {
+                    crate::mail::pdf::PdfError::InvalidPdf => "Not a valid PDF file",
+                    crate::mail::pdf::PdfError::PdfParse(_) => "Failed to parse PDF",
+                    crate::mail::pdf::PdfError::NoTextLayer => {
+                        "PDF has no text layer (scanned). OCR not supported"
+                    }
+                    crate::mail::pdf::PdfError::EmptyDocument => "PDF is empty",
+                },
+            },
         };
     }
 
@@ -141,9 +154,30 @@ pub fn extract_text(bytes: &[u8], mime_type: &str) -> ExtractionResult {
         };
     }
 
+    // PPTX - convert to plain text
+    if mime_lower == "application/vnd.openxmlformats-officedocument.presentationml.presentation" {
+        return match crate::mail::pptx::pptx_to_text(bytes) {
+            Ok(text) => ExtractionResult::Text {
+                content: text,
+                method: "pptx_to_text",
+            },
+            Err(e) => ExtractionResult::NotSupported {
+                reason: match e {
+                    crate::mail::pptx::PptxError::InvalidZip => "PPTX is not a valid ZIP archive",
+                    crate::mail::pptx::PptxError::MissingPresentation => {
+                        "PPTX is missing presentation.xml"
+                    }
+                    crate::mail::pptx::PptxError::MissingSlide(_) => "PPTX slide not found",
+                    crate::mail::pptx::PptxError::XmlParse(_) => "Failed to parse PPTX XML",
+                    crate::mail::pptx::PptxError::EmptyDocument => "PPTX presentation is empty",
+                    crate::mail::pptx::PptxError::Utf8Error => "PPTX contains invalid UTF-8",
+                },
+            },
+        };
+    }
+
     // Legacy Office documents - not supported
-    if mime_lower.contains("presentationml")
-        || mime_lower == "application/msword"
+    if mime_lower == "application/msword"
         || mime_lower == "application/vnd.ms-excel"
         || mime_lower == "application/vnd.ms-powerpoint"
     {
