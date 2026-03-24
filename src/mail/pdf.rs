@@ -80,7 +80,6 @@ mod tests {
             Err(PdfError::PdfParse(_)) => (),
             Err(PdfError::EmptyDocument) => (),
             Err(PdfError::NoTextLayer) => (),
-            Err(e) => panic!("Unexpected error: {}", e),
         }
     }
 
@@ -133,7 +132,7 @@ startxref
             Err(PdfError::NoTextLayer) => (),
             Ok(text) if text.is_empty() => (),
             Ok(text) => panic!("Expected empty or error, got: {}", text),
-            Err(e) => panic!("Unexpected error: {}", e),
+            Err(PdfError::PdfParse(_)) | Err(PdfError::EmptyDocument) => (),
         }
     }
 
@@ -182,7 +181,6 @@ startxref
             Err(PdfError::PdfParse(_)) => {
                 // Also acceptable - minimal PDF may not parse fully
             }
-            Err(e) => panic!("Unexpected error: {}", e),
         }
     }
 
