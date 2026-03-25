@@ -35,6 +35,7 @@ struct CachedMessage {
 
 /// Parameters for the get_message tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetMessageParams {
     /// Stable message identifier (from search results)
     pub message_id: String,
