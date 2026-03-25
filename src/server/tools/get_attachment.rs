@@ -253,6 +253,12 @@ mod tests {
             CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
             CREATE TABLE sender_addresses (sender INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
             CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE attachments (
+                ROWID INTEGER PRIMARY KEY,
+                message INTEGER,
+                attachment_id TEXT,
+                name TEXT
+            );
             CREATE TABLE messages (
                 ROWID INTEGER PRIMARY KEY,
                 subject INTEGER REFERENCES subjects,
@@ -280,6 +286,63 @@ mod tests {
         )
         .expect("seed test schema");
         conn
+    }
+
+    fn create_minimal_docx() -> Vec<u8> {
+        use std::io::{Cursor, Write};
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(
+                                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+    <Default Extension="xml" ContentType="application/xml"/>
+    <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+    <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#,
+                        )
+                        .unwrap();
+
+            zip.start_file("_rels/.rels", options).unwrap();
+            zip.write_all(
+                                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#,
+                        )
+                        .unwrap();
+
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+    <w:body>
+        <w:p>
+            <w:pPr>
+                <w:pStyle w:val="Heading1"/>
+            </w:pPr>
+            <w:r>
+                <w:t>External DOCX</w:t>
+            </w:r>
+        </w:p>
+        <w:p>
+            <w:r>
+                <w:t>Attachment payload</w:t>
+            </w:r>
+        </w:p>
+    </w:body>
+</w:document>"#,
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        buf.into_inner()
     }
 
     fn make_test_config(
@@ -502,5 +565,87 @@ mod tests {
         assert!(attachment.content.is_none());
         assert!(attachment.extraction_method.is_some());
         assert!(response.guidance.is_some());
+    }
+
+    #[test]
+    fn get_attachment_content_with_conn_falls_back_to_external_apple_mail_attachment() {
+        let conn = make_test_db();
+        conn.execute(
+            "INSERT INTO attachments (ROWID, message, attachment_id, name) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![1_i64, 1_i64, "2", "ROP Oman XDR NDR sizing draft.docx"],
+        )
+        .unwrap();
+
+        let temp_dir = TempDir::new().unwrap();
+        let config = make_test_config(&temp_dir, None);
+        let params = GetAttachmentParams {
+            attachment_id: "1:0".to_string(),
+            message_id: "1".to_string(),
+        };
+
+        let docx_bytes = create_minimal_docx();
+
+        let mail_dir = temp_dir
+            .path()
+            .join("V10")
+            .join("account-a")
+            .join("INBOX.mbox");
+        let messages_dir = mail_dir.join("Messages");
+        fs::create_dir_all(&messages_dir).unwrap();
+
+        let emlx_path = messages_dir.join("1.partial.emlx");
+        let email_content = concat!(
+            "From: sender@example.com\n",
+            "To: recipient@example.com\n",
+            "Subject: Test Subject\n",
+            "MIME-Version: 1.0\n",
+            "Content-Type: multipart/mixed; boundary=\"boundary\"\n",
+            "\n",
+            "--boundary\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Hello from body\n",
+            "--boundary\n",
+            "Content-Transfer-Encoding: base64\n",
+            "Content-Disposition: attachment; filename=\"ROP Oman XDR NDR sizing draft.docx\"\n",
+            "Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document; name=\"ROP Oman XDR NDR sizing draft.docx\"\n",
+            "X-Apple-Content-Length: 2048\n",
+            "\n",
+            "\n",
+            "--boundary--\n"
+        );
+        let emlx_content = format!("{}\n{}", email_content.len(), email_content);
+        fs::write(&emlx_path, emlx_content).unwrap();
+
+        let attachment_path = mail_dir
+            .join("Attachments")
+            .join("1")
+            .join("2")
+            .join("ROP Oman XDR NDR sizing draft.docx");
+        fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+        fs::write(&attachment_path, docx_bytes).unwrap();
+
+        let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
+
+        assert_eq!(response.status, None);
+        let attachment = response.attachment.expect("attachment result");
+        assert_eq!(
+            attachment.mime_type,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        assert_eq!(attachment.content_format, ContentFormat::ExtractedText);
+        assert_eq!(
+            attachment.extraction_method.as_deref(),
+            Some("docx_to_markdown")
+        );
+        let content = attachment.content.expect("extracted content");
+        assert!(
+            content.contains("External DOCX"),
+            "unexpected content: {content}"
+        );
+        assert!(
+            content.contains("Attachment payload"),
+            "unexpected content: {content}"
+        );
     }
 }

@@ -7,9 +7,11 @@
 //!
 //! We use the `mail-parser` crate to parse the RFC 2822 content.
 
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use mail_parser::{MessageParser, MimeHeaders};
+use walkdir::WalkDir;
 
 use crate::domain::AttachmentMeta;
 use crate::error::MailMcpError;
@@ -112,7 +114,7 @@ fn parse_emlx_internal(
 
     // Extract attachments
     let mut attachments = Vec::new();
-    for attachment in message.attachments() {
+    for (attachment_index, attachment) in message.attachments().enumerate() {
         let filename = attachment.attachment_name().map(|s| s.to_string());
 
         // Get MIME type as string
@@ -121,9 +123,13 @@ fn parse_emlx_internal(
             .map(content_type_to_mime)
             .unwrap_or_else(|| "application/octet-stream".to_string());
 
-        let content_bytes = attachment.contents();
-        let size_bytes = content_bytes.len() as u64;
-        let content = include_attachment_content.then(|| content_bytes.to_vec());
+        let (size_bytes, content) = resolve_attachment_payload(
+            path,
+            filename.as_deref(),
+            attachment_index,
+            attachment.contents(),
+            include_attachment_content,
+        );
 
         // Check if inline based on content disposition
         let is_inline = attachment
@@ -145,6 +151,91 @@ fn parse_emlx_internal(
         body_html,
         attachments,
     })
+}
+
+fn resolve_attachment_payload(
+    emlx_path: &Path,
+    filename: Option<&str>,
+    attachment_index: usize,
+    embedded_bytes: &[u8],
+    include_attachment_content: bool,
+) -> (u64, Option<Vec<u8>>) {
+    if !embedded_bytes.is_empty() {
+        return (
+            embedded_bytes.len() as u64,
+            include_attachment_content.then(|| embedded_bytes.to_vec()),
+        );
+    }
+
+    if let Some(external_path) =
+        find_external_attachment_file(emlx_path, filename, attachment_index)
+    {
+        let size_bytes = fs::metadata(&external_path)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        let content = if include_attachment_content {
+            fs::read(&external_path).ok()
+        } else {
+            None
+        };
+
+        if size_bytes > 0 || content.is_some() {
+            let resolved_size = content
+                .as_ref()
+                .map(|bytes| bytes.len() as u64)
+                .unwrap_or(size_bytes);
+            return (resolved_size, content);
+        }
+    }
+
+    (0, None)
+}
+
+fn find_external_attachment_file(
+    emlx_path: &Path,
+    filename: Option<&str>,
+    attachment_index: usize,
+) -> Option<PathBuf> {
+    let filename = filename?;
+    let attachments_dir = external_attachments_message_dir(emlx_path)?;
+
+    let direct_candidate = attachments_dir
+        .join((attachment_index + 1).to_string())
+        .join(filename);
+    if direct_candidate.is_file() {
+        return Some(direct_candidate);
+    }
+
+    WalkDir::new(&attachments_dir)
+        .max_depth(4)
+        .into_iter()
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let path = entry.path();
+            (entry.file_type().is_file()
+                && path.file_name().and_then(|name| name.to_str()) == Some(filename))
+            .then(|| path.to_path_buf())
+        })
+}
+
+fn external_attachments_message_dir(emlx_path: &Path) -> Option<PathBuf> {
+    let messages_dir = emlx_path
+        .ancestors()
+        .find(|ancestor| ancestor.file_name().and_then(|name| name.to_str()) == Some("Messages"))?;
+    let attachments_root = messages_dir.parent()?.join("Attachments");
+    let message_storage_id = emlx_message_storage_id(emlx_path)?;
+    Some(attachments_root.join(message_storage_id))
+}
+
+fn emlx_message_storage_id(emlx_path: &Path) -> Option<String> {
+    let file_name = emlx_path.file_name()?.to_str()?;
+    if let Some(stem) = file_name.strip_suffix(".partial.emlx") {
+        return Some(stem.to_string());
+    }
+
+    file_name
+        .strip_suffix(".emlx")
+        .map(std::string::ToString::to_string)
 }
 
 fn content_type_to_mime(content_type: &mail_parser::ContentType<'_>) -> String {
@@ -385,6 +476,98 @@ Hello, World!
         assert!(result.attachments[0].is_inline);
         assert_eq!(result.attachments[0].filename.as_deref(), Some("image.png"));
         assert_eq!(result.attachments[0].mime_type, "image/png");
+    }
+
+    #[test]
+    fn parse_emlx_reads_external_attachment_payload_from_apple_mail_storage() {
+        let temp_dir = TempDir::new().unwrap();
+        let messages_dir = temp_dir.path().join("Inbox.mbox").join("Messages");
+        fs::create_dir_all(&messages_dir).unwrap();
+        let emlx_path = messages_dir.join("195854.partial.emlx");
+
+        let email_content = concat!(
+            "From: sender@example.com\n",
+            "To: recipient@example.com\n",
+            "Subject: External attachment\n",
+            "MIME-Version: 1.0\n",
+            "Content-Type: multipart/mixed; boundary=\"boundary\"\n",
+            "\n",
+            "--boundary\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Body text\n",
+            "--boundary\n",
+            "Content-Transfer-Encoding: base64\n",
+            "Content-Disposition: attachment; filename=\"notes.txt\"\n",
+            "Content-Type: text/plain; name=\"notes.txt\"\n",
+            "X-Apple-Content-Length: 17\n",
+            "\n",
+            "\n",
+            "--boundary--\n"
+        );
+        let emlx_content = format!("{}\n{}", email_content.len(), email_content);
+        fs::write(&emlx_path, emlx_content).unwrap();
+
+        let attachment_dir = temp_dir
+            .path()
+            .join("Inbox.mbox")
+            .join("Attachments")
+            .join("195854")
+            .join("1");
+        fs::create_dir_all(&attachment_dir).unwrap();
+        fs::write(attachment_dir.join("notes.txt"), b"external payload").unwrap();
+
+        let result = parse_emlx(&emlx_path).unwrap();
+        assert_eq!(result.attachments.len(), 1);
+        assert_eq!(result.attachments[0].size_bytes, 16);
+        assert_eq!(
+            result.attachments[0].content.as_deref(),
+            Some(b"external payload".as_slice())
+        );
+    }
+
+    #[test]
+    fn parse_emlx_without_attachment_content_uses_external_attachment_size() {
+        let temp_dir = TempDir::new().unwrap();
+        let messages_dir = temp_dir.path().join("Inbox.mbox").join("Messages");
+        fs::create_dir_all(&messages_dir).unwrap();
+        let emlx_path = messages_dir.join("42.partial.emlx");
+
+        let email_content = concat!(
+            "From: sender@example.com\n",
+            "To: recipient@example.com\n",
+            "Subject: External attachment\n",
+            "MIME-Version: 1.0\n",
+            "Content-Type: multipart/mixed; boundary=\"boundary\"\n",
+            "\n",
+            "--boundary\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Body text\n",
+            "--boundary\n",
+            "Content-Disposition: attachment; filename=\"report.pdf\"\n",
+            "Content-Type: application/pdf; name=\"report.pdf\"\n",
+            "X-Apple-Content-Length: 123\n",
+            "\n",
+            "\n",
+            "--boundary--\n"
+        );
+        let emlx_content = format!("{}\n{}", email_content.len(), email_content);
+        fs::write(&emlx_path, emlx_content).unwrap();
+
+        let attachment_dir = temp_dir
+            .path()
+            .join("Inbox.mbox")
+            .join("Attachments")
+            .join("42")
+            .join("1");
+        fs::create_dir_all(&attachment_dir).unwrap();
+        fs::write(attachment_dir.join("report.pdf"), b"pdf payload bytes").unwrap();
+
+        let result = parse_emlx_without_attachment_content(&emlx_path).unwrap();
+        assert_eq!(result.attachments.len(), 1);
+        assert_eq!(result.attachments[0].size_bytes, 17);
+        assert_eq!(result.attachments[0].content, None);
     }
 
     #[test]
