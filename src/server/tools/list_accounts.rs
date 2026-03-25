@@ -14,6 +14,7 @@ use crate::server::tools::ResponseStatus;
 
 /// Parameters for the list_accounts tool.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ListAccountsParams {
     /// Include mailboxes grouped by account (default false)
     #[serde(default)]

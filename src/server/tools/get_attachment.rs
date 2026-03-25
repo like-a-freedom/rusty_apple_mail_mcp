@@ -12,6 +12,7 @@ use crate::server::tools::ResponseStatus;
 
 /// Parameters for the get_attachment_content tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetAttachmentParams {
     /// Attachment identifier (format: "{message_id}:{attachment_index}")
     pub attachment_id: String,
