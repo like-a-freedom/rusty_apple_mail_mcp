@@ -30,7 +30,7 @@ pub enum DocxError {
 ///
 /// # Returns
 ///
-/// Markdown string on success, DocxError on failure.
+/// Markdown string on success, `DocxError` on failure.
 ///
 /// # Example
 ///
@@ -40,6 +40,10 @@ pub enum DocxError {
 /// // Assuming you have DOCX bytes
 /// // let markdown = docx_to_markdown(&docx_bytes)?;
 /// ```
+///
+/// # Errors
+///
+/// Returns [`DocxError`] if the DOCX cannot be parsed or is empty.
 pub fn docx_to_markdown(bytes: &[u8]) -> Result<String, DocxError> {
     // Unzip the archive
     let cursor = Cursor::new(bytes);
@@ -66,6 +70,7 @@ pub fn docx_to_markdown(bytes: &[u8]) -> Result<String, DocxError> {
 }
 
 /// Parse DOCX XML and convert to Markdown.
+#[allow(clippy::too_many_lines)]
 fn parse_docx_xml(xml: &str) -> Result<String, DocxError> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
@@ -227,7 +232,7 @@ fn parse_docx_xml(xml: &str) -> Result<String, DocxError> {
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                return Err(DocxError::XmlParse(format!("XML parse error: {}", e)));
+                return Err(DocxError::XmlParse(format!("XML parse error: {e}")));
             }
             _ => {}
         }
@@ -261,9 +266,9 @@ fn parse_paragraph_style(style_val: &str) -> ParagraphStyle {
 
 fn apply_formatting(text: &str, bold: bool, italic: bool) -> String {
     match (bold, italic) {
-        (true, true) => format!("***{}***", text),
-        (true, false) => format!("**{}**", text),
-        (false, true) => format!("*{}*", text),
+        (true, true) => format!("***{text}***"),
+        (true, false) => format!("**{text}**"),
+        (false, true) => format!("*{text}*"),
         (false, false) => text.to_string(),
     }
 }
@@ -278,17 +283,17 @@ fn format_paragraph(text: &str, style: ParagraphStyle, list_level: Option<u8>) -
     if let Some(level) = list_level {
         let indent = "  ".repeat(level as usize);
         // Use bullet for now (detecting numbered lists would require parsing numbering.xml)
-        return format!("{}- {}", indent, trimmed);
+        return format!("{indent}- {trimmed}");
     }
 
     // Handle headings
     match style {
-        ParagraphStyle::Heading1 => format!("# {}", trimmed),
-        ParagraphStyle::Heading2 => format!("## {}", trimmed),
-        ParagraphStyle::Heading3 => format!("### {}", trimmed),
-        ParagraphStyle::Heading4 => format!("#### {}", trimmed),
-        ParagraphStyle::Heading5 => format!("##### {}", trimmed),
-        ParagraphStyle::Heading6 => format!("###### {}", trimmed),
+        ParagraphStyle::Heading1 => format!("# {trimmed}"),
+        ParagraphStyle::Heading2 => format!("## {trimmed}"),
+        ParagraphStyle::Heading3 => format!("### {trimmed}"),
+        ParagraphStyle::Heading4 => format!("#### {trimmed}"),
+        ParagraphStyle::Heading5 => format!("##### {trimmed}"),
+        ParagraphStyle::Heading6 => format!("###### {trimmed}"),
         ParagraphStyle::Normal => trimmed.to_string(),
     }
 }

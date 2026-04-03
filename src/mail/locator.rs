@@ -6,14 +6,14 @@
 //! This module implements a heuristic-based locator:
 //! 1. Parse mailbox URL to derive a likely mailbox-relative path
 //! 2. Probe nearby candidate directories first (cheap path-based heuristics)
-//! 3. Fallback to bounded recursive search under mail_directory/mail_version/
-//! 4. Cache resolved message_rowid → PathBuf mappings in-memory
+//! 3. Fallback to bounded recursive search under `mail_directory/mail_version`/
+//! 4. Cache resolved `message_rowid` → `PathBuf` mappings in-memory
 
-use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use walkdir::WalkDir;
 
@@ -25,11 +25,11 @@ struct CacheKey {
 
 /// In-memory cache for resolved message paths.
 /// Key: message ROWID, Value: resolved path to .emlx file
-static PATH_CACHE: Lazy<Mutex<HashMap<CacheKey, PathBuf>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static PATH_CACHE: LazyLock<Mutex<HashMap<CacheKey, PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-static MESSAGE_ID_HEADER_CACHE: Lazy<Mutex<HashMap<PathBuf, Option<String>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static MESSAGE_ID_HEADER_CACHE: LazyLock<Mutex<HashMap<PathBuf, Option<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, Default)]
 struct MailboxIndex {
@@ -39,8 +39,8 @@ struct MailboxIndex {
     headers_loaded: bool,
 }
 
-static MAILBOX_INDEX_CACHE: Lazy<Mutex<HashMap<PathBuf, MailboxIndex>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static MAILBOX_INDEX_CACHE: LazyLock<Mutex<HashMap<PathBuf, MailboxIndex>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Locate the .emlx file for a given message.
 ///
@@ -54,6 +54,7 @@ static MAILBOX_INDEX_CACHE: Lazy<Mutex<HashMap<PathBuf, MailboxIndex>>> =
 /// # Returns
 ///
 /// Path to the .emlx file if found, None otherwise.
+#[must_use]
 pub fn locate_emlx(
     mail_dir: &Path,
     mail_version: &str,
@@ -162,6 +163,7 @@ pub fn locate_emlx_with_hints(
 ///
 /// This variant intentionally avoids recursive directory walking and is suitable
 /// for list/search operations where latency matters more than exhaustive lookup.
+#[must_use]
 pub fn locate_emlx_quick(
     mail_dir: &Path,
     mail_version: &str,
@@ -270,7 +272,7 @@ fn find_emlx_file(
             for entry in WalkDir::new(&mailbox_dir)
                 .max_depth(8)
                 .into_iter()
-                .filter_map(|e| e.ok())
+                .filter_map(Result::ok)
             {
                 if entry.file_type().is_file()
                     && let Some(file_name) = entry.file_name().to_str()
@@ -593,7 +595,7 @@ fn build_mailbox_index(mailbox_dir: &Path) -> Option<MailboxIndex> {
     for entry in WalkDir::new(mailbox_dir)
         .max_depth(8)
         .into_iter()
-        .filter_map(|entry| entry.ok())
+        .filter_map(Result::ok)
     {
         if !entry.file_type().is_file() {
             continue;
@@ -602,7 +604,11 @@ fn build_mailbox_index(mailbox_dir: &Path) -> Option<MailboxIndex> {
         let Some(file_name) = entry.file_name().to_str() else {
             continue;
         };
-        if !(file_name.ends_with(".emlx") || file_name.ends_with(".partial.emlx")) {
+        let path = Path::new(file_name);
+        let is_emlx = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("emlx"));
+        if !is_emlx {
             continue;
         }
 

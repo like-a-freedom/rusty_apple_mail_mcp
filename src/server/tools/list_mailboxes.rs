@@ -1,4 +1,4 @@
-//! list_mailboxes tool implementation.
+//! `list_mailboxes` tool implementation.
 
 use rusqlite::Connection;
 use schemars::JsonSchema;
@@ -12,7 +12,7 @@ use crate::db::{
 use crate::error::MailMcpError;
 use crate::server::tools::ResponseStatus;
 
-/// Response for list_mailboxes tool.
+/// Response for `list_mailboxes` tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ListMailboxesResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,7 +38,11 @@ pub struct MailboxResult {
     pub account_id: Option<String>,
 }
 
-/// Execute `list_mailboxes` against an already-open SQLite connection.
+/// Execute `list_mailboxes` against an already-open `SQLite` connection.
+///
+/// # Errors
+///
+/// Returns an error if the database cannot be accessed.
 pub fn list_mailboxes_with_conn(
     config: &MailConfig,
     conn: &Connection,
@@ -74,13 +78,17 @@ pub fn list_mailboxes_with_conn(
 
     Ok(ListMailboxesResponse {
         status: None,
-        total_count: Some(results.len() as u32),
+        total_count: Some(u32::try_from(results.len()).unwrap_or(u32::MAX)),
         guidance: None,
         mailboxes: results,
     })
 }
 
-/// Execute the list_mailboxes tool.
+/// Execute the `list_mailboxes` tool.
+///
+/// # Errors
+///
+/// Returns an error if the database cannot be opened or accessed.
 pub fn list_mailboxes(config: &MailConfig) -> Result<ListMailboxesResponse, MailMcpError> {
     let db_path = config.envelope_db_path();
     let conn = open_readonly(&db_path)?;

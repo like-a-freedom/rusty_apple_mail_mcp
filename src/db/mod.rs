@@ -1,4 +1,4 @@
-//! Database access layer for Apple Mail's Envelope Index SQLite database.
+//! Database access layer for Apple Mail's Envelope Index `SQLite` database.
 
 mod connection;
 mod queries;

@@ -32,7 +32,7 @@ pub enum XlsxError {
 ///
 /// # Returns
 ///
-/// CSV string on success, XlsxError on failure.
+/// CSV string on success, `XlsxError` on failure.
 ///
 /// # Example
 ///
@@ -42,6 +42,10 @@ pub enum XlsxError {
 /// // Assuming you have XLSX bytes
 /// // let csv = xlsx_to_csv(&xlsx_bytes)?;
 /// ```
+///
+/// # Errors
+///
+/// Returns [`XlsxError`] if the XLSX cannot be parsed or has no worksheets.
 pub fn xlsx_to_csv(bytes: &[u8]) -> Result<String, XlsxError> {
     // Unzip the archive
     let cursor = Cursor::new(bytes);
@@ -72,7 +76,7 @@ fn read_shared_strings(
     let mut content = String::new();
     {
         let mut file = archive.by_name("xl/sharedStrings.xml").map_err(|e| {
-            XlsxError::SharedStrings(format!("Failed to open sharedStrings.xml: {}", e))
+            XlsxError::SharedStrings(format!("Failed to open sharedStrings.xml: {e}"))
         })?;
         file.read_to_string(&mut content)
             .map_err(|_| XlsxError::Utf8Error)?;
@@ -140,8 +144,7 @@ fn parse_shared_strings(xml: &str) -> Result<Vec<String>, XlsxError> {
             Ok(Event::Eof) => break,
             Err(e) => {
                 return Err(XlsxError::XmlParse(format!(
-                    "Shared strings parse error: {}",
-                    e
+                    "Shared strings parse error: {e}"
                 )));
             }
             _ => {}
@@ -179,7 +182,6 @@ fn parse_worksheet_to_csv(xml: &str, shared_strings: &[String]) -> Result<String
     let mut csv = Vec::new();
     let mut current_row: Vec<String> = Vec::new();
     let mut current_cell = String::new();
-    let _in_row = false;
     let mut in_cell = false;
     let mut in_value = false;
     let mut cell_type: Option<String> = None;
@@ -204,7 +206,7 @@ fn parse_worksheet_to_csv(xml: &str, shared_strings: &[String]) -> Result<String
                         // Check for cell type attribute
                         for attr in e.attributes().flatten() {
                             let key = String::from_utf8_lossy(attr.key.as_ref());
-                            if key.ends_with("t") {
+                            if key.ends_with('t') {
                                 let value = String::from_utf8_lossy(&attr.value);
                                 cell_type = Some(value.to_string());
                             }
@@ -262,7 +264,7 @@ fn parse_worksheet_to_csv(xml: &str, shared_strings: &[String]) -> Result<String
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                return Err(XlsxError::XmlParse(format!("Worksheet parse error: {}", e)));
+                return Err(XlsxError::XmlParse(format!("Worksheet parse error: {e}")));
             }
             _ => {}
         }
@@ -316,7 +318,7 @@ fn escape_csv_cell(cell: &str) -> String {
     if cell.contains(',') || cell.contains('"') || cell.contains('\n') || cell.contains('\r') {
         // Escape double quotes by doubling them
         let escaped = cell.replace('"', "\"\"");
-        format!("\"{}\"", escaped)
+        format!("\"{escaped}\"")
     } else {
         cell.to_string()
     }

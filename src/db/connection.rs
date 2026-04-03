@@ -4,15 +4,15 @@ use std::path::Path;
 
 /// Open the Envelope Index database in read-only mode.
 ///
-/// Uses SQLite URI to prevent any accidental writes.
-/// The `immutable=1` flag tells SQLite the database file is read-only and won't change,
+/// Uses `SQLite` URI to prevent any accidental writes.
+/// The `immutable=1` flag tells `SQLite` the database file is read-only and won't change,
 /// which is safe for our use case since Apple Mail owns the write lock.
 ///
 /// # Errors
 ///
 /// Returns [`MailMcpError::DatabaseNotFound`] if the database file doesn't exist.
 /// Returns [`MailMcpError::DatabaseLocked`] if the database is locked by Apple Mail.
-/// Returns [`MailMcpError::Sqlite`] for other SQLite errors.
+/// Returns [`MailMcpError::Sqlite`] for other `SQLite` errors.
 pub fn open_readonly(path: impl AsRef<Path>) -> Result<Connection, MailMcpError> {
     let path = path.as_ref();
     if !path.exists() {

@@ -1,4 +1,4 @@
-//! get_attachment_content tool implementation.
+//! `get_attachment_content` tool implementation.
 
 use rusqlite::Connection;
 use schemars::JsonSchema;
@@ -10,18 +10,19 @@ use crate::error::MailMcpError;
 use crate::mail::{extract_text, locate_emlx, parse_emlx};
 use crate::server::tools::ResponseStatus;
 
-/// Parameters for the get_attachment_content tool.
+/// Parameters for the `get_attachment_content` tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GetAttachmentParams {
-    /// Attachment identifier (format: "{message_id}:{attachment_index}")
+    /// Attachment identifier (format: "`{message_id}:{attachment_index}`")
     pub attachment_id: String,
     /// Parent message identifier (needed to locate the attachment file)
     pub message_id: String,
 }
 
-/// Response for get_attachment_content tool.
+/// Response for `get_attachment_content` tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
+#[must_use]
 pub struct GetAttachmentResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<ResponseStatus>,
@@ -44,7 +45,13 @@ pub struct GetAttachmentResult {
     pub extraction_method: Option<String>,
 }
 
-/// Execute `get_attachment_content` against an already-open SQLite connection.
+/// Execute `get_attachment_content` against an already-open `SQLite` connection.
+///
+/// # Errors
+///
+/// Returns an error if the database cannot be accessed or the message file cannot be parsed.
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::ptr_arg, clippy::needless_pass_by_value)]
 pub fn get_attachment_content_with_conn(
     config: &MailConfig,
     conn: &Connection,
@@ -102,15 +109,12 @@ pub fn get_attachment_content_with_conn(
         });
     }
 
-    let row = match crate::db::get_message_by_id(conn, message_id)? {
-        Some(row) => row,
-        None => {
-            return Ok(GetAttachmentResponse {
-                status: Some(ResponseStatus::NotFound),
-                attachment: None,
-                guidance: Some("Message not found in the index.".to_string()),
-            });
-        }
+    let Some(row) = crate::db::get_message_by_id(conn, message_id)? else {
+        return Ok(GetAttachmentResponse {
+            status: Some(ResponseStatus::NotFound),
+            attachment: None,
+            guidance: Some("Message not found in the index.".to_string()),
+        });
     };
 
     if let Some(mailbox_url) = row.mailbox_url.as_deref()
@@ -125,20 +129,17 @@ pub fn get_attachment_content_with_conn(
         });
     }
 
-    let emlx_path = match locate_emlx(
+    let Some(emlx_path) = locate_emlx(
         &config.mail_directory,
         &config.mail_version,
         row.mailbox_url.as_deref().unwrap_or(""),
         row.rowid,
-    ) {
-        Some(path) => path,
-        None => {
-            return Ok(GetAttachmentResponse {
-                status: Some(ResponseStatus::NotFound),
-                attachment: None,
-                guidance: Some("Message body file not found on disk.".to_string()),
-            });
-        }
+    ) else {
+        return Ok(GetAttachmentResponse {
+            status: Some(ResponseStatus::NotFound),
+            attachment: None,
+            guidance: Some("Message body file not found on disk.".to_string()),
+        });
     };
 
     let parsed = match parse_emlx(&emlx_path) {
@@ -159,18 +160,15 @@ pub fn get_attachment_content_with_conn(
         }
     };
 
-    let raw_attachment = match parsed.attachments.get(attachment_index) {
-        Some(attachment) => attachment,
-        None => {
-            return Ok(GetAttachmentResponse {
-                status: Some(ResponseStatus::NotFound),
-                attachment: None,
-                guidance: Some(format!(
-                    "Attachment index {attachment_index} out of range. Message has {} attachment(s).",
-                    parsed.attachments.len()
-                )),
-            });
-        }
+    let Some(raw_attachment) = parsed.attachments.get(attachment_index) else {
+        return Ok(GetAttachmentResponse {
+            status: Some(ResponseStatus::NotFound),
+            attachment: None,
+            guidance: Some(format!(
+                "Attachment index {attachment_index} out of range. Message has {} attachment(s).",
+                parsed.attachments.len()
+            )),
+        });
     };
 
     let meta = AttachmentMeta {
@@ -225,7 +223,11 @@ pub fn get_attachment_content_with_conn(
     }
 }
 
-/// Execute the get_attachment_content tool.
+/// Execute the `get_attachment_content` tool.
+///
+/// # Errors
+///
+/// Returns an error if the database cannot be opened or accessed.
 pub fn get_attachment_content(
     config: &MailConfig,
     params: GetAttachmentParams,
