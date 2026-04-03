@@ -1,7 +1,7 @@
 //! PPTX to plain text converter.
 //!
-//! Converts Microsoft PowerPoint presentations (.pptx) to plain text for LLM consumption.
-//! PPTX files are ZIP archives containing XML. This module extracts text from slides
+//! Converts `Microsoft PowerPoint` presentations (`.pptx`) to plain text for `LLM` consumption.
+//! `.pptx` files are `ZIP` archives containing `XML`. This module extracts text from slides
 //! and concatenates them with slide separators.
 
 use std::io::{Cursor, Read};
@@ -32,7 +32,7 @@ pub enum PptxError {
 ///
 /// # Returns
 ///
-/// Plain text string on success, PptxError on failure.
+/// Plain text string on success, `PptxError` on failure.
 ///
 /// # Example
 ///
@@ -42,6 +42,10 @@ pub enum PptxError {
 /// // Assuming you have PPTX bytes
 /// // let text = pptx_to_text(&pptx_bytes)?;
 /// ```
+///
+/// # Errors
+///
+/// Returns [`PptxError`] if the PPTX cannot be parsed or has no slides.
 pub fn pptx_to_text(bytes: &[u8]) -> Result<String, PptxError> {
     // Unzip the archive
     let cursor = Cursor::new(bytes);
@@ -58,7 +62,8 @@ pub fn pptx_to_text(bytes: &[u8]) -> Result<String, PptxError> {
     // Extract text from each slide
     let mut result = String::new();
     for (idx, slide_path) in slide_paths.iter().enumerate() {
-        result.push_str(&format!("Slide {}:\n\n", idx + 1));
+        use std::fmt::Write as _;
+        write!(result, "Slide {}:\n\n", idx + 1).unwrap();
 
         let slide_xml = read_file_from_archive(&mut archive, slide_path)?;
         let slide_text = extract_slide_text(&slide_xml)?;
@@ -116,8 +121,7 @@ fn parse_presentation(xml: &str) -> Result<Vec<String>, PptxError> {
             Ok(Event::Eof) => break,
             Err(e) => {
                 return Err(PptxError::XmlParse(format!(
-                    "Presentation parse error: {}",
-                    e
+                    "Presentation parse error: {e}"
                 )));
             }
             _ => {}
@@ -173,7 +177,7 @@ fn extract_slide_text(xml: &str) -> Result<String, PptxError> {
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                return Err(PptxError::XmlParse(format!("Slide parse error: {}", e)));
+                return Err(PptxError::XmlParse(format!("Slide parse error: {e}")));
             }
             _ => {}
         }

@@ -10,22 +10,28 @@ use crate::server::tools::{
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
-    model::*,
-    model::{ServerInfo, ToolAnnotations},
+    model::{
+        CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
+        ServerInfo, Tool, ToolAnnotations,
+    },
     service::{RequestContext, RoleServer},
 };
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// MailMcpServer - MCP server for Apple Mail read-only access.
+/// `MailMcpServer` - MCP server for Apple Mail read-only access.
 #[derive(Clone)]
 pub struct MailMcpServer {
     config: Arc<MailConfig>,
 }
 
 impl MailMcpServer {
-    /// Create a new MailMcpServer with the given configuration.
+    /// Create a new `MailMcpServer` with the given configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MailMcpError::Config`] if validation fails.
     pub fn new(config: MailConfig) -> Result<Self, MailMcpError> {
         config.validate()?;
         Ok(Self {
@@ -57,6 +63,8 @@ impl MailMcpServer {
     }
 
     /// List all available tools.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn tool_definitions() -> Vec<Tool> {
         vec![
             Tool::new(
@@ -200,6 +208,7 @@ impl MailMcpServer {
     }
 
     /// Call a tool by name with the given arguments.
+    #[allow(clippy::unused_async)]
     async fn call_tool_by_name(
         &self,
         name: &str,

@@ -3,7 +3,7 @@
 //! # Note on Timestamp Epoch
 //!
 //! Apple Mail storage can vary by version. This module therefore detects whether
-//! timestamps look like Unix epoch values or CoreData epoch values and converts
+//! timestamps look like Unix epoch values or `CoreData` epoch values and converts
 //! date filters accordingly.
 
 use crate::error::MailMcpError;
@@ -34,7 +34,7 @@ pub struct AccountRow {
     pub message_count: i64,
 }
 
-/// CoreData epoch offset: seconds from 1970-01-01 to 2001-01-01.
+/// `CoreData` epoch offset: seconds from 1970-01-01 to 2001-01-01.
 pub const COREDATA_EPOCH_OFFSET: i64 = 978_307_200;
 
 fn read_optional_string(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<String>> {
@@ -56,7 +56,11 @@ fn read_optional_string(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<
 
 /// Detect the timestamp offset used by the Apple Mail database.
 ///
-/// Returns `0` for Unix epoch or [`COREDATA_EPOCH_OFFSET`] for CoreData epoch.
+/// Returns `0` for Unix epoch or [`COREDATA_EPOCH_OFFSET`] for `CoreData` epoch.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError::Sqlite`] if the query fails.
 pub fn detect_epoch_offset_seconds(conn: &Connection) -> Result<i64, MailMcpError> {
     let sample: Option<i64> = conn
         .query_row(
@@ -99,7 +103,11 @@ fn infer_epoch_offset_from_sample(sample: i64) -> i64 {
 /// Search messages by subject, sender, date range, and/or mailbox.
 ///
 /// All filters are optional and combined with AND logic.
-/// Results are ordered by date_received DESC and limited by `limit`/`offset`.
+/// Results are ordered by `date_received` DESC and limited by `limit`/`offset`.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError::Sqlite`] if the query fails.
 #[allow(clippy::too_many_arguments)]
 pub fn search_messages(
     conn: &Connection,
@@ -174,7 +182,7 @@ pub fn search_messages(
     };
 
     let sql = format!(
-        r#"
+        r"
         SELECT 
             m.ROWID,
             s.subject,
@@ -191,10 +199,9 @@ pub fn search_messages(
         LEFT JOIN addresses a ON sa.address = a.ROWID
         LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID
         LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
-        {}
+        {where_clause}
         ORDER BY m.date_received DESC LIMIT ? OFFSET ?
-        "#,
-        where_clause
+        "
     );
 
     // Add limit and offset
@@ -202,7 +209,7 @@ pub fn search_messages(
     params.push(Box::new(offset));
 
     // Convert to slice of references
-    let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(AsRef::as_ref).collect();
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(param_refs.as_slice(), |row| {
@@ -228,6 +235,10 @@ pub fn search_messages(
 }
 
 /// Returns `true` if the given email address exists in the normalized address table.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError::Sqlite`] if the query fails.
 pub fn address_exists(conn: &Connection, address: &str) -> Result<bool, MailMcpError> {
     let exists = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM addresses WHERE address = ?)",
@@ -238,9 +249,13 @@ pub fn address_exists(conn: &Connection, address: &str) -> Result<bool, MailMcpE
 }
 
 /// Get a single message by its rowid.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError::Sqlite`] if the query fails.
 pub fn get_message_by_id(conn: &Connection, id: i64) -> Result<Option<MessageRow>, MailMcpError> {
     let mut stmt = conn.prepare(
-        r#"
+        r"
         SELECT 
             m.ROWID,
             s.subject,
@@ -258,7 +273,7 @@ pub fn get_message_by_id(conn: &Connection, id: i64) -> Result<Option<MessageRow
         LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID
         LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
         WHERE m.ROWID = ?
-        "#,
+        ",
     )?;
 
     let mut rows = stmt.query_map(params![id], |row| {
@@ -287,18 +302,22 @@ pub fn get_message_by_id(conn: &Connection, id: i64) -> Result<Option<MessageRow
 /// - 1 = To
 /// - 2 = CC
 /// - 3 = BCC
+///
+/// # Errors
+///
+/// Returns [`MailMcpError::Sqlite`] if the query fails.
 pub fn get_recipients(
     conn: &Connection,
     message_id: i64,
 ) -> Result<Vec<(String, i32)>, MailMcpError> {
     let mut stmt = conn.prepare(
-        r#"
+        r"
         SELECT a.address, r.type
         FROM recipients r
         JOIN addresses a ON r.address = a.ROWID
         WHERE r.message = ?
         ORDER BY r.type, a.address
-        "#,
+        ",
     )?;
 
     let rows = stmt.query_map(params![message_id], |row| {
@@ -314,6 +333,10 @@ pub fn get_recipients(
 }
 
 /// List all mailboxes with their ROWID and URL.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError::Sqlite`] if the query fails.
 pub fn list_mailboxes(conn: &Connection) -> Result<Vec<(i64, String)>, MailMcpError> {
     let mut stmt = conn.prepare("SELECT ROWID, url FROM mailboxes ORDER BY url")?;
 
@@ -330,6 +353,10 @@ pub fn list_mailboxes(conn: &Connection) -> Result<Vec<(i64, String)>, MailMcpEr
 }
 
 /// List mailbox-derived accounts aggregated by URL prefix.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError::Sqlite`] if the query fails.
 pub fn list_accounts(conn: &Connection) -> Result<Vec<AccountRow>, MailMcpError> {
     let mailboxes = list_mailboxes(conn)?;
     let mut grouped: BTreeMap<String, (String, i64, i64)> = BTreeMap::new();
@@ -358,6 +385,7 @@ pub fn list_accounts(conn: &Connection) -> Result<Vec<AccountRow>, MailMcpError>
 }
 
 /// Derive an account identifier from a mailbox URL, e.g. `ews://account-id`.
+#[must_use]
 pub fn mailbox_account_id(mailbox_url: &str) -> Option<String> {
     let scheme_end = mailbox_url.find("://")?;
     let rest = &mailbox_url[scheme_end + 3..];
@@ -376,6 +404,10 @@ fn mailbox_scheme(mailbox_url: &str) -> Option<String> {
 }
 
 /// Count messages in a mailbox.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError::Sqlite`] if the query fails.
 pub fn count_messages_in_mailbox(conn: &Connection, mailbox_id: i64) -> Result<i64, MailMcpError> {
     let mut stmt = conn.prepare("SELECT COUNT(*) FROM messages WHERE mailbox = ?")?;
 

@@ -4,6 +4,8 @@
 //! attachment formats. The goal is to provide meaningful text content when
 //! possible, and clear guidance when extraction is not supported.
 
+use std::path::Path;
+
 /// Result of text extraction from an attachment.
 #[derive(Debug, Clone)]
 pub enum ExtractionResult {
@@ -25,7 +27,9 @@ pub enum ExtractionResult {
 ///
 /// # Returns
 ///
-/// ExtractionResult with either extracted text or a reason why extraction is not supported.
+/// `ExtractionResult` with either extracted text or a reason why extraction is not supported.
+#[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn extract_text(bytes: &[u8], mime_type: &str) -> ExtractionResult {
     let mime_lower = mime_type.to_lowercase();
 
@@ -74,7 +78,11 @@ pub fn extract_text(bytes: &[u8], mime_type: &str) -> ExtractionResult {
     }
 
     // Markdown - return as text
-    if mime_lower == "text/markdown" || mime_lower.ends_with(".md") {
+    if mime_lower == "text/markdown"
+        || Path::new(&mime_lower)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    {
         return match String::from_utf8(bytes.to_vec()) {
             Ok(text) => ExtractionResult::Text {
                 content: text,
@@ -87,7 +95,11 @@ pub fn extract_text(bytes: &[u8], mime_type: &str) -> ExtractionResult {
     }
 
     // HTML - extract text from body
-    if mime_lower == "text/html" || mime_lower.ends_with(".html") {
+    if mime_lower == "text/html"
+        || Path::new(&mime_lower)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+    {
         return extract_text_from_html(bytes);
     }
 
@@ -220,13 +232,10 @@ pub fn extract_text(bytes: &[u8], mime_type: &str) -> ExtractionResult {
 
 /// Extract text content from HTML bytes.
 fn extract_text_from_html(bytes: &[u8]) -> ExtractionResult {
-    let html = match String::from_utf8(bytes.to_vec()) {
-        Ok(h) => h,
-        Err(_) => {
-            return ExtractionResult::NotSupported {
-                reason: "HTML with invalid UTF-8 encoding",
-            };
-        }
+    let Ok(html) = String::from_utf8(bytes.to_vec()) else {
+        return ExtractionResult::NotSupported {
+            reason: "HTML with invalid UTF-8 encoding",
+        };
     };
 
     let text = html_to_plain_text(&html);
@@ -241,6 +250,7 @@ fn extract_text_from_html(bytes: &[u8]) -> ExtractionResult {
 ///
 /// Removes script/style blocks, decodes entities, normalises whitespace.
 /// Use instead of returning raw HTML for LLM consumption.
+#[must_use]
 pub fn html_to_plain_text(html: &str) -> String {
     use scraper::Html;
 

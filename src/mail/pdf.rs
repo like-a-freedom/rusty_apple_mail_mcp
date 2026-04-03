@@ -24,7 +24,7 @@ pub enum PdfError {
 ///
 /// # Returns
 ///
-/// Plain text string on success, PdfError on failure.
+/// Plain text string on success, `PdfError` on failure.
 ///
 /// # Example
 ///
@@ -34,12 +34,16 @@ pub enum PdfError {
 /// // Assuming you have PDF bytes
 /// // let text = pdf_to_text(&pdf_bytes)?;
 /// ```
+///
+/// # Errors
+///
+/// Returns [`PdfError`] if the PDF cannot be parsed or has no text layer.
 pub fn pdf_to_text(bytes: &[u8]) -> Result<String, PdfError> {
     use lopdf::Document;
 
     // Load PDF document
     let doc = Document::load_mem(bytes)
-        .map_err(|e| PdfError::PdfParse(format!("Failed to load PDF: {}", e)))?;
+        .map_err(|e| PdfError::PdfParse(format!("Failed to load PDF: {e}")))?;
 
     // Get page numbers
     let pages = doc.get_pages();
@@ -49,11 +53,11 @@ pub fn pdf_to_text(bytes: &[u8]) -> Result<String, PdfError> {
     }
 
     // Extract text from all pages using lopdf's built-in method
-    let page_numbers: Vec<u32> = pages.keys().cloned().collect();
+    let page_numbers: Vec<u32> = pages.keys().copied().collect();
 
     let text = doc
         .extract_text(&page_numbers)
-        .map_err(|e| PdfError::PdfParse(format!("Failed to extract text: {}", e)))?;
+        .map_err(|e| PdfError::PdfParse(format!("Failed to extract text: {e}")))?;
 
     if text.trim().is_empty() {
         return Err(PdfError::NoTextLayer);

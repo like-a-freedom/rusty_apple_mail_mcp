@@ -1,4 +1,4 @@
-//! list_accounts tool implementation.
+//! `list_accounts` tool implementation.
 
 use rusqlite::Connection;
 use schemars::JsonSchema;
@@ -12,17 +12,19 @@ use crate::db::{
 use crate::error::MailMcpError;
 use crate::server::tools::ResponseStatus;
 
-/// Parameters for the list_accounts tool.
+/// Parameters for the `list_accounts` tool.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[must_use]
 pub struct ListAccountsParams {
     /// Include mailboxes grouped by account (default false)
     #[serde(default)]
     pub include_mailboxes: bool,
 }
 
-/// Response for list_accounts tool.
+/// Response for `list_accounts` tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
+#[must_use]
 pub struct ListAccountsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<ResponseStatus>,
@@ -57,7 +59,12 @@ pub struct MailboxResult {
     pub message_count: i64,
 }
 
-/// Execute `list_accounts` against an already-open SQLite connection.
+/// Execute `list_accounts` against an already-open `SQLite` connection.
+///
+/// # Errors
+///
+/// Returns an error if the database cannot be accessed.
+#[allow(clippy::ptr_arg, clippy::needless_pass_by_value)]
 pub fn list_accounts_with_conn(
     config: &MailConfig,
     conn: &Connection,
@@ -101,7 +108,7 @@ pub fn list_accounts_with_conn(
 
     Ok(ListAccountsResponse {
         status: None,
-        total_count: Some(accounts.len() as u32),
+        total_count: Some(u32::try_from(accounts.len()).unwrap_or(u32::MAX)),
         guidance: None,
         accounts: accounts
             .into_iter()
@@ -143,7 +150,11 @@ pub fn list_accounts_with_conn(
     })
 }
 
-/// Execute the list_accounts tool.
+/// Execute the `list_accounts` tool.
+///
+/// # Errors
+///
+/// Returns an error if the database cannot be opened or accessed.
 pub fn list_accounts(
     config: &MailConfig,
     params: ListAccountsParams,

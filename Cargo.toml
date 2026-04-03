@@ -1,6 +1,6 @@
 [package]
 name = "rusty_apple_mail_mcp"
-version = "1.2.1"
+version = "1.2.2"
 edition = "2024"
 resolver = "3"
 
@@ -9,8 +9,8 @@ name = "rusty_apple_mail_mcp"
 path = "src/main.rs"
 
 [dependencies]
-rmcp = { version = "1.2.0", features = ["server", "macros", "transport-io"] }
-tokio = { version = "1.50.0", features = [
+rmcp = { version = "1.3.0", features = ["server", "macros", "transport-io"] }
+tokio = { version = "1.51.0", features = [
   "rt-multi-thread",
   "macros",
   "io-util"

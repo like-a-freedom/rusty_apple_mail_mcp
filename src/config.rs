@@ -21,10 +21,16 @@ pub struct MailConfig {
 impl MailConfig {
     /// Resolve configuration from environment variables, falling back to defaults.
     /// `APPLE_MAIL_DIR`, `APPLE_MAIL_VERSION`, `APPLE_MAIL_ACCOUNT`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MailMcpError`] if environment variables are invalid or the Accounts database
+    /// cannot be loaded when account selectors are specified.
     pub fn from_env() -> Result<Self, MailMcpError> {
-        let mail_directory = std::env::var("APPLE_MAIL_DIR")
-            .map(|raw| expand_mail_directory(&raw))
-            .unwrap_or_else(|_| default_mail_directory());
+        let mail_directory = std::env::var("APPLE_MAIL_DIR").map_or_else(
+            |_| default_mail_directory(),
+            |raw| expand_mail_directory(&raw),
+        );
         let mail_version = std::env::var("APPLE_MAIL_VERSION")
             .unwrap_or_else(|_| DEFAULT_MAIL_VERSION.to_string());
         let account_selectors =
@@ -73,11 +79,19 @@ impl MailConfig {
     }
 
     /// Build a configuration from already-resolved values and validate it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MailMcpError::Config`] if validation fails.
     pub fn from_parts(mail_directory: PathBuf, mail_version: String) -> Result<Self, MailMcpError> {
         Self::from_parts_with_accounts(mail_directory, mail_version, None, HashMap::new())
     }
 
     /// Build a configuration with pre-resolved account metadata and optional allowlist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MailMcpError::Config`] if validation fails.
     pub fn from_parts_with_accounts(
         mail_directory: PathBuf,
         mail_version: String,
@@ -94,7 +108,8 @@ impl MailConfig {
         Ok(config)
     }
 
-    /// Absolute path to the Envelope Index SQLite database.
+    /// Absolute path to the Envelope Index `SQLite` database.
+    #[must_use]
     pub fn envelope_db_path(&self) -> PathBuf {
         self.mail_directory
             .join(&self.mail_version)
@@ -103,11 +118,13 @@ impl MailConfig {
     }
 
     /// Returns the configured allowlist of account IDs, if any.
+    #[must_use]
     pub fn allowed_account_ids(&self) -> Option<&[String]> {
         self.allowed_account_ids.as_deref()
     }
 
     /// Returns `true` if the given account is permitted by the current configuration.
+    #[must_use]
     pub fn is_account_allowed(&self, account_id: &str) -> bool {
         self.allowed_account_ids
             .as_ref()
@@ -115,6 +132,7 @@ impl MailConfig {
     }
 
     /// Returns `true` if the mailbox URL belongs to an allowed account.
+    #[must_use]
     pub fn is_mailbox_allowed(&self, mailbox_url: &str) -> bool {
         mailbox_account_id(mailbox_url)
             .as_deref()
@@ -122,11 +140,16 @@ impl MailConfig {
     }
 
     /// Returns friendly metadata for the given canonical account ID.
+    #[must_use]
     pub fn account_metadata(&self, account_id: &str) -> Option<&AccountMetadata> {
         self.account_metadata.get(account_id)
     }
 
     /// Validate the configuration for env-only stdio startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MailMcpError::Config`] if validation fails.
     pub fn validate(&self) -> Result<(), MailMcpError> {
         if self.mail_version.trim().is_empty() {
             return Err(MailMcpError::Config(
