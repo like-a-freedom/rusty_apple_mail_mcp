@@ -10,7 +10,7 @@ use crate::domain::attachment::AttachmentMeta;
 /// Convert database integer timestamp to ISO 8601 string.
 ///
 /// `epoch_offset_s` should be `0` for Unix timestamps or `978_307_200`
-/// for CoreData timestamps.
+/// for `CoreData` timestamps.
 ///
 /// # Arguments
 ///
@@ -20,12 +20,13 @@ use crate::domain::attachment::AttachmentMeta;
 /// # Returns
 ///
 /// Compact ISO 8601 string without seconds (e.g. `2024-09-15T00:00Z`)
+#[must_use]
 pub fn timestamp_to_iso(ts: i64, epoch_offset_s: i64) -> String {
     let unix_ts = ts + epoch_offset_s;
-    Utc.timestamp_opt(unix_ts, 0)
-        .single()
-        .map(|dt: DateTime<Utc>| dt.format("%Y-%m-%dT%H:%MZ").to_string())
-        .unwrap_or_else(|| format!("invalid_ts:{ts}"))
+    Utc.timestamp_opt(unix_ts, 0).single().map_or_else(
+        || format!("invalid_ts:{ts}"),
+        |dt: DateTime<Utc>| dt.format("%Y-%m-%dT%H:%MZ").to_string(),
+    )
 }
 
 /// Compact message representation for search result lists.
@@ -50,16 +51,13 @@ pub struct MessageMeta {
 }
 
 impl MessageMeta {
-    /// Convert a database row to MessageMeta.
+    /// Convert a database row to `MessageMeta`.
+    #[must_use]
     pub fn from_row(row: &MessageRow, epoch_offset_s: i64) -> Self {
-        let mailbox = row
-            .mailbox_url
-            .as_ref()
-            .map(|url| {
-                // Extract the last segment of the URL as the mailbox name
-                url.rsplit('/').next().unwrap_or(url).to_string()
-            })
-            .unwrap_or_else(|| "Unknown".to_string());
+        let mailbox = row.mailbox_url.as_ref().map_or_else(
+            || "Unknown".to_string(),
+            |url| url.rsplit('/').next().unwrap_or(url).to_string(),
+        );
 
         Self {
             id: row.rowid.to_string(),
@@ -76,12 +74,14 @@ impl MessageMeta {
     }
 
     /// Set body preview text.
+    #[must_use]
     pub fn with_body_preview(mut self, preview: impl Into<String>) -> Self {
         self.body_preview = Some(preview.into());
         self
     }
 
     /// Set attachment count.
+    #[must_use]
     pub fn with_attachment_count(mut self, count: u32) -> Self {
         self.attachment_count = count;
         self
@@ -116,17 +116,17 @@ pub struct MessageFull {
 }
 
 impl MessageFull {
-    /// Create a MessageFull from a database row and recipients.
+    /// Create a `MessageFull` from a database row and recipients.
+    #[must_use]
     pub fn from_row_with_recipients(
         row: &MessageRow,
         recipients: &[(String, i32)],
         epoch_offset_s: i64,
     ) -> Self {
-        let mailbox = row
-            .mailbox_url
-            .as_ref()
-            .map(|url| url.rsplit('/').next().unwrap_or(url).to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
+        let mailbox = row.mailbox_url.as_ref().map_or_else(
+            || "Unknown".to_string(),
+            |url| url.rsplit('/').next().unwrap_or(url).to_string(),
+        );
 
         // Split recipients by type: 1=To, 2=CC, 3=BCC
         let mut to = Vec::new();
@@ -157,12 +157,14 @@ impl MessageFull {
     }
 
     /// Set the message body.
+    #[must_use]
     pub fn with_body(mut self, body: impl Into<String>) -> Self {
         self.body = Some(body.into());
         self
     }
 
     /// Set attachments.
+    #[must_use]
     pub fn with_attachments(mut self, attachments: Vec<AttachmentMeta>) -> Self {
         self.attachments = attachments;
         self

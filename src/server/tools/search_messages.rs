@@ -1,4 +1,4 @@
-//! search_messages tool implementation.
+//! `search_messages` tool implementation.
 
 use rusqlite::Connection;
 use schemars::JsonSchema;
@@ -15,7 +15,7 @@ use crate::error::MailMcpError;
 use crate::mail::{locate_emlx_quick_with_hints, parse_emlx_without_attachment_content};
 use crate::server::tools::ResponseStatus;
 
-/// Parameters for the search_messages tool.
+/// Parameters for the `search_messages` tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchMessagesParams {
@@ -29,14 +29,14 @@ pub struct SearchMessagesParams {
     pub sender: Option<String>,
     /// Recipient participant email address (To/CC exact match)
     pub participant: Option<String>,
-    /// Account identifier returned by list_accounts (for example, `ews://account-id`)
+    /// Account identifier returned by `list_accounts` (for example, `ews://account-id`)
     pub account: Option<String>,
     /// Mailbox name or fragment
     pub mailbox: Option<String>,
     /// Maximum number of results (default 20, max 100)
     #[serde(default = "default_limit")]
     pub limit: u32,
-    /// Offset for pagination (use next_offset from previous response)
+    /// Offset for pagination (use `next_offset` from previous response)
     #[serde(default)]
     pub offset: u32,
     /// Include ~200 character body preview
@@ -48,7 +48,7 @@ fn default_limit() -> u32 {
     20
 }
 
-/// Response message item for search_results.
+/// Response message item for `search_messages` results.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SearchMessageResult {
     pub id: String,
@@ -62,11 +62,12 @@ pub struct SearchMessageResult {
     pub body_preview: Option<String>,
 }
 
-fn is_zero(n: &u32) -> bool {
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
-/// Response for search_messages tool.
+/// Response for `search_messages` tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SearchMessagesResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,7 +264,7 @@ fn load_search_metadata(
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        r#"
+        r"
         SELECT
             m.ROWID,
             sm.summary,
@@ -273,7 +274,7 @@ fn load_search_metadata(
         LEFT JOIN attachments att ON att.message = m.ROWID
         WHERE m.ROWID IN ({placeholders})
         GROUP BY m.ROWID, sm.summary
-        "#
+        "
     );
 
     let params: Vec<&dyn rusqlite::ToSql> = message_ids
@@ -283,12 +284,12 @@ fn load_search_metadata(
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params.as_slice(), |row| {
-        let attachment_count = row.get::<_, i64>(2)?;
+        let attachment_count: i64 = row.get(2)?;
         Ok((
             row.get::<_, i64>(0)?,
             SearchMetadata {
                 summary: row.get(1)?,
-                attachment_count: attachment_count.max(0) as u32,
+                attachment_count: u32::try_from(attachment_count.max(0)).unwrap_or(u32::MAX),
             },
         ))
     })?;
@@ -302,7 +303,13 @@ fn load_search_metadata(
     Ok(metadata)
 }
 
-/// Execute `search_messages` against an already-open SQLite connection.
+/// Execute `search_messages` against an already-open `SQLite` connection.
+///
+/// # Errors
+///
+/// Returns an error if the database cannot be accessed.
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::ptr_arg, clippy::needless_pass_by_value)]
 pub fn search_messages_with_conn(
     config: &MailConfig,
     conn: &Connection,
@@ -381,18 +388,20 @@ pub fn search_messages_with_conn(
             filters_description,
         );
         let guidance = if let Some(sender) = params.sender.as_deref() {
-            if !address_exists(conn, sender)? {
-                format!("Sender address {sender} is not present in Apple Mail's address index.")
-            } else {
+            let sender_exists = address_exists(conn, sender)?;
+            if sender_exists {
                 "No messages match the provided filters. Try broadening the date range or shortening subject_query to one or two keywords.".to_string()
+            } else {
+                format!("Sender address {sender} is not present in Apple Mail's address index.")
             }
         } else if let Some(participant) = params.participant.as_deref() {
-            if !address_exists(conn, participant)? {
+            let participant_exists = address_exists(conn, participant)?;
+            if participant_exists {
+                "No messages match the provided filters. Try broadening the date range or changing the mailbox filter.".to_string()
+            } else {
                 format!(
                     "Participant address {participant} is not present in Apple Mail's address index."
                 )
-            } else {
-                "No messages match the provided filters. Try broadening the date range or changing the mailbox filter.".to_string()
             }
         } else {
             "No messages match the provided filters. Try broadening the date range, shortening subject_query to one or two keywords, or verifying the sender address with list_mailboxes.".to_string()
@@ -423,7 +432,7 @@ pub fn search_messages_with_conn(
         .collect::<Vec<_>>();
     let hydration_elapsed = hydration_started.elapsed();
 
-    let has_more = rows.len() as u32 >= params.limit;
+    let has_more = u32::try_from(rows.len()).unwrap_or(u32::MAX) >= params.limit;
     tracing::debug!(
         "search_messages completed: {} result(s), sql={} ms, metadata={} ms, hydration={} ms, total={} ms; filters: {}",
         messages.len(),
@@ -436,7 +445,7 @@ pub fn search_messages_with_conn(
     Ok(SearchMessagesResponse {
         status: None,
         total_count: if has_more {
-            Some(messages.len() as u32)
+            Some(u32::try_from(messages.len()).unwrap_or(u32::MAX))
         } else {
             None
         },
@@ -447,7 +456,11 @@ pub fn search_messages_with_conn(
     })
 }
 
-/// Execute the search_messages tool.
+/// Execute the `search_messages` tool.
+///
+/// # Errors
+///
+/// Returns an error if the database cannot be opened or accessed.
 pub fn search_messages(
     config: &MailConfig,
     params: SearchMessagesParams,

@@ -51,11 +51,19 @@ pub struct RawAttachment {
 /// # Returns
 ///
 /// Parsed email content or an error.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError`] if the file cannot be read or parsed.
 pub fn parse_emlx(path: &Path) -> Result<ParsedEmail, MailMcpError> {
     parse_emlx_internal(path, true)
 }
 
 /// Parse an `.emlx` file while skipping attachment byte copies.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError`] if the file cannot be read or parsed.
 pub fn parse_emlx_without_attachment_content(path: &Path) -> Result<ParsedEmail, MailMcpError> {
     parse_emlx_internal(path, false)
 }
@@ -115,13 +123,13 @@ fn parse_emlx_internal(
     // Extract attachments
     let mut attachments = Vec::new();
     for (attachment_index, attachment) in message.attachments().enumerate() {
-        let filename = attachment.attachment_name().map(|s| s.to_string());
+        let filename = attachment.attachment_name().map(ToString::to_string);
 
         // Get MIME type as string
-        let mime_type = attachment
-            .content_type()
-            .map(content_type_to_mime)
-            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let mime_type = attachment.content_type().map_or_else(
+            || "application/octet-stream".to_string(),
+            content_type_to_mime,
+        );
 
         let (size_bytes, content) = resolve_attachment_payload(
             path,
@@ -134,8 +142,7 @@ fn parse_emlx_internal(
         // Check if inline based on content disposition
         let is_inline = attachment
             .content_disposition()
-            .map(|d| format!("{d:?}").to_lowercase().contains("inline"))
-            .unwrap_or(false);
+            .is_some_and(|d| format!("{d:?}").to_lowercase().contains("inline"));
 
         attachments.push(RawAttachment {
             filename,
@@ -182,8 +189,7 @@ fn resolve_attachment_payload(
         if size_bytes > 0 || content.is_some() {
             let resolved_size = content
                 .as_ref()
-                .map(|bytes| bytes.len() as u64)
-                .unwrap_or(size_bytes);
+                .map_or(size_bytes, |bytes| bytes.len() as u64);
             return (resolved_size, content);
         }
     }
@@ -245,7 +251,8 @@ fn content_type_to_mime(content_type: &mail_parser::ContentType<'_>) -> String {
     }
 }
 
-/// Convert raw attachments to domain AttachmentMeta.
+/// Convert raw attachments to domain `AttachmentMeta`.
+#[must_use]
 pub fn raw_attachments_to_meta(
     message_rowid: i64,
     raw_attachments: &[RawAttachment],

@@ -1,10 +1,11 @@
-//! get_message tool implementation.
+//! `get_message` tool implementation.
 
 use lru::LruCache;
 use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -21,10 +22,8 @@ use crate::mail::{
 use crate::server::tools::ResponseStatus;
 
 /// LRU cache for parsed .emlx bodies keyed by resolved path.
-static BODY_CACHE: once_cell::sync::Lazy<Mutex<LruCache<std::path::PathBuf, CachedMessage>>> =
-    once_cell::sync::Lazy::new(|| {
-        Mutex::new(LruCache::new(NonZeroUsize::new(256).expect("cache size")))
-    });
+static BODY_CACHE: LazyLock<Mutex<LruCache<std::path::PathBuf, CachedMessage>>> =
+    LazyLock::new(|| Mutex::new(LruCache::new(NonZeroUsize::new(256).expect("cache size"))));
 
 #[derive(Clone)]
 struct CachedMessage {
@@ -33,7 +32,7 @@ struct CachedMessage {
     attachments: Vec<AttachmentMeta>,
 }
 
-/// Parameters for the get_message tool.
+/// Parameters for the `get_message` tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GetMessageParams {
@@ -68,8 +67,9 @@ pub enum BodyFormat {
     Both,
 }
 
-/// Response for get_message tool.
+/// Response for `get_message` tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
+#[must_use]
 pub struct GetMessageResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<ResponseStatus>,
@@ -79,7 +79,7 @@ pub struct GetMessageResponse {
     pub guidance: Option<String>,
 }
 
-/// Message result in get_message response.
+/// Message result in `get_message` response.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct GetMessageResult {
     pub id: String,
@@ -100,7 +100,17 @@ pub struct GetMessageResult {
     pub attachments: Vec<AttachmentMeta>,
 }
 
-/// Execute `get_message` against an already-open SQLite connection.
+/// Execute `get_message` against an already-open `SQLite` connection.
+///
+/// # Errors
+///
+/// Returns an error if the database cannot be accessed or the message file cannot be parsed.
+///
+/// # Panics
+///
+/// May panic if the internal LRU cache lock cannot be acquired.
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::ptr_arg, clippy::needless_pass_by_value)]
 pub fn get_message_with_conn(
     config: &MailConfig,
     conn: &Connection,
@@ -123,18 +133,15 @@ pub fn get_message_with_conn(
 
     let db_started = Instant::now();
     let epoch_offset_s = detect_epoch_offset_seconds(conn)?;
-    let row = match get_message_by_id(conn, message_id)? {
-        Some(row) => row,
-        None => {
-            return Ok(GetMessageResponse {
-                status: Some(ResponseStatus::NotFound),
-                message: None,
-                guidance: Some(
-                    "Message not found in the index. The message_id may be incorrect or the message was deleted."
-                        .to_string(),
-                ),
-            });
-        }
+    let Some(row) = get_message_by_id(conn, message_id)? else {
+        return Ok(GetMessageResponse {
+            status: Some(ResponseStatus::NotFound),
+            message: None,
+            guidance: Some(
+                "Message not found in the index. The message_id may be incorrect or the message was deleted."
+                    .to_string(),
+            ),
+        });
     };
 
     if let Some(mailbox_url) = row.mailbox_url.as_deref()
@@ -151,11 +158,10 @@ pub fn get_message_with_conn(
 
     let recipients = get_recipients(conn, message_id)?;
     let db_elapsed = db_started.elapsed();
-    let mailbox = row
-        .mailbox_url
-        .as_ref()
-        .map(|url| url.rsplit('/').next().unwrap_or(url).to_string())
-        .unwrap_or_else(|| "Unknown".to_string());
+    let mailbox = row.mailbox_url.as_ref().map_or_else(
+        || "Unknown".to_string(),
+        |url| url.rsplit('/').next().unwrap_or(url).to_string(),
+    );
     let _account_id = row.mailbox_url.as_deref().and_then(mailbox_account_id);
 
     let mut to = Vec::new();
@@ -325,7 +331,11 @@ pub fn get_message_with_conn(
     })
 }
 
-/// Execute the get_message tool.
+/// Execute the `get_message` tool.
+///
+/// # Errors
+///
+/// Returns an error if the database cannot be opened or accessed.
 pub fn get_message(
     config: &MailConfig,
     params: GetMessageParams,
