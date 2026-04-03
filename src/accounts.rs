@@ -24,12 +24,17 @@ pub struct AccountMetadata {
     pub account_type: String,
 }
 
-/// Default path to the macOS Accounts SQLite database.
+/// Default path to the macOS Accounts `SQLite` database.
+#[must_use]
 pub fn default_accounts_db_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join("Library/Accounts/Accounts4.sqlite"))
 }
 
 /// Load Mail account metadata from the macOS Accounts database.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError::Sqlite`] if the database cannot be opened or queried.
 pub fn load_account_metadata(
     accounts_db_path: &Path,
 ) -> Result<HashMap<String, AccountMetadata>, MailMcpError> {
@@ -41,11 +46,15 @@ pub fn load_account_metadata(
 }
 
 /// Load Mail account metadata from an already-open Accounts database connection.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError::Sqlite`] if the query fails.
 pub fn load_account_metadata_with_conn(
     conn: &Connection,
 ) -> Result<HashMap<String, AccountMetadata>, MailMcpError> {
     let mut stmt = conn.prepare(
-        r#"
+        r"
         SELECT
             a.Z_PK,
             a.ZACCOUNTDESCRIPTION,
@@ -56,7 +65,7 @@ pub fn load_account_metadata_with_conn(
         FROM ZACCOUNT a
         LEFT JOIN ZACCOUNTTYPE t ON t.Z_PK = a.ZACCOUNTTYPE
         ORDER BY a.Z_PK
-        "#,
+        ",
     )?;
 
     let mut rows = stmt.query([])?;
@@ -108,6 +117,11 @@ pub fn load_account_metadata_with_conn(
 }
 
 /// Resolve human-friendly selectors to canonical Mail account identifiers.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError::Config`] if no accounts match the selectors.
+#[allow(clippy::implicit_hasher)]
 pub fn resolve_account_selectors(
     selectors: &[String],
     accounts: &HashMap<String, AccountMetadata>,
@@ -148,12 +162,12 @@ fn load_property_values(
     owner_id: i64,
 ) -> Result<HashMap<String, Vec<u8>>, MailMcpError> {
     let mut stmt = conn.prepare(
-        r#"
+        r"
         SELECT ZKEY, ZVALUE
         FROM ZACCOUNTPROPERTY
         WHERE ZOWNER = ?
           AND ZKEY IN ('IdentityEmailAddress', 'EmailAliases', 'ACPropertyFullName')
-        "#,
+        ",
     )?;
 
     let rows = stmt.query_map(params![owner_id], |row| {
@@ -227,7 +241,7 @@ fn extract_name(bytes: &[u8]) -> Option<String> {
     extract_printable_fragments(bytes)
         .into_iter()
         .filter(|fragment| !is_archive_noise(fragment))
-        .max_by_key(|fragment| fragment.len())
+        .max_by_key(String::len)
 }
 
 fn extract_printable_fragments(bytes: &[u8]) -> Vec<String> {

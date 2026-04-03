@@ -6,7 +6,7 @@ use serde::Serialize;
 /// Metadata about an email attachment.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct AttachmentMeta {
-    /// Stable attachment identifier (format: "{message_rowid}:{attachment_index}")
+    /// Stable attachment identifier (format: "`{message_rowid}:{attachment_index}`")
     pub id: String,
     /// Filename of the attachment
     pub filename: String,
@@ -42,7 +42,7 @@ pub struct AttachmentContent {
 }
 
 impl AttachmentContent {
-    /// Create an AttachmentContent with extracted text.
+    /// Create an `AttachmentContent` with extracted text.
     pub fn extracted(
         meta: AttachmentMeta,
         content: impl Into<String>,
@@ -56,7 +56,7 @@ impl AttachmentContent {
         }
     }
 
-    /// Create an AttachmentContent indicating content is not available.
+    /// Create an `AttachmentContent` indicating content is not available.
     pub fn not_available(meta: AttachmentMeta, reason: impl Into<String>) -> Self {
         Self {
             meta,
