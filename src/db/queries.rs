@@ -100,6 +100,19 @@ fn infer_epoch_offset_from_sample(sample: i64) -> i64 {
     }
 }
 
+fn escape_like(token: &str) -> String {
+    token.replace('%', "\\%").replace('_', "\\_")
+}
+
+fn tokenize(input: &str) -> Vec<String> {
+    input
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::trim)
+        .filter(|t| t.len() >= 2)
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Search messages by subject, sender, date range, and/or mailbox.
 ///
 /// All filters are optional and combined with AND logic.
@@ -129,8 +142,20 @@ pub fn search_messages(
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
     if let Some(subject) = subject_query {
-        conditions.push("s.subject LIKE ?".to_string());
-        params.push(Box::new(format!("%{subject}%")));
+        let tokens = tokenize(subject);
+        if tokens.is_empty() {
+            conditions.push("s.subject LIKE ? ESCAPE '\\'".to_string());
+            params.push(Box::new(format!("%{}%", escape_like(subject))));
+        } else {
+            let or_conditions: Vec<String> = tokens
+                .iter()
+                .map(|_| "s.subject LIKE ? ESCAPE '\\'".to_string())
+                .collect();
+            conditions.push(format!("({})", or_conditions.join(" OR ")));
+            for token in &tokens {
+                params.push(Box::new(format!("%{}%", escape_like(token))));
+            }
+        }
     }
 
     if let Some(from) = date_from {
@@ -906,5 +931,107 @@ mod tests {
 
         // May be empty if offset exceeds results
         let _ = results.len(); // Suppress unused warning
+    }
+
+    fn make_hyphenated_test_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+            CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
+            CREATE TABLE sender_addresses (sender INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (
+                ROWID INTEGER PRIMARY KEY,
+                subject INTEGER REFERENCES subjects,
+                sender INTEGER REFERENCES sender_addresses,
+                mailbox INTEGER REFERENCES mailboxes,
+                date_sent INTEGER,
+                date_received INTEGER,
+                message_id TEXT,
+                global_message_id INTEGER
+            );
+            CREATE TABLE message_global_data (
+                ROWID INTEGER PRIMARY KEY,
+                message_id INTEGER,
+                message_id_header TEXT
+            );
+
+            INSERT INTO subjects VALUES (1, 'ABC Project || Status Report');
+            INSERT INTO subjects VALUES (2, 'ABC Project Update');
+            INSERT INTO subjects VALUES (3, 'Other Project');
+            INSERT INTO addresses VALUES (1, 'alice@example.com');
+            INSERT INTO sender_addresses VALUES (1, 1);
+            INSERT INTO mailboxes VALUES (1, 'imap://test/INBOX');
+            INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
+            INSERT INTO message_global_data VALUES (20, 222, '<msg2@mail>');
+            INSERT INTO messages VALUES (1, 1, 1, 1, 0, 0, '<msg1@mail>', 10);
+            INSERT INTO messages VALUES (2, 2, 1, 1, 0, 0, '<msg2@mail>', 20);
+            "#,
+        )
+        .expect("seed hyphenated test schema");
+        conn
+    }
+
+    #[test]
+    fn search_empty_query_falls_back_to_exact_like() {
+        let conn = make_hyphenated_test_db();
+        let results = search_messages(
+            &conn,
+            Some("Status"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            20,
+            0,
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].subject,
+            Some("ABC Project || Status Report".to_string())
+        );
+    }
+
+    #[test]
+    fn search_tokenize_splits_on_non_alphanumeric() {
+        let tokens = tokenize("XY-ZZ || Report");
+        assert!(tokens.len() >= 2);
+        assert!(tokens.iter().any(|t| t.contains("XY") || t.contains("ZZ")));
+    }
+
+    #[test]
+    fn search_escape_like_protects_wildcards() {
+        let escaped = escape_like("test%value_");
+        assert!(escaped.contains('\\'));
+    }
+
+    #[test]
+    fn search_by_hyphenated_token_finds_match() {
+        let conn = make_hyphenated_test_db();
+        let results = search_messages(
+            &conn,
+            Some("ABC-ZZ"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            20,
+            0,
+        )
+        .unwrap();
+        assert_eq!(results.len(), 2);
+        let subjects: Vec<_> = results
+            .iter()
+            .filter_map(|r| r.subject.as_deref())
+            .collect();
+        assert!(subjects.iter().any(|s| s.contains("ABC")));
     }
 }
