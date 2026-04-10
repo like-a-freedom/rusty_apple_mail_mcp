@@ -189,8 +189,8 @@ pub fn get_message_with_conn(
     let mut cc = Vec::new();
     for (addr, type_) in &recipients {
         match type_ {
-            1 => to.push(addr.clone()),
-            2 => cc.push(addr.clone()),
+            0 => to.push(addr.clone()),
+            1 => cc.push(addr.clone()),
             _ => {}
         }
     }
@@ -514,6 +514,42 @@ mod tests {
         assert_eq!(msg.from, "sender@example.com");
         assert!(msg.body.is_none());
         assert!(msg.attachments.is_empty());
+    }
+
+    #[test]
+    fn get_message_with_conn_maps_apple_mail_recipient_types_zero_and_one() {
+        let conn = make_test_db();
+        conn.execute("DELETE FROM recipients WHERE message = 1", [])
+            .expect("clear seeded recipients");
+        conn.execute(
+            "INSERT INTO addresses (ROWID, address) VALUES (?1, ?2)",
+            rusqlite::params![3_i64, "cc@example.com"],
+        )
+        .expect("insert cc address");
+        conn.execute_batch(
+            r#"
+            INSERT INTO recipients VALUES (1, 2, 0);
+            INSERT INTO recipients VALUES (1, 3, 1);
+            "#,
+        )
+        .expect("insert recipients");
+
+        let temp_dir = TempDir::new().unwrap();
+        let config = make_test_config(&temp_dir, None);
+        let params = GetMessageParams {
+            message_id: "1".to_string(),
+            include_body: false,
+            include_attachments_summary: false,
+            body_format: BodyFormat::Text,
+            include_recipients: true,
+        };
+
+        let response = get_message_with_conn(&config, &conn, params).unwrap();
+
+        assert_eq!(response.status, None);
+        let message = response.message.expect("message response");
+        assert_eq!(message.to, vec!["recipient@example.com".to_string()]);
+        assert_eq!(message.cc, vec!["cc@example.com".to_string()]);
     }
 
     #[test]

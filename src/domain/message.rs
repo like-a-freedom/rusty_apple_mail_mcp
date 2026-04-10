@@ -153,14 +153,14 @@ impl MessageFull {
             .map(extract_mailbox_name)
             .unwrap_or_else(|| "Unknown".to_string());
 
-        // Split recipients by type: 1=To, 2=CC, 3=BCC
+        // Split recipients by Apple Mail recipient code: 0=To, 1=CC.
         let mut to = Vec::new();
         let mut cc = Vec::new();
         for (addr, type_) in recipients {
             match type_ {
-                1 => to.push(addr.clone()),
-                2 => cc.push(addr.clone()),
-                _ => {} // Ignore BCC
+                0 => to.push(addr.clone()),
+                1 => cc.push(addr.clone()),
+                _ => {}
             }
         }
 
@@ -257,10 +257,10 @@ mod tests {
         };
 
         let recipients = vec![
-            ("to1@example.com".to_string(), 1),
-            ("to2@example.com".to_string(), 1),
-            ("cc1@example.com".to_string(), 2),
-            ("bcc1@example.com".to_string(), 3), // Should be ignored
+            ("to1@example.com".to_string(), 0),
+            ("to2@example.com".to_string(), 0),
+            ("cc1@example.com".to_string(), 1),
+            ("ignored@example.com".to_string(), 9),
         ];
 
         let full = MessageFull::from_row_with_recipients(&row, &recipients, COREDATA_EPOCH_OFFSET);
@@ -273,7 +273,7 @@ mod tests {
         assert!(full.to.contains(&"to1@example.com".to_string()));
         assert!(full.to.contains(&"to2@example.com".to_string()));
         assert!(full.cc.contains(&"cc1@example.com".to_string()));
-        assert!(!full.to.contains(&"bcc1@example.com".to_string()));
+        assert!(!full.to.contains(&"ignored@example.com".to_string()));
     }
 
     #[test]
@@ -361,13 +361,13 @@ mod tests {
             message_id_header: Some("<test@mail>".to_string()),
         };
 
-        // Recipients: (address, type) where type 1=To, 2=CC, 3=BCC
+        // Recipients: (address, type) where Apple Mail uses 0=To, 1=CC.
         let recipients = vec![
-            ("to1@example.com".to_string(), 1),
-            ("to2@example.com".to_string(), 1),
-            ("cc1@example.com".to_string(), 2),
-            ("cc2@example.com".to_string(), 2),
-            ("bcc@example.com".to_string(), 3), // Should be ignored
+            ("to1@example.com".to_string(), 0),
+            ("to2@example.com".to_string(), 0),
+            ("cc1@example.com".to_string(), 1),
+            ("cc2@example.com".to_string(), 1),
+            ("ignored@example.com".to_string(), 9),
         ];
 
         let full = MessageFull::from_row_with_recipients(&row, &recipients, COREDATA_EPOCH_OFFSET);
@@ -379,6 +379,31 @@ mod tests {
         assert_eq!(full.cc.len(), 2);
         assert!(full.cc.contains(&"cc1@example.com".to_string()));
         assert!(full.cc.contains(&"cc2@example.com".to_string()));
+    }
+
+    #[test]
+    fn message_full_maps_apple_mail_recipient_types_zero_and_one() {
+        let row = MessageRow {
+            rowid: 42,
+            subject: Some("Test Subject".to_string()),
+            sender: Some("sender@example.com".to_string()),
+            mailbox_url: Some("imap://test/INBOX".to_string()),
+            date_sent: Some(748051200),
+            date_received: Some(748051200),
+            message_id: Some("<test@mail>".to_string()),
+            global_message_id: Some(7),
+            message_id_header: Some("<test@mail>".to_string()),
+        };
+
+        let recipients = vec![
+            ("to@example.com".to_string(), 0),
+            ("cc@example.com".to_string(), 1),
+        ];
+
+        let full = MessageFull::from_row_with_recipients(&row, &recipients, COREDATA_EPOCH_OFFSET);
+
+        assert_eq!(full.to, vec!["to@example.com".to_string()]);
+        assert_eq!(full.cc, vec!["cc@example.com".to_string()]);
     }
 
     #[test]
