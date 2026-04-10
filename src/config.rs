@@ -386,7 +386,9 @@ mod tests {
         let error = MailConfig::from_parts(mail_directory, "V10".to_string())
             .expect_err("missing db should fail");
         // Should be DatabaseNotFound or Config error about missing db
-        assert!(error.to_string().contains("not found") || error.to_string().contains("Envelope Index"));
+        assert!(
+            error.to_string().contains("not found") || error.to_string().contains("Envelope Index")
+        );
     }
 
     #[test]
