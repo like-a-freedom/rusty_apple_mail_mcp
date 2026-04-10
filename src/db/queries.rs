@@ -195,8 +195,7 @@ pub fn search_messages(
             mgd.message_id_header
         FROM messages m
         LEFT JOIN subjects s ON m.subject = s.ROWID
-        LEFT JOIN sender_addresses sa ON m.sender = sa.ROWID
-        LEFT JOIN addresses a ON sa.address = a.ROWID
+        LEFT JOIN addresses a ON m.sender = a.ROWID
         LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID
         LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
         {where_clause}
@@ -268,8 +267,7 @@ pub fn get_message_by_id(conn: &Connection, id: i64) -> Result<Option<MessageRow
             mgd.message_id_header
         FROM messages m
         LEFT JOIN subjects s ON m.subject = s.ROWID
-        LEFT JOIN sender_addresses sa ON m.sender = sa.ROWID
-        LEFT JOIN addresses a ON sa.address = a.ROWID
+        LEFT JOIN addresses a ON m.sender = a.ROWID
         LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID
         LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
         WHERE m.ROWID = ?
@@ -299,9 +297,9 @@ pub fn get_message_by_id(conn: &Connection, id: i64) -> Result<Option<MessageRow
 /// Get recipients (To, CC, BCC) for a message.
 ///
 /// Returns (address, type) pairs where type is:
-/// - 1 = To
-/// - 2 = CC
-/// - 3 = BCC
+/// - 0 = To
+/// - 1 = CC
+/// - other values are ignored by higher layers
 ///
 /// # Errors
 ///
@@ -468,6 +466,41 @@ mod tests {
         conn
     }
 
+    fn make_direct_sender_test_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+            CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
+            CREATE TABLE sender_addresses (sender INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (
+                ROWID INTEGER PRIMARY KEY,
+                subject INTEGER REFERENCES subjects,
+                sender INTEGER REFERENCES addresses,
+                mailbox INTEGER REFERENCES mailboxes,
+                date_sent INTEGER,
+                date_received INTEGER,
+                message_id TEXT,
+                global_message_id INTEGER
+            );
+            CREATE TABLE message_global_data (
+                ROWID INTEGER PRIMARY KEY,
+                message_id INTEGER,
+                message_id_header TEXT
+            );
+
+            INSERT INTO subjects VALUES (1, 'Direct sender');
+            INSERT INTO addresses VALUES (7, 'direct@example.com');
+            INSERT INTO mailboxes VALUES (1, 'imap://direct-account/INBOX');
+            INSERT INTO message_global_data VALUES (10, 111, '<direct@mail>');
+            INSERT INTO messages VALUES (1, 1, 7, 1, 0, 0, '<direct@mail>', 10);
+            "#,
+        )
+        .expect("seed direct sender schema");
+        conn
+    }
+
     #[test]
     fn search_by_subject_returns_matching_messages() {
         let conn = make_test_db();
@@ -507,6 +540,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_by_sender_uses_messages_sender_when_sender_addresses_is_empty() {
+        let conn = make_direct_sender_test_db();
+        let results = search_messages(
+            &conn,
+            None,
+            None,
+            None,
+            Some("direct@example.com"),
+            None,
+            None,
+            None,
+            None,
+            20,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].sender.as_deref(), Some("direct@example.com"));
     }
 
     #[test]
@@ -612,6 +667,17 @@ mod tests {
         assert!(result.is_some());
         let msg = result.unwrap();
         assert_eq!(msg.subject, Some("Q3 Review".to_string()));
+    }
+
+    #[test]
+    fn get_message_by_id_uses_messages_sender_when_sender_addresses_is_empty() {
+        let conn = make_direct_sender_test_db();
+
+        let message = get_message_by_id(&conn, 1)
+            .unwrap()
+            .expect("message should exist");
+
+        assert_eq!(message.sender.as_deref(), Some("direct@example.com"));
     }
 
     #[test]
