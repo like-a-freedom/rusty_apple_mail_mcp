@@ -577,7 +577,7 @@ mod tests {
         let conn = make_test_db();
         conn.execute(
             "INSERT INTO attachments (ROWID, message, attachment_id, name) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![1_i64, 1_i64, "2", "ROP Oman XDR NDR sizing draft.docx"],
+            rusqlite::params![1_i64, 1_i64, "2", "Test Document.docx"],
         )
         .unwrap();
 
@@ -612,8 +612,8 @@ mod tests {
             "Hello from body\n",
             "--boundary\n",
             "Content-Transfer-Encoding: base64\n",
-            "Content-Disposition: attachment; filename=\"ROP Oman XDR NDR sizing draft.docx\"\n",
-            "Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document; name=\"ROP Oman XDR NDR sizing draft.docx\"\n",
+            "Content-Disposition: attachment; filename=\"Test Document.docx\"\n",
+            "Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document; name=\"Test Document.docx\"\n",
             "X-Apple-Content-Length: 2048\n",
             "\n",
             "\n",
@@ -626,7 +626,7 @@ mod tests {
             .join("Attachments")
             .join("1")
             .join("2")
-            .join("ROP Oman XDR NDR sizing draft.docx");
+            .join("Test Document.docx");
         fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
         fs::write(&attachment_path, docx_bytes).unwrap();
 
