@@ -202,4 +202,110 @@ startxref
         let err = PdfError::EmptyDocument;
         assert_eq!(format!("{}", err), "PDF is empty");
     }
+
+    #[test]
+    fn test_pdf_truncated_header() {
+        // PDF header truncated - should fail to parse
+        let pdf = b"%PDF-1";
+        let result = pdf_to_text(pdf);
+        assert!(matches!(result, Err(PdfError::PdfParse(_))));
+    }
+
+    #[test]
+    fn test_pdf_corrupted_xref() {
+        // PDF with corrupted xref table
+        let pdf = b"%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+xref
+0 1
+0000000000 65535 f
+trailer
+<< /Size 1 /Root 1 0 R >>
+startxref
+100
+%%EOF";
+        let result = pdf_to_text(pdf);
+        // May fail due to invalid xref or succeed with no text
+        match result {
+            Ok(text) => assert!(text.is_empty(), "Expected empty text"),
+            Err(PdfError::PdfParse(_))
+            | Err(PdfError::NoTextLayer)
+            | Err(PdfError::EmptyDocument) => (),
+        }
+    }
+
+    #[test]
+    fn test_pdf_multiple_pages_no_text() {
+        // PDF with multiple pages but no text content
+        let pdf = b"%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R >>
+endobj
+5 0 obj
+<< /Length 0 >>
+stream
+endstream
+endobj
+6 0 obj
+<< /Length 0 >>
+stream
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f
+0000000009 00000 n
+0000000058 00000 n
+0000000115 00000 n
+0000000200 00000 n
+0000000285 00000 n
+0000000370 00000 n
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+445
+%%EOF";
+        let result = pdf_to_text(pdf);
+        match result {
+            Ok(text) => assert!(text.is_empty(), "Expected empty text from multi-page PDF"),
+            Err(PdfError::NoTextLayer) | Err(PdfError::EmptyDocument) => (),
+            Err(PdfError::PdfParse(_)) => (),
+        }
+    }
+
+    #[test]
+    fn test_pdf_parse_error_format() {
+        // Test that parse errors contain useful information
+        let err = PdfError::PdfParse("invalid object".to_string());
+        let err_str = err.to_string();
+        assert!(err_str.contains("Failed to parse PDF"));
+        assert!(err_str.contains("invalid object"));
+    }
+
+    #[test]
+    fn test_pdf_error_variants_debug() {
+        // Ensure all error variants can be debugged
+        let parse_err = PdfError::PdfParse("test".to_string());
+        let debug_str = format!("{:?}", parse_err);
+        assert!(debug_str.contains("PdfParse"));
+
+        let no_text_err = PdfError::NoTextLayer;
+        let debug_str = format!("{:?}", no_text_err);
+        assert!(debug_str.contains("NoTextLayer"));
+
+        let empty_err = PdfError::EmptyDocument;
+        let debug_str = format!("{:?}", empty_err);
+        assert!(debug_str.contains("EmptyDocument"));
+    }
 }

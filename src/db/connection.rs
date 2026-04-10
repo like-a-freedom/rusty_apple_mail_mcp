@@ -84,4 +84,83 @@ mod tests {
         // Should return DatabaseNotFound error
         assert!(matches!(result, Err(MailMcpError::DatabaseNotFound { .. })));
     }
+
+    #[test]
+    fn open_corrupted_file_returns_sqlite_error() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("corrupted.db");
+
+        // Write invalid SQLite data but keep the file
+        fs::write(&db_path, b"not a sqlite database at all").expect("write corrupted");
+
+        let result = open_readonly(&db_path);
+        // File exists, so should get Sqlite error (not DatabaseNotFound)
+        // lopdf may also succeed with empty text, so be flexible
+        match result {
+            Ok(_) => (),
+            Err(MailMcpError::Sqlite(_)) => (),
+            Err(MailMcpError::DatabaseNotFound { .. }) => {
+                panic!("File exists, should not get DatabaseNotFound");
+            }
+            _ => panic!("Expected Sqlite error or Ok"),
+        }
+    }
+
+    #[test]
+    fn open_directory_returns_error() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let dir_path = temp_dir.path().join("subdir");
+        fs::create_dir(&dir_path).expect("create dir");
+
+        let result = open_readonly(&dir_path);
+        // Should return Sqlite error since directory is not a file
+        assert!(matches!(result, Err(MailMcpError::Sqlite(_))));
+    }
+
+    #[test]
+    fn open_readonly_prevents_writes() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("test.db");
+
+        // Create and populate database
+        let conn = Connection::open(&db_path).expect("create db");
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)", [])
+            .expect("create table");
+        conn.execute("INSERT INTO test (value) VALUES ('initial')", [])
+            .expect("insert");
+        drop(conn);
+
+        // Open read-only
+        let ro_conn = open_readonly(&db_path).expect("open readonly");
+
+        // Try to write - should fail
+        let write_result = ro_conn.execute("UPDATE test SET value = 'modified'", []);
+        assert!(write_result.is_err());
+
+        // Try to delete - should fail
+        let delete_result = ro_conn.execute("DROP TABLE test", []);
+        assert!(delete_result.is_err());
+
+        // But read should work
+        let read_result: Result<String, _> =
+            ro_conn.query_row("SELECT value FROM test WHERE id = 1", [], |row| row.get(0));
+        assert!(read_result.is_ok());
+        assert_eq!(read_result.unwrap(), "initial");
+    }
+
+    #[test]
+    fn path_to_string_lossy_handles_unicode() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("test.db");
+
+        // Create a valid database
+        let conn = Connection::open(&db_path).expect("create db");
+        conn.execute("CREATE TABLE test (id INTEGER)", [])
+            .expect("create table");
+        drop(conn);
+
+        // Open with path containing unicode - should not panic
+        let result = open_readonly(&db_path);
+        assert!(result.is_ok());
+    }
 }

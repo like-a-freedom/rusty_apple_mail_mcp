@@ -25,6 +25,28 @@ pub struct ListMailboxesResponse {
     pub guidance: Option<String>,
 }
 
+impl ListMailboxesResponse {
+    /// Create a not found response with a guidance message.
+    pub fn not_found(guidance: impl Into<String>) -> Self {
+        Self {
+            status: Some(ResponseStatus::NotFound),
+            mailboxes: Vec::new(),
+            total_count: Some(0),
+            guidance: Some(guidance.into()),
+        }
+    }
+
+    /// Create a success response with mailboxes.
+    pub fn success(mailboxes: Vec<MailboxResult>, total_count: u32) -> Self {
+        Self {
+            status: None,
+            mailboxes,
+            total_count: Some(total_count),
+            guidance: None,
+        }
+    }
+}
+
 /// Mailbox result item.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct MailboxResult {
@@ -53,35 +75,23 @@ pub fn list_mailboxes_with_conn(
         .collect::<Vec<_>>();
 
     if mailboxes.is_empty() {
-        return Ok(ListMailboxesResponse {
-            status: Some(ResponseStatus::NotFound),
-            mailboxes: vec![],
-            total_count: Some(0),
-            guidance: Some("No mailboxes found. Apple Mail may not be configured.".to_string()),
-        });
+        return Ok(ListMailboxesResponse::not_found(
+            "No mailboxes found. Apple Mail may not be configured.",
+        ));
     }
 
     let results = mailboxes
         .iter()
         .map(|(id, url)| MailboxResult {
-            name: url
-                .rsplit('/')
-                .next()
-                .unwrap_or(url)
-                .trim_end_matches(".mbox")
-                .to_string(),
+            name: crate::domain::extract_mailbox_name(url),
             url: url.clone(),
             message_count: count_messages_in_mailbox(conn, *id).unwrap_or(0),
             account_id: mailbox_account_id(url),
         })
         .collect::<Vec<_>>();
 
-    Ok(ListMailboxesResponse {
-        status: None,
-        total_count: Some(u32::try_from(results.len()).unwrap_or(u32::MAX)),
-        guidance: None,
-        mailboxes: results,
-    })
+    let total_count = u32::try_from(results.len()).unwrap_or(u32::MAX);
+    Ok(ListMailboxesResponse::success(results, total_count))
 }
 
 /// Execute the `list_mailboxes` tool.

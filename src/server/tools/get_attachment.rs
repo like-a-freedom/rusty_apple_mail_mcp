@@ -32,6 +32,44 @@ pub struct GetAttachmentResponse {
     pub guidance: Option<String>,
 }
 
+impl GetAttachmentResponse {
+    /// Create an error response with a guidance message.
+    pub fn error(guidance: impl Into<String>) -> Self {
+        Self {
+            status: Some(ResponseStatus::Error),
+            attachment: None,
+            guidance: Some(guidance.into()),
+        }
+    }
+
+    /// Create a not found response with a guidance message.
+    pub fn not_found(guidance: impl Into<String>) -> Self {
+        Self {
+            status: Some(ResponseStatus::NotFound),
+            attachment: None,
+            guidance: Some(guidance.into()),
+        }
+    }
+
+    /// Create a partial response with a result and guidance.
+    pub fn partial(result: GetAttachmentResult, guidance: impl Into<String>) -> Self {
+        Self {
+            status: Some(ResponseStatus::Partial),
+            attachment: Some(result),
+            guidance: Some(guidance.into()),
+        }
+    }
+
+    /// Create a success response with a result.
+    pub fn success(result: GetAttachmentResult) -> Self {
+        Self {
+            status: None,
+            attachment: Some(result),
+            guidance: None,
+        }
+    }
+}
+
 /// Attachment result in response.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct GetAttachmentResult {
@@ -60,14 +98,9 @@ pub fn get_attachment_content_with_conn(
     let message_id: i64 = match params.message_id.parse() {
         Ok(id) => id,
         Err(_) => {
-            return Ok(GetAttachmentResponse {
-                status: Some(ResponseStatus::Error),
-                attachment: None,
-                guidance: Some(
-                    "Invalid message_id format. Expected a numeric ID from search results."
-                        .to_string(),
-                ),
-            });
+            return Ok(GetAttachmentResponse::error(
+                "Invalid message_id format. Expected a numeric ID from search results.",
+            ));
         }
     };
 
@@ -78,55 +111,37 @@ pub fn get_attachment_content_with_conn(
             match (rowid, index) {
                 (Some(rowid), Some(index)) => (rowid, index),
                 _ => {
-                    return Ok(GetAttachmentResponse {
-                        status: Some(ResponseStatus::Error),
-                        attachment: None,
-                        guidance: Some(
-                            "Invalid attachment_id format. Expected \"{message_id}:{attachment_index}\"."
-                                .to_string(),
-                        ),
-                    });
+                    return Ok(GetAttachmentResponse::error(
+                        "Invalid attachment_id format. Expected \"{message_id}:{attachment_index}\".",
+                    ));
                 }
             }
         }
         None => {
-            return Ok(GetAttachmentResponse {
-                status: Some(ResponseStatus::Error),
-                attachment: None,
-                guidance: Some(
-                    "Invalid attachment_id format. Expected \"{message_id}:{attachment_index}\"."
-                        .to_string(),
-                ),
-            });
+            return Ok(GetAttachmentResponse::error(
+                "Invalid attachment_id format. Expected \"{message_id}:{attachment_index}\".",
+            ));
         }
     };
 
     if attachment_rowid != message_id {
-        return Ok(GetAttachmentResponse {
-            status: Some(ResponseStatus::Error),
-            attachment: None,
-            guidance: Some("attachment_id does not belong to the provided message_id.".to_string()),
-        });
+        return Ok(GetAttachmentResponse::error(
+            "attachment_id does not belong to the provided message_id.",
+        ));
     }
 
     let Some(row) = crate::db::get_message_by_id(conn, message_id)? else {
-        return Ok(GetAttachmentResponse {
-            status: Some(ResponseStatus::NotFound),
-            attachment: None,
-            guidance: Some("Message not found in the index.".to_string()),
-        });
+        return Ok(GetAttachmentResponse::not_found(
+            "Message not found in the index.",
+        ));
     };
 
     if let Some(mailbox_url) = row.mailbox_url.as_deref()
         && !config.is_mailbox_allowed(mailbox_url)
     {
-        return Ok(GetAttachmentResponse {
-            status: Some(ResponseStatus::Error),
-            attachment: None,
-            guidance: Some(
-                "This attachment belongs to an account excluded by APPLE_MAIL_ACCOUNT.".to_string(),
-            ),
-        });
+        return Ok(GetAttachmentResponse::error(
+            "This attachment belongs to an account excluded by APPLE_MAIL_ACCOUNT.",
+        ));
     }
 
     let Some(emlx_path) = locate_emlx(
@@ -135,11 +150,9 @@ pub fn get_attachment_content_with_conn(
         row.mailbox_url.as_deref().unwrap_or(""),
         row.rowid,
     ) else {
-        return Ok(GetAttachmentResponse {
-            status: Some(ResponseStatus::NotFound),
-            attachment: None,
-            guidance: Some("Message body file not found on disk.".to_string()),
-        });
+        return Ok(GetAttachmentResponse::not_found(
+            "Message body file not found on disk.",
+        ));
     };
 
     let parsed = match parse_emlx(&emlx_path) {
@@ -152,23 +165,17 @@ pub fn get_attachment_content_with_conn(
                 emlx_path.display(),
                 error
             );
-            return Ok(GetAttachmentResponse {
-                status: Some(ResponseStatus::Error),
-                attachment: None,
-                guidance: Some("Failed to parse message body file.".to_string()),
-            });
+            return Ok(GetAttachmentResponse::error(
+                "Failed to parse message body file.",
+            ));
         }
     };
 
     let Some(raw_attachment) = parsed.attachments.get(attachment_index) else {
-        return Ok(GetAttachmentResponse {
-            status: Some(ResponseStatus::NotFound),
-            attachment: None,
-            guidance: Some(format!(
-                "Attachment index {attachment_index} out of range. Message has {} attachment(s).",
-                parsed.attachments.len()
-            )),
-        });
+        return Ok(GetAttachmentResponse::not_found(format!(
+            "Attachment index {attachment_index} out of range. Message has {} attachment(s).",
+            parsed.attachments.len()
+        )));
     };
 
     let meta = AttachmentMeta {
@@ -183,11 +190,9 @@ pub fn get_attachment_content_with_conn(
     };
 
     let Some(content) = raw_attachment.content.as_deref() else {
-        return Ok(GetAttachmentResponse {
-            status: Some(ResponseStatus::Error),
-            attachment: None,
-            guidance: Some("Attachment content is unavailable in the parsed message.".to_string()),
-        });
+        return Ok(GetAttachmentResponse::error(
+            "Attachment content is unavailable in the parsed message.",
+        ));
     };
 
     let base_result = GetAttachmentResult {
@@ -202,24 +207,22 @@ pub fn get_attachment_content_with_conn(
     };
 
     match extract_text(content, &raw_attachment.mime_type) {
-        crate::mail::ExtractionResult::Text { content, method } => Ok(GetAttachmentResponse {
-            status: None,
-            attachment: Some(GetAttachmentResult {
+        crate::mail::ExtractionResult::Text { content, method } => {
+            let result = GetAttachmentResult {
                 content_format: ContentFormat::ExtractedText,
                 content: Some(content),
                 extraction_method: Some(method.to_string()),
                 ..base_result
-            }),
-            guidance: None,
-        }),
-        crate::mail::ExtractionResult::NotSupported { reason } => Ok(GetAttachmentResponse {
-            status: Some(ResponseStatus::Partial),
-            attachment: Some(GetAttachmentResult {
+            };
+            Ok(GetAttachmentResponse::success(result))
+        }
+        crate::mail::ExtractionResult::NotSupported { reason } => {
+            let result = GetAttachmentResult {
                 extraction_method: Some(reason.to_string()),
                 ..base_result
-            }),
-            guidance: Some(reason.to_string()),
-        }),
+            };
+            Ok(GetAttachmentResponse::partial(result, reason.to_string()))
+        }
     }
 }
 

@@ -36,6 +36,28 @@ pub struct ListAccountsResponse {
     pub guidance: Option<String>,
 }
 
+impl ListAccountsResponse {
+    /// Create a not found response with a guidance message.
+    pub fn not_found(guidance: impl Into<String>) -> Self {
+        Self {
+            status: Some(ResponseStatus::NotFound),
+            accounts: Vec::new(),
+            total_count: Some(0),
+            guidance: Some(guidance.into()),
+        }
+    }
+
+    /// Create a success response with accounts.
+    pub fn success(accounts: Vec<AccountResult>, total_count: u32) -> Self {
+        Self {
+            status: None,
+            accounts,
+            total_count: Some(total_count),
+            guidance: None,
+        }
+    }
+}
+
 /// Account result item.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct AccountResult {
@@ -76,15 +98,9 @@ pub fn list_accounts_with_conn(
         .collect::<Vec<_>>();
 
     if accounts.is_empty() {
-        return Ok(ListAccountsResponse {
-            status: Some(ResponseStatus::NotFound),
-            accounts: vec![],
-            total_count: Some(0),
-            guidance: Some(
-                "No mail accounts were derived from mailbox URLs. Apple Mail may not be configured."
-                    .to_string(),
-            ),
-        });
+        return Ok(ListAccountsResponse::not_found(
+            "No mail accounts were derived from mailbox URLs. Apple Mail may not be configured.",
+        ));
     }
 
     // Pre-load mailboxes if requested
@@ -106,48 +122,40 @@ pub fn list_accounts_with_conn(
         std::collections::BTreeMap::new()
     };
 
-    Ok(ListAccountsResponse {
-        status: None,
-        total_count: Some(u32::try_from(accounts.len()).unwrap_or(u32::MAX)),
-        guidance: None,
-        accounts: accounts
-            .into_iter()
-            .map(|account| {
-                let mailboxes = if params.include_mailboxes {
-                    mailboxes_by_account.get(&account.account_id).map(|mbs| {
-                        mbs.iter()
-                            .map(|(id, url)| MailboxResult {
-                                name: url
-                                    .rsplit('/')
-                                    .next()
-                                    .unwrap_or(url)
-                                    .trim_end_matches(".mbox")
-                                    .to_string(),
-                                url: url.clone(),
-                                message_count: count_messages_in_mailbox(conn, *id).unwrap_or(0),
-                            })
-                            .collect()
-                    })
-                } else {
-                    None
-                };
+    let total_count = u32::try_from(accounts.len()).unwrap_or(u32::MAX);
+    let accounts: Vec<AccountResult> = accounts
+        .into_iter()
+        .map(|account| {
+            let mailboxes = if params.include_mailboxes {
+                mailboxes_by_account.get(&account.account_id).map(|mbs| {
+                    mbs.iter()
+                        .map(|(id, url)| MailboxResult {
+                            name: crate::domain::extract_mailbox_name(url),
+                            url: url.clone(),
+                            message_count: count_messages_in_mailbox(conn, *id).unwrap_or(0),
+                        })
+                        .collect()
+                })
+            } else {
+                None
+            };
 
-                AccountResult {
-                    account_name: config
-                        .account_metadata(&account.account_id)
-                        .and_then(|metadata| metadata.account_name.clone()),
-                    email: config
-                        .account_metadata(&account.account_id)
-                        .and_then(|metadata| metadata.email.clone()),
-                    account_id: account.account_id,
-                    account_type: account.account_type,
-                    mailbox_count: account.mailbox_count,
-                    message_count: account.message_count,
-                    mailboxes,
-                }
-            })
-            .collect(),
-    })
+            AccountResult {
+                account_name: config
+                    .account_metadata(&account.account_id)
+                    .and_then(|metadata| metadata.account_name.clone()),
+                email: config
+                    .account_metadata(&account.account_id)
+                    .and_then(|metadata| metadata.email.clone()),
+                account_id: account.account_id,
+                account_type: account.account_type,
+                mailbox_count: account.mailbox_count,
+                message_count: account.message_count,
+                mailboxes,
+            }
+        })
+        .collect();
+    Ok(ListAccountsResponse::success(accounts, total_count))
 }
 
 /// Execute the `list_accounts` tool.
