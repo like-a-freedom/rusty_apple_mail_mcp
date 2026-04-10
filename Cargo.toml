@@ -1,6 +1,6 @@
 [package]
 name = "rusty_apple_mail_mcp"
-version = "1.2.3"
+version = "1.2.4"
 edition = "2024"
 resolver = "3"
 
