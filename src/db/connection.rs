@@ -5,8 +5,8 @@ use std::path::Path;
 /// Open the Envelope Index database in read-only mode.
 ///
 /// Uses `SQLite` URI to prevent any accidental writes.
-/// The `immutable=1` flag tells `SQLite` the database file is read-only and won't change,
-/// which is safe for our use case since Apple Mail owns the write lock.
+/// The connection stays read-only, but it must still observe the active `WAL`
+/// so newly indexed Mail messages remain visible before checkpointing.
 ///
 /// # Errors
 ///
@@ -20,7 +20,7 @@ pub fn open_readonly(path: impl AsRef<Path>) -> Result<Connection, MailMcpError>
             path: path.to_owned(),
         });
     }
-    let uri = format!("file:{}?mode=ro&immutable=1", path.to_string_lossy());
+    let uri = format!("file:{}?mode=ro", path.to_string_lossy());
     Connection::open_with_flags(
         &uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -162,5 +162,54 @@ mod tests {
         // Open with path containing unicode - should not panic
         let result = open_readonly(&db_path);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn open_readonly_reads_committed_rows_from_wal() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("wal.db");
+
+        let writer = Connection::open(&db_path).expect("create wal db");
+        let journal_mode: String = writer
+            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+            .expect("enable wal mode");
+        assert_eq!(journal_mode.to_lowercase(), "wal");
+
+        writer
+            .execute_batch(
+                r#"
+                PRAGMA wal_autocheckpoint=0;
+                CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT);
+                INSERT INTO test (id, value) VALUES (1, 'checkpointed');
+                "#,
+            )
+            .expect("seed checkpointed state");
+        writer
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("checkpoint initial state");
+        writer
+            .execute(
+                "INSERT INTO test (id, value) VALUES (?1, ?2)",
+                [2_i64.to_string(), "wal-only".to_string()],
+            )
+            .expect("insert wal-backed row");
+
+        let wal_path = std::path::PathBuf::from(format!("{}-wal", db_path.to_string_lossy()));
+        assert!(
+            wal_path.exists(),
+            "expected WAL file at {}",
+            wal_path.display()
+        );
+        assert!(
+            fs::metadata(&wal_path).expect("wal metadata").len() > 0,
+            "expected WAL file to contain uncheckpointed data"
+        );
+
+        let ro_conn = open_readonly(&db_path).expect("open readonly");
+        let row_count: i64 = ro_conn
+            .query_row("SELECT COUNT(*) FROM test", [], |row| row.get(0))
+            .expect("read wal-backed rows");
+
+        assert_eq!(row_count, 2);
     }
 }
