@@ -62,7 +62,6 @@ pub struct SearchMessageResult {
     pub body_preview: Option<String>,
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_zero(n: &u32) -> bool {
     *n == 0
 }
@@ -79,6 +78,52 @@ pub struct SearchMessagesResponse {
     pub next_offset: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guidance: Option<String>,
+}
+
+impl SearchMessagesResponse {
+    /// Create an error response with a guidance message.
+    pub fn error(guidance: impl Into<String>) -> Self {
+        Self {
+            status: Some(ResponseStatus::Error),
+            guidance: Some(guidance.into()),
+            messages: Vec::new(),
+            total_count: None,
+            has_more: false,
+            next_offset: None,
+        }
+    }
+
+    /// Create a not found response with a guidance message.
+    pub fn not_found(guidance: impl Into<String>) -> Self {
+        Self {
+            status: Some(ResponseStatus::NotFound),
+            guidance: Some(guidance.into()),
+            messages: Vec::new(),
+            total_count: None,
+            has_more: false,
+            next_offset: None,
+        }
+    }
+
+    /// Create a success response with messages.
+    pub fn success(
+        messages: Vec<SearchMessageResult>,
+        has_more: bool,
+        next_offset: Option<u32>,
+    ) -> Self {
+        Self {
+            status: None,
+            total_count: if has_more {
+                Some(u32::try_from(messages.len()).unwrap_or(u32::MAX))
+            } else {
+                None
+            },
+            has_more,
+            next_offset,
+            guidance: None,
+            messages,
+        }
+    }
 }
 
 /// Parse a date string (YYYY-MM-DD) to Unix timestamp (start of day UTC).
@@ -318,27 +363,13 @@ pub fn search_messages_with_conn(
     let total_started = Instant::now();
     let filters_description = describe_search_filters(&params);
     if let Err(message) = validate_params(&params) {
-        return Ok(SearchMessagesResponse {
-            status: Some(ResponseStatus::Error),
-            guidance: Some(message),
-            messages: Vec::new(),
-            total_count: None,
-            has_more: false,
-            next_offset: None,
-        });
+        return Ok(SearchMessagesResponse::error(message));
     }
 
     let (date_from_ts, date_to_ts) = match parse_date_range(&params) {
         Ok(range) => range,
         Err(message) => {
-            return Ok(SearchMessagesResponse {
-                status: Some(ResponseStatus::Error),
-                guidance: Some(message),
-                messages: Vec::new(),
-                total_count: None,
-                has_more: false,
-                next_offset: None,
-            });
+            return Ok(SearchMessagesResponse::error(message));
         }
     };
 
@@ -346,16 +377,9 @@ pub fn search_messages_with_conn(
     if let Some(account) = params.account.as_deref()
         && !config.is_account_allowed(account)
     {
-        return Ok(SearchMessagesResponse {
-            status: Some(ResponseStatus::Error),
-            guidance: Some(format!(
-                "The requested account filter {account} is excluded by APPLE_MAIL_ACCOUNT."
-            )),
-            messages: Vec::new(),
-            total_count: None,
-            has_more: false,
-            next_offset: None,
-        });
+        return Ok(SearchMessagesResponse::error(format!(
+            "The requested account filter {account} is excluded by APPLE_MAIL_ACCOUNT."
+        )));
     }
 
     let sql_started = Instant::now();
@@ -407,14 +431,7 @@ pub fn search_messages_with_conn(
             "No messages match the provided filters. Try broadening the date range, shortening subject_query to one or two keywords, or verifying the sender address with list_mailboxes.".to_string()
         };
 
-        return Ok(SearchMessagesResponse {
-            status: Some(ResponseStatus::NotFound),
-            guidance: Some(guidance),
-            messages: Vec::new(),
-            total_count: None,
-            has_more: false,
-            next_offset: None,
-        });
+        return Ok(SearchMessagesResponse::not_found(guidance));
     }
 
     let hydration_started = Instant::now();
@@ -442,18 +459,12 @@ pub fn search_messages_with_conn(
         total_started.elapsed().as_millis(),
         filters_description,
     );
-    Ok(SearchMessagesResponse {
-        status: None,
-        total_count: if has_more {
-            Some(u32::try_from(messages.len()).unwrap_or(u32::MAX))
-        } else {
-            None
-        },
-        has_more,
-        next_offset: has_more.then_some(params.offset + params.limit),
-        guidance: None,
+    let next_offset = has_more.then_some(params.offset + params.limit);
+    Ok(SearchMessagesResponse::success(
         messages,
-    })
+        has_more,
+        next_offset,
+    ))
 }
 
 /// Execute the `search_messages` tool.
@@ -466,25 +477,11 @@ pub fn search_messages(
     params: SearchMessagesParams,
 ) -> Result<SearchMessagesResponse, MailMcpError> {
     if let Err(message) = validate_params(&params) {
-        return Ok(SearchMessagesResponse {
-            status: Some(ResponseStatus::Error),
-            guidance: Some(message),
-            messages: Vec::new(),
-            total_count: None,
-            has_more: false,
-            next_offset: None,
-        });
+        return Ok(SearchMessagesResponse::error(message));
     }
 
     if let Err(message) = parse_date_range(&params) {
-        return Ok(SearchMessagesResponse {
-            status: Some(ResponseStatus::Error),
-            guidance: Some(message),
-            messages: Vec::new(),
-            total_count: None,
-            has_more: false,
-            next_offset: None,
-        });
+        return Ok(SearchMessagesResponse::error(message));
     }
 
     let db_path = config.envelope_db_path();

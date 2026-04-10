@@ -208,7 +208,6 @@ impl MailMcpServer {
     }
 
     /// Call a tool by name with the given arguments.
-    #[allow(clippy::unused_async)]
     async fn call_tool_by_name(
         &self,
         name: &str,

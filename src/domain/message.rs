@@ -29,6 +29,29 @@ pub fn timestamp_to_iso(ts: i64, epoch_offset_s: i64) -> String {
     )
 }
 
+/// Extract mailbox name from a mailbox URL.
+///
+/// Extracts the last path component from URLs like:
+/// - `imap://account-id/INBOX` → `INBOX`
+/// - `ews://account-id/Inbox` → `Inbox`
+/// - `imap://account-id/folder.mbox` → `folder`
+///
+/// # Arguments
+///
+/// * `url` - Mailbox URL string
+///
+/// # Returns
+///
+/// Mailbox name extracted from the URL
+#[must_use]
+pub fn extract_mailbox_name(url: &str) -> String {
+    url.rsplit('/')
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches(".mbox")
+        .to_string()
+}
+
 /// Compact message representation for search result lists.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct MessageMeta {
@@ -54,10 +77,11 @@ impl MessageMeta {
     /// Convert a database row to `MessageMeta`.
     #[must_use]
     pub fn from_row(row: &MessageRow, epoch_offset_s: i64) -> Self {
-        let mailbox = row.mailbox_url.as_ref().map_or_else(
-            || "Unknown".to_string(),
-            |url| url.rsplit('/').next().unwrap_or(url).to_string(),
-        );
+        let mailbox = row
+            .mailbox_url
+            .as_deref()
+            .map(extract_mailbox_name)
+            .unwrap_or_else(|| "Unknown".to_string());
 
         Self {
             id: row.rowid.to_string(),
@@ -123,10 +147,11 @@ impl MessageFull {
         recipients: &[(String, i32)],
         epoch_offset_s: i64,
     ) -> Self {
-        let mailbox = row.mailbox_url.as_ref().map_or_else(
-            || "Unknown".to_string(),
-            |url| url.rsplit('/').next().unwrap_or(url).to_string(),
-        );
+        let mailbox = row
+            .mailbox_url
+            .as_deref()
+            .map(extract_mailbox_name)
+            .unwrap_or_else(|| "Unknown".to_string());
 
         // Split recipients by type: 1=To, 2=CC, 3=BCC
         let mut to = Vec::new();

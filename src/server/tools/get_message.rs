@@ -10,10 +10,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::config::MailConfig;
-use crate::db::{
-    detect_epoch_offset_seconds, get_message_by_id, get_recipients, mailbox_account_id,
-    open_readonly,
-};
+use crate::db::{detect_epoch_offset_seconds, get_message_by_id, get_recipients, open_readonly};
 use crate::domain::AttachmentMeta;
 use crate::error::MailMcpError;
 use crate::mail::{
@@ -79,6 +76,44 @@ pub struct GetMessageResponse {
     pub guidance: Option<String>,
 }
 
+impl GetMessageResponse {
+    /// Create an error response with a guidance message.
+    pub fn error(guidance: impl Into<String>) -> Self {
+        Self {
+            status: Some(ResponseStatus::Error),
+            message: None,
+            guidance: Some(guidance.into()),
+        }
+    }
+
+    /// Create a not found response with a guidance message.
+    pub fn not_found(guidance: impl Into<String>) -> Self {
+        Self {
+            status: Some(ResponseStatus::NotFound),
+            message: None,
+            guidance: Some(guidance.into()),
+        }
+    }
+
+    /// Create a partial response with a result and guidance.
+    pub fn partial(result: GetMessageResult, guidance: impl Into<String>) -> Self {
+        Self {
+            status: Some(ResponseStatus::Partial),
+            message: Some(result),
+            guidance: Some(guidance.into()),
+        }
+    }
+
+    /// Create a success response with a result.
+    pub fn success(result: GetMessageResult) -> Self {
+        Self {
+            status: None,
+            message: Some(result),
+            guidance: None,
+        }
+    }
+}
+
 /// Message result in `get_message` response.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct GetMessageResult {
@@ -120,49 +155,35 @@ pub fn get_message_with_conn(
     let message_id: i64 = match params.message_id.parse() {
         Ok(id) => id,
         Err(_) => {
-            return Ok(GetMessageResponse {
-                status: Some(ResponseStatus::Error),
-                message: None,
-                guidance: Some(
-                    "Invalid message_id format. Expected a numeric ID from search results."
-                        .to_string(),
-                ),
-            });
+            return Ok(GetMessageResponse::error(
+                "Invalid message_id format. Expected a numeric ID from search results.",
+            ));
         }
     };
 
     let db_started = Instant::now();
     let epoch_offset_s = detect_epoch_offset_seconds(conn)?;
     let Some(row) = get_message_by_id(conn, message_id)? else {
-        return Ok(GetMessageResponse {
-            status: Some(ResponseStatus::NotFound),
-            message: None,
-            guidance: Some(
-                "Message not found in the index. The message_id may be incorrect or the message was deleted."
-                    .to_string(),
-            ),
-        });
+        return Ok(GetMessageResponse::not_found(
+            "Message not found in the index. The message_id may be incorrect or the message was deleted.",
+        ));
     };
 
     if let Some(mailbox_url) = row.mailbox_url.as_deref()
         && !config.is_mailbox_allowed(mailbox_url)
     {
-        return Ok(GetMessageResponse {
-            status: Some(ResponseStatus::Error),
-            message: None,
-            guidance: Some(
-                "This message belongs to an account excluded by APPLE_MAIL_ACCOUNT.".to_string(),
-            ),
-        });
+        return Ok(GetMessageResponse::error(
+            "This message belongs to an account excluded by APPLE_MAIL_ACCOUNT.",
+        ));
     }
 
     let recipients = get_recipients(conn, message_id)?;
     let db_elapsed = db_started.elapsed();
-    let mailbox = row.mailbox_url.as_ref().map_or_else(
-        || "Unknown".to_string(),
-        |url| url.rsplit('/').next().unwrap_or(url).to_string(),
-    );
-    let _account_id = row.mailbox_url.as_deref().and_then(mailbox_account_id);
+    let mailbox = row
+        .mailbox_url
+        .as_deref()
+        .map(crate::domain::extract_mailbox_name)
+        .unwrap_or_else(|| "Unknown".to_string());
 
     let mut to = Vec::new();
     let mut cc = Vec::new();
@@ -248,13 +269,10 @@ pub fn get_message_with_conn(
                         (cached.body_text, cached.body_html, cached.attachments)
                     }
                     Err(MailMcpError::BodyFileNotFound { .. }) => {
-                        return Ok(GetMessageResponse {
-                            status: Some(ResponseStatus::Partial),
-                            message: Some(result),
-                            guidance: Some(
-                                "Message body file not found on disk (emlx missing). The message index entry exists but the local file may have been deleted or not yet downloaded. Try another message or check Mail sync status.".to_string(),
-                            ),
-                        });
+                        return Ok(GetMessageResponse::partial(
+                            result,
+                            "Message body file not found on disk (emlx missing). The message index entry exists but the local file may have been deleted or not yet downloaded. Try another message or check Mail sync status.",
+                        ));
                     }
                     Err(error) => {
                         tracing::warn!(
@@ -263,13 +281,10 @@ pub fn get_message_with_conn(
                             row.mailbox_url.as_deref().unwrap_or("unknown"),
                             error
                         );
-                        return Ok(GetMessageResponse {
-                            status: Some(ResponseStatus::Partial),
-                            message: Some(result),
-                            guidance: Some(
-                                "Message metadata was loaded, but the body could not be parsed from the local message file.".to_string(),
-                            ),
-                        });
+                        return Ok(GetMessageResponse::partial(
+                            result,
+                            "Message metadata was loaded, but the body could not be parsed from the local message file.",
+                        ));
                     }
                 }
             };
@@ -282,9 +297,7 @@ pub fn get_message_with_conn(
                     BodyFormat::Both => {
                         let text = body_text
                             .or_else(|| body_html.as_deref().map(crate::mail::html_to_plain_text));
-                        if matches!(params.body_format, BodyFormat::Both) {
-                            result.body_html = body_html;
-                        }
+                        result.body_html = body_html;
                         text
                     }
                 };
@@ -305,13 +318,10 @@ pub fn get_message_with_conn(
                 params.include_attachments_summary,
             );
         } else {
-            return Ok(GetMessageResponse {
-                status: Some(ResponseStatus::Partial),
-                message: Some(result),
-                guidance: Some(
-                    "No local message file matched this message inside the mailbox subtree. The message may not be downloaded, may only exist as a partial cache entry, or the local Mail storage layout may differ from the indexed metadata.".to_string(),
-                ),
-            });
+            return Ok(GetMessageResponse::partial(
+                result,
+                "No local message file matched this message inside the mailbox subtree. The message may not be downloaded, may only exist as a partial cache entry, or the local Mail storage layout may differ from the indexed metadata.",
+            ));
         }
     }
 
@@ -324,11 +334,7 @@ pub fn get_message_with_conn(
         params.include_attachments_summary,
     );
 
-    Ok(GetMessageResponse {
-        status: None,
-        message: Some(result),
-        guidance: None,
-    })
+    Ok(GetMessageResponse::success(result))
 }
 
 /// Execute the `get_message` tool.
