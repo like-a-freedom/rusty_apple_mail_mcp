@@ -383,7 +383,8 @@ pub fn search_messages_with_conn(
     }
 
     let sql_started = Instant::now();
-    let rows = db_search(
+
+    let mut rows = db_search(
         conn,
         params.subject_query.as_deref(),
         date_from_ts,
@@ -396,7 +397,31 @@ pub fn search_messages_with_conn(
         params.limit,
         params.offset,
     )?;
+
     let sql_elapsed = sql_started.elapsed();
+
+    if rows.is_empty() && params.subject_query.is_some() {
+        let subject_query = params.subject_query.as_deref().unwrap();
+        let tokens = crate::db::tokenize(subject_query);
+
+        if !tokens.is_empty() {
+            tracing::debug!("Token search returned no results, trying fallback full-string search");
+
+            rows = db_search(
+                conn,
+                Some(subject_query),
+                date_from_ts,
+                date_to_ts,
+                params.sender.as_deref(),
+                params.participant.as_deref(),
+                params.account.as_deref(),
+                config.allowed_account_ids(),
+                params.mailbox.as_deref(),
+                params.limit,
+                params.offset,
+            )?;
+        }
+    }
 
     let metadata_started = Instant::now();
     let message_ids = rows.iter().map(|row| row.rowid).collect::<Vec<_>>();
