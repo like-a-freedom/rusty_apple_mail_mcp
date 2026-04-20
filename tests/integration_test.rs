@@ -81,6 +81,85 @@ fn search_by_subject_returns_matching_messages() {
 }
 
 #[test]
+fn search_by_subject_falls_back_to_full_string_when_token_search_returns_nothing() {
+    use rusty_apple_mail_mcp::db::tokenize;
+    let (_temp_dir, config) = make_test_config();
+
+    let conn2 = rusqlite::Connection::open_in_memory().expect("in-memory db");
+    conn2.execute_batch(
+        r#"
+        CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+        CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
+        CREATE TABLE sender_addresses (sender INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
+        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+        CREATE TABLE messages (
+            ROWID INTEGER PRIMARY KEY,
+            subject INTEGER REFERENCES subjects,
+            sender INTEGER REFERENCES sender_addresses,
+            mailbox INTEGER REFERENCES mailboxes,
+            summary INTEGER REFERENCES summaries,
+            date_sent INTEGER,
+            date_received INTEGER,
+            message_id TEXT,
+            global_message_id INTEGER
+        );
+        CREATE TABLE summaries (ROWID INTEGER PRIMARY KEY, summary TEXT);
+        CREATE TABLE attachments (ROWID INTEGER PRIMARY KEY, message INTEGER REFERENCES messages, attachment_id TEXT, name TEXT);
+        CREATE TABLE message_global_data (ROWID INTEGER PRIMARY KEY, message_id INTEGER, message_id_header TEXT);
+        CREATE TABLE recipients (message INTEGER REFERENCES messages, address INTEGER REFERENCES addresses, type INTEGER);
+
+        INSERT INTO subjects VALUES (1, 'Q3 Review'), (2, 'Budget Planning');
+        INSERT INTO subjects VALUES (3, 'VeryLongUniqueSubjectXYZ123456789');
+        INSERT INTO addresses VALUES (1, 'alice@example.com'), (2, 'bob@example.com');
+        INSERT INTO sender_addresses VALUES (1, 1);
+        INSERT INTO mailboxes VALUES (1, 'imap://account-a/INBOX'), (2, 'ews://account-b/Inbox');
+        INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
+        INSERT INTO message_global_data VALUES (20, 222, '<msg2@mail>');
+        INSERT INTO message_global_data VALUES (30, 333, '<msg3@mail>');
+        INSERT INTO summaries VALUES (1, 'DB-backed preview for Q3 review');
+        INSERT INTO messages VALUES (1, 1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>', 10);
+        INSERT INTO messages VALUES (2, 2, 1, 2, NULL, 766627200, 766627200, '<msg2@mail>', 20);
+        INSERT INTO messages VALUES (3, 3, 1, 1, NULL, 750000000, 750000000, '<msg3@mail>', 30);
+        INSERT INTO recipients VALUES (1, 2, 1), (2, 2, 1);
+        "#,
+    ).unwrap();
+
+    let tokens = tokenize("VeryLongUniqueSubjectXYZ123456789");
+    assert!(
+        !tokens.is_empty(),
+        "There should be tokens for fallback test"
+    );
+
+    let response = search_messages_with_conn(
+        &config,
+        &conn2,
+        SearchMessagesParams {
+            subject_query: Some("VeryLongUniqueSubjectXYZ123456789".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            include_body_preview: false,
+            offset: 0,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(response.status, None);
+    assert!(
+        !response.messages.is_empty(),
+        "Should find message via fallback"
+    );
+    assert_eq!(
+        response.messages[0].subject,
+        "VeryLongUniqueSubjectXYZ123456789"
+    );
+}
+
+#[test]
 fn search_by_account_returns_only_matching_messages() {
     let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
