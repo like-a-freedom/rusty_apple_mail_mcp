@@ -108,7 +108,7 @@ fn tokenize(input: &str) -> Vec<String> {
     input
         .split(|c: char| !c.is_alphanumeric())
         .map(str::trim)
-        .filter(|t| t.len() >= 2)
+        .filter(|t| t.len() >= 3)
         .map(str::to_owned)
         .collect()
 }
@@ -1071,5 +1071,13 @@ mod tests {
             .filter_map(|r| r.subject.as_deref())
             .collect();
         assert!(subjects.iter().any(|s| s.contains("ABC")));
+    }
+
+    #[test]
+    fn tokenize_filters_short_tokens() {
+        let tokens = tokenize("FW: RE test");
+        assert!(!tokens.contains(&"FW".to_string()), "FW should be filtered (2 chars)");
+        assert!(!tokens.contains(&"RE".to_string()), "RE should be filtered (2 chars)");
+        assert!(tokens.contains(&"test".to_string()), "test should be kept (4 chars)");
     }
 }
