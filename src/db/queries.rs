@@ -147,12 +147,12 @@ pub fn search_messages(
             conditions.push("s.subject LIKE ? ESCAPE '\\'".to_string());
             params.push(Box::new(format!("%{}%", escape_like(subject))));
         } else {
-            let or_conditions: Vec<String> = tokens
-                .iter()
-                .map(|_| "s.subject LIKE ? ESCAPE '\\'".to_string())
-                .collect();
-            conditions.push(format!("({})", or_conditions.join(" OR ")));
-            for token in &tokens {
+            let mut sorted_tokens = tokens;
+            sorted_tokens.sort_by(|a, b| b.len().cmp(&a.len()));
+            sorted_tokens.truncate(5);
+            
+            for token in &sorted_tokens {
+                conditions.push("s.subject LIKE ? ESCAPE '\\'".to_string());
                 params.push(Box::new(format!("%{}%", escape_like(token))));
             }
         }
@@ -545,6 +545,44 @@ mod tests {
         .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].subject, Some("Q3 Review".to_string()));
+    }
+
+    #[test]
+    fn search_by_subject_with_multiple_tokens_uses_and_logic() {
+        let conn = make_test_db();
+        
+        let results = search_messages(
+            &conn,
+            Some("Q3 Review"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            20,
+            0,
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1, "Should find message with both tokens in subject");
+        assert_eq!(results[0].subject, Some("Q3 Review".to_string()));
+        
+        let results = search_messages(
+            &conn,
+            Some("Q3 Budget"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            20,
+            0,
+        )
+        .unwrap();
+        assert_eq!(results.len(), 0, "Should NOT find message - tokens from different subjects");
     }
 
     #[test]
