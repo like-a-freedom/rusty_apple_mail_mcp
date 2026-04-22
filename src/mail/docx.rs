@@ -115,15 +115,11 @@ fn parse_docx_xml(xml: &str) -> Result<String, DocxError> {
                         in_text = true;
                         text_content.clear();
                     }
-                    "b" => {
-                        if in_run {
-                            run_bold = true;
-                        }
+                    "b" if in_run => {
+                        run_bold = true;
                     }
-                    "i" => {
-                        if in_run {
-                            run_italic = true;
-                        }
+                    "i" if in_run => {
+                        run_italic = true;
                     }
                     "pStyle" => {
                         // Check for style attributes
@@ -154,16 +150,12 @@ fn parse_docx_xml(xml: &str) -> Result<String, DocxError> {
                         in_table = true;
                         table_rows.clear();
                     }
-                    "tr" => {
-                        if in_table {
-                            current_row.clear();
-                        }
+                    "tr" if in_table => {
+                        current_row.clear();
                     }
-                    "tc" => {
-                        if in_table {
-                            in_cell = true;
-                            current_cell.clear();
-                        }
+                    "tc" if in_table => {
+                        in_cell = true;
+                        current_cell.clear();
                     }
                     _ => {}
                 }
@@ -207,17 +199,13 @@ fn parse_docx_xml(xml: &str) -> Result<String, DocxError> {
                         }
                         current_paragraph.clear();
                     }
-                    "tc" => {
-                        if in_table {
-                            in_cell = false;
-                            current_row.push(current_cell.trim().to_string());
-                            current_cell.clear();
-                        }
+                    "tc" if in_table => {
+                        in_cell = false;
+                        current_row.push(current_cell.trim().to_string());
+                        current_cell.clear();
                     }
-                    "tr" => {
-                        if in_table && !current_row.is_empty() {
-                            table_rows.push(current_row.clone());
-                        }
+                    "tr" if in_table && !current_row.is_empty() => {
+                        table_rows.push(current_row.clone());
                     }
                     "tbl" => {
                         if in_table && !table_rows.is_empty() {
