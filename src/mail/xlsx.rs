@@ -110,18 +110,14 @@ fn parse_shared_strings(xml: &str) -> Result<Vec<String>, XlsxError> {
                         in_si = true;
                         current_text.clear();
                     }
-                    "t" => {
-                        if in_si {
-                            in_t = true;
-                        }
+                    "t" if in_si => {
+                        in_t = true;
                     }
                     _ => {}
                 }
             }
-            Ok(Event::Text(e)) => {
-                if in_t {
-                    current_text.push_str(&String::from_utf8_lossy(e.as_ref()));
-                }
+            Ok(Event::Text(e)) if in_t => {
+                current_text.push_str(&String::from_utf8_lossy(e.as_ref()));
             }
             Ok(Event::End(e)) => {
                 let binding = e.name();
@@ -212,30 +208,22 @@ fn parse_worksheet_to_csv(xml: &str, shared_strings: &[String]) -> Result<String
                             }
                         }
                     }
-                    "v" => {
-                        if in_cell {
-                            in_value = true;
-                        }
+                    "v" if in_cell => {
+                        in_value = true;
                     }
-                    "is" => {
+                    "is" if in_cell => {
                         // Inline string - treat as text
-                        if in_cell {
-                            cell_type = Some("str".to_string());
-                        }
+                        cell_type = Some("str".to_string());
                     }
-                    "t" => {
+                    "t" if in_cell => {
                         // Text within inline string
-                        if in_cell {
-                            in_value = true;
-                        }
+                        in_value = true;
                     }
                     _ => {}
                 }
             }
-            Ok(Event::Text(e)) => {
-                if in_value {
-                    current_cell.push_str(&String::from_utf8_lossy(e.as_ref()));
-                }
+            Ok(Event::Text(e)) if in_value => {
+                current_cell.push_str(&String::from_utf8_lossy(e.as_ref()));
             }
             Ok(Event::End(e)) => {
                 let binding = e.name();
@@ -254,10 +242,8 @@ fn parse_worksheet_to_csv(xml: &str, shared_strings: &[String]) -> Result<String
                             resolve_cell_value(&current_cell, cell_type.as_deref(), shared_strings);
                         current_row.push(resolved);
                     }
-                    "row" => {
-                        if !current_row.is_empty() {
-                            csv.push(escape_csv_row(&current_row));
-                        }
+                    "row" if !current_row.is_empty() => {
+                        csv.push(escape_csv_row(&current_row));
                     }
                     _ => {}
                 }
