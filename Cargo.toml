@@ -1,6 +1,6 @@
 [package]
 name = "rusty_apple_mail_mcp"
-version = "1.2.5"
+version = "1.2.6"
 edition = "2024"
 resolver = "3"
 
@@ -9,8 +9,8 @@ name = "rusty_apple_mail_mcp"
 path = "src/main.rs"
 
 [dependencies]
-rmcp = { version = "1.3.0", features = ["server", "macros", "transport-io"] }
-tokio = { version = "1.51.1", features = [
+rmcp = { version = "1.5.0", features = ["server", "macros", "transport-io"] }
+tokio = { version = "1.52.1", features = [
   "rt-multi-thread",
   "macros",
   "io-util"
@@ -20,23 +20,23 @@ serde_json = "1.0.149"
 thiserror = "2.0.18"
 anyhow = "1.0.102"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
-rusqlite = { version = "0.38.0", features = ["bundled"] }
-chrono = { version = "0.4.26", features = ["serde"] }
-dirs = "6"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+chrono = { version = "0.4.44", features = ["serde"] }
+dirs = "6.0.0"
 walkdir = "2.5.0"
 mail-parser = "0.11.2"
 schemars = "1.2.1"
-once_cell = "1.21"
-lru = "0.16.3"
-scraper = "0.26"
-zip = { version = "8.4.0", default-features = false, features = ["deflate"] }
+once_cell = "1.21.4"
+lru = "0.17.0"
+scraper = "0.26.0"
+zip = { version = "8.5.1", default-features = false, features = ["deflate"] }
 quick-xml = { version = "0.39.2", features = ["serialize"] }
 csv = "1.4.0"
-lopdf = "0.40"
+lopdf = "0.40.0"
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.27.0"
 
 [profile.dev]
 opt-level = 0
