@@ -148,7 +148,7 @@ pub fn search_messages(
             params.push(Box::new(format!("%{}%", escape_like(subject))));
         } else {
             let mut sorted_tokens = tokens;
-            sorted_tokens.sort_by(|a, b| b.len().cmp(&a.len()));
+            sorted_tokens.sort_by_key(|b| std::cmp::Reverse(b.len()));
             sorted_tokens.truncate(5);
 
             for token in &sorted_tokens {
@@ -208,7 +208,7 @@ pub fn search_messages(
 
     let sql = format!(
         r"
-        SELECT 
+        SELECT
             m.ROWID,
             s.subject,
             a.address,
@@ -280,7 +280,7 @@ pub fn address_exists(conn: &Connection, address: &str) -> Result<bool, MailMcpE
 pub fn get_message_by_id(conn: &Connection, id: i64) -> Result<Option<MessageRow>, MailMcpError> {
     let mut stmt = conn.prepare(
         r"
-        SELECT 
+        SELECT
             m.ROWID,
             s.subject,
             a.address,
@@ -477,13 +477,13 @@ mod tests {
             INSERT INTO addresses VALUES (1, 'alice@example.com'), (2, 'bob@example.com');
             INSERT INTO sender_addresses VALUES (1, 1);
             INSERT INTO mailboxes VALUES (1, 'imap://alice@mail.example.com/INBOX');
-            
+
             -- Use CoreData epoch: 2024-09-15 = 1726358400 (Unix) - 978307200 = 748051200
             INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
             INSERT INTO message_global_data VALUES (20, 222, '<msg2@mail>');
             INSERT INTO messages VALUES (1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>', 10);
             INSERT INTO messages VALUES (2, 2, 1, 1, 766627200, 766627200, '<msg2@mail>', 20);
-            
+
             INSERT INTO recipients VALUES (1, 2, 1), (2, 2, 1);
             "#,
         )
