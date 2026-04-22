@@ -160,10 +160,8 @@ fn extract_slide_text(xml: &str) -> Result<String, PptxError> {
                     in_text = true;
                 }
             }
-            Ok(Event::Text(e)) => {
-                if in_text {
-                    text_parts.push(String::from_utf8_lossy(e.as_ref()).to_string());
-                }
+            Ok(Event::Text(e)) if in_text => {
+                text_parts.push(String::from_utf8_lossy(e.as_ref()).to_string());
             }
             Ok(Event::End(e)) => {
                 let binding = e.name();
