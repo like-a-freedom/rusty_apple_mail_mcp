@@ -59,6 +59,12 @@ This installs the binary under the name `rusty_apple_mail_mcp`.
 
 ## Running the server
 
+The server supports two operating modes:
+
+### MCP Mode (default)
+
+In MCP mode, the server communicates via stdin/stdout using the Model Context Protocol. This is the primary mode for integration with AI agents, Claude Code, VS Code, and other MCP-compatible clients.
+
 To start from source:
 
 ```bash
@@ -75,6 +81,101 @@ For interactive experimentation, use the MCP Inspector:
 
 ```bash
 npx -y @modelcontextprotocol/inspector ./target/release/rusty_apple_mail_mcp
+```
+
+### CLI Mode
+
+In CLI mode, you can run individual commands directly from the terminal. This is useful for:
+
+- **Scripting** — automation of mail search tasks in shell scripts
+- **Debugging** — quick testing without setting up an MCP client
+- **Integration** — piping results to other command-line tools
+- **One-off queries** — when you need a quick answer without starting a persistent server
+
+#### Usage
+
+```bash
+# List all accounts
+rusty_apple_mail_mcp list-accounts
+rusty_apple_mail_mcp list-accounts --include-mailboxes
+
+# List all mailboxes
+rusty_apple_mail_mcp list-mailboxes
+
+# Search messages
+rusty_apple_mail_mcp search --subject-query "invoice"
+rusty_apple_mail_mcp search --sender "john@example.com" --limit 10
+rusty_apple_mail_mcp search --date-from "2024-01-01" --date-to "2024-12-31"
+rusty_apple_mail_mcp search --mailbox "INBOX" --include-body-preview
+
+# Get a specific message
+rusty_apple_mail_mcp get-message --message-id "12345"
+rusty_apple_mail_mcp get-message --message-id "12345" --body-format html
+
+# Get attachment content
+rusty_apple_mail_mcp get-attachment --message-id "12345" --attachment-id "12345:0"
+```
+
+#### CLI Configuration
+
+CLI mode supports the same configuration options as MCP mode:
+
+| Option | Env Variable | Description |
+|---|---|---|
+| `--mail-directory` | `APPLE_MAIL_DIR` | Mail data directory (default: `~/Library/Mail`) |
+| `--mail-version` | `APPLE_MAIL_VERSION` | Envelope Index version (default: `V10`) |
+| `--account` | `APPLE_MAIL_ACCOUNT` | Account selector(s) |
+
+Example:
+
+```bash
+rusty_apple_mail_mcp --mail-directory ~/Library/Mail --mail-version V10 search --subject-query "meeting"
+```
+
+Or with environment variables:
+
+```bash
+export APPLE_MAIL_DIR="$HOME/Library/Mail"
+export APPLE_MAIL_VERSION="V10"
+rusty_apple_mail_mcp list-accounts
+```
+
+#### CLI vs MCP: Key Differences
+
+| Feature | MCP Mode | CLI Mode |
+|---|---|---|
+| **Protocol** | stdin/stdout (MCP) | Direct command execution |
+| **Use case** | AI agents, IDE integration | Scripting, debugging, one-off queries |
+| **Persistent process** | Yes | No (per-command spawn) |
+| **Output format** | JSON-RPC messages | JSON (human-readable) |
+| **Real-time streaming** | Yes | No (batch output) |
+| **Error handling** | MCP error codes | Exit codes + stderr |
+
+#### When to Use Each Mode
+
+**Use MCP mode when:**
+- Integrating with Claude Code, VS Code, or other MCP clients
+- Building AI-powered workflows that need to make multiple queries
+- You need a persistent server process
+- Your client already speaks MCP
+
+**Use CLI mode when:**
+- Writing shell scripts or automation
+- Quick debugging and testing
+- Piping results to other tools (`jq`, `grep`, etc.)
+- Making single queries without overhead of starting a server
+- Running from cron jobs or CI/CD pipelines
+
+Example CLI pipeline:
+
+```bash
+# Find all messages from sender, extract subjects, save to file
+rusty_apple_mail_mcp search --sender "boss@company.com" | \
+  jq -r '.messages[].subject' > ~/meeting-subjects.txt
+
+# Count messages from last month
+rusty_apple_mail_mcp search --date-from "2024-12-01" --date-to "2024-12-31" | \
+  jq '.messages | length'
 ```
 
 ## Configuration
