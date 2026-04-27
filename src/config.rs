@@ -9,6 +9,14 @@ use crate::error::MailMcpError;
 
 const DEFAULT_MAIL_VERSION: &str = "V10";
 
+/// Optional configuration overrides, typically sourced from CLI arguments.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MailConfigOverrides {
+    pub(crate) mail_directory: Option<PathBuf>,
+    pub(crate) mail_version: Option<String>,
+    pub(crate) account: Option<String>,
+}
+
 /// Server configuration. Loaded strictly from environment variables.
 #[derive(Debug, Clone)]
 pub struct MailConfig {
@@ -27,40 +35,40 @@ impl MailConfig {
     /// Returns [`MailMcpError`] if environment variables are invalid or the Accounts database
     /// cannot be loaded when account selectors are specified.
     pub fn from_env() -> Result<Self, MailMcpError> {
-        let mail_directory = std::env::var("APPLE_MAIL_DIR").map_or_else(
-            |_| default_mail_directory(),
-            |raw| expand_mail_directory(&raw),
-        );
-        let mail_version = std::env::var("APPLE_MAIL_VERSION")
-            .unwrap_or_else(|_| DEFAULT_MAIL_VERSION.to_string());
-        let account_selectors =
-            parse_account_selectors(std::env::var("APPLE_MAIL_ACCOUNT").ok().as_deref())?;
+        Self::from_overrides(MailConfigOverrides::default())
+    }
 
-        let accounts_db_path = default_accounts_db_path();
-        let account_metadata = if let Some(path) = accounts_db_path.as_deref() {
-            if path.exists() {
-                match load_account_metadata(path) {
-                    Ok(metadata) => metadata,
-                    Err(_) if account_selectors.is_empty() => HashMap::new(),
-                    Err(e) => return Err(e),
-                }
-            } else if account_selectors.is_empty() {
-                HashMap::new()
-            } else {
-                return Err(MailMcpError::Config(format!(
-                    "APPLE_MAIL_ACCOUNT is set, but Accounts database was not found at {}",
-                    path.display()
-                )));
-            }
-        } else if account_selectors.is_empty() {
-            HashMap::new()
-        } else {
-            return Err(MailMcpError::Config(
-                "APPLE_MAIL_ACCOUNT is set, but the home directory could not be resolved"
-                    .to_string(),
-            ));
-        };
+    /// Resolve configuration from CLI overrides, environment variables, and defaults.
+    ///
+    /// CLI overrides take precedence over environment variables.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MailMcpError`] if the resolved values are invalid or dependent metadata
+    /// cannot be loaded.
+    pub(crate) fn from_overrides(overrides: MailConfigOverrides) -> Result<Self, MailMcpError> {
+        let MailConfigOverrides {
+            mail_directory,
+            mail_version,
+            account,
+        } = overrides;
 
+        let mail_directory = mail_directory
+            .map(normalize_mail_directory)
+            .or_else(|| {
+                std::env::var("APPLE_MAIL_DIR")
+                    .ok()
+                    .map(|raw| expand_mail_directory(&raw))
+            })
+            .unwrap_or_else(default_mail_directory);
+
+        let mail_version = mail_version
+            .or_else(|| std::env::var("APPLE_MAIL_VERSION").ok())
+            .unwrap_or_else(|| DEFAULT_MAIL_VERSION.to_string());
+
+        let raw_account_selectors = account.or_else(|| std::env::var("APPLE_MAIL_ACCOUNT").ok());
+        let account_selectors = parse_account_selectors(raw_account_selectors.as_deref())?;
+        let account_metadata = load_metadata_for_selectors(&account_selectors)?;
         let allowed_account_ids = if account_selectors.is_empty() {
             None
         } else {
@@ -172,6 +180,10 @@ fn default_mail_directory() -> PathBuf {
         .join("Library/Mail")
 }
 
+fn normalize_mail_directory(path: PathBuf) -> PathBuf {
+    expand_mail_directory(&path.to_string_lossy())
+}
+
 fn expand_mail_directory(raw: &str) -> PathBuf {
     if raw == "~" {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from(raw));
@@ -205,6 +217,39 @@ fn parse_account_selectors(raw: Option<&str>) -> Result<Vec<String>, MailMcpErro
     }
 
     Ok(selectors)
+}
+
+fn load_metadata_for_selectors(
+    account_selectors: &[String],
+) -> Result<HashMap<String, AccountMetadata>, MailMcpError> {
+    let accounts_db_path = default_accounts_db_path();
+    let Some(path) = accounts_db_path.as_deref() else {
+        return if account_selectors.is_empty() {
+            Ok(HashMap::new())
+        } else {
+            Err(MailMcpError::Config(
+                "APPLE_MAIL_ACCOUNT is set, but the home directory could not be resolved"
+                    .to_string(),
+            ))
+        };
+    };
+
+    if !path.exists() {
+        return if account_selectors.is_empty() {
+            Ok(HashMap::new())
+        } else {
+            Err(MailMcpError::Config(format!(
+                "APPLE_MAIL_ACCOUNT is set, but Accounts database was not found at {}",
+                path.display()
+            )))
+        };
+    }
+
+    match load_account_metadata(path) {
+        Ok(metadata) => Ok(metadata),
+        Err(_) if account_selectors.is_empty() => Ok(HashMap::new()),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -282,6 +327,35 @@ mod tests {
         let cfg = MailConfig::from_env().expect("config should load without extra email config");
         assert_eq!(cfg.mail_version, "V10");
         assert_eq!(cfg.mail_directory, mail_directory);
+    }
+
+    #[test]
+    fn from_overrides_prefers_explicit_values_over_environment() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let (env_temp_dir, env_mail_directory, _mail_version) = make_valid_config_inputs();
+        let (_override_temp_dir, override_mail_directory, override_mail_version) =
+            make_valid_config_inputs();
+
+        unsafe {
+            std::env::set_var("APPLE_MAIL_DIR", &env_mail_directory);
+            std::env::set_var("APPLE_MAIL_VERSION", "V9");
+            std::env::set_var("HOME", env_temp_dir.path());
+
+            let accounts_dir = env_temp_dir.path().join("Library").join("Accounts");
+            std::fs::create_dir_all(&accounts_dir).expect("accounts dir");
+            std::fs::write(accounts_dir.join("Accounts4.sqlite"), b"")
+                .expect("accounts db placeholder");
+        }
+
+        let override_config = MailConfig::from_overrides(MailConfigOverrides {
+            mail_directory: Some(override_mail_directory.clone()),
+            mail_version: Some(override_mail_version.clone()),
+            account: None,
+        })
+        .expect("overrides should win");
+
+        assert_eq!(override_config.mail_directory, override_mail_directory);
+        assert_eq!(override_config.mail_version, override_mail_version);
     }
 
     #[test]
