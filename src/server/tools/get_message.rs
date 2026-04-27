@@ -10,13 +10,14 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::config::MailConfig;
-use crate::db::{detect_epoch_offset_seconds, get_message_by_id, get_recipients, open_readonly};
+use crate::db::{detect_epoch_offset_seconds, get_recipients, open_readonly};
 use crate::domain::AttachmentMeta;
 use crate::error::MailMcpError;
-use crate::mail::{
-    locate_emlx_with_hints, parse_emlx_without_attachment_content, raw_attachments_to_meta,
-};
+use crate::mail::{parse_emlx_without_attachment_content, raw_attachments_to_meta};
 use crate::server::tools::ResponseStatus;
+use crate::server::tools::message_lookup::{
+    AccessibleMessage, load_accessible_message, locate_message_file,
+};
 
 /// LRU cache for parsed .emlx bodies keyed by resolved path.
 static BODY_CACHE: LazyLock<Mutex<LruCache<std::path::PathBuf, CachedMessage>>> =
@@ -162,20 +163,21 @@ pub fn get_message_with_conn(
     };
 
     let db_started = Instant::now();
-    let epoch_offset_s = detect_epoch_offset_seconds(conn)?;
-    let Some(row) = get_message_by_id(conn, message_id)? else {
-        return Ok(GetMessageResponse::not_found(
-            "Message not found in the index. The message_id may be incorrect or the message was deleted.",
-        ));
+    let row = match load_accessible_message(config, conn, message_id)? {
+        AccessibleMessage::Found(row) => row,
+        AccessibleMessage::NotFound => {
+            return Ok(GetMessageResponse::not_found(
+                "Message not found in the index. The message_id may be incorrect or the message was deleted.",
+            ));
+        }
+        AccessibleMessage::BlockedAccount => {
+            return Ok(GetMessageResponse::error(
+                "This message belongs to an account excluded by APPLE_MAIL_ACCOUNT.",
+            ));
+        }
     };
 
-    if let Some(mailbox_url) = row.mailbox_url.as_deref()
-        && !config.is_mailbox_allowed(mailbox_url)
-    {
-        return Ok(GetMessageResponse::error(
-            "This message belongs to an account excluded by APPLE_MAIL_ACCOUNT.",
-        ));
-    }
+    let epoch_offset_s = detect_epoch_offset_seconds(conn)?;
 
     let recipients = get_recipients(conn, message_id)?;
     let db_elapsed = db_started.elapsed();
@@ -224,26 +226,7 @@ pub fn get_message_with_conn(
 
     if params.include_body || params.include_attachments_summary {
         let locator_started = Instant::now();
-        let mut numeric_hints = vec![row.rowid.to_string()];
-        if let Some(global_message_id) = row.global_message_id {
-            numeric_hints.push(global_message_id.to_string());
-        }
-        if let Some(message_id) = row.message_id.as_ref() {
-            numeric_hints.push(message_id.clone());
-        }
-        numeric_hints.sort();
-        numeric_hints.dedup();
-
-        let emlx_path = locate_emlx_with_hints(
-            &config.mail_directory,
-            &config.mail_version,
-            row.mailbox_url.as_deref().unwrap_or(""),
-            row.rowid,
-            &numeric_hints,
-            row.message_id_header
-                .as_deref()
-                .or(row.message_id.as_deref()),
-        );
+        let emlx_path = locate_message_file(config, &row);
         let locator_elapsed = locator_started.elapsed();
 
         if let Some(path) = emlx_path {
