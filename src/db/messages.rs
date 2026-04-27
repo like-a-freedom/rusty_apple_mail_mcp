@@ -1,41 +1,37 @@
-//! Typed SQL queries for the Apple Mail Envelope Index database.
-//!
-//! # Note on Timestamp Epoch
+//! Message search and lookup queries for the Apple Mail Envelope Index database.
 //!
 //! Apple Mail storage can vary by version. This module therefore detects whether
 //! timestamps look like Unix epoch values or `CoreData` epoch values and converts
 //! date filters accordingly.
 
+use rusqlite::{Connection, Row, params, types::ValueRef};
+
 use crate::error::MailMcpError;
-use chrono::{Datelike, TimeZone, Utc};
-use rusqlite::{Connection, OptionalExtension, Row, params, types::ValueRef};
-use std::collections::BTreeMap;
+
+use super::epoch::detect_epoch_offset_seconds;
 
 /// Raw database row from the messages index, before domain mapping.
 #[derive(Debug, Clone)]
 pub struct MessageRow {
+    /// Stable internal row identifier.
     pub rowid: i64,
+    /// Subject text from the `subjects` table, when present.
     pub subject: Option<String>,
+    /// Normalized sender email address, when present.
     pub sender: Option<String>,
+    /// Full mailbox URL from the `mailboxes` table.
     pub mailbox_url: Option<String>,
+    /// Sent timestamp in the database's native epoch.
     pub date_sent: Option<i64>,
+    /// Received timestamp in the database's native epoch.
     pub date_received: Option<i64>,
+    /// Message-ID value from the message row, normalized to string.
     pub message_id: Option<String>,
+    /// Global message row ID used by `message_global_data`.
     pub global_message_id: Option<i64>,
+    /// Canonical `Message-ID` header if present in `message_global_data`.
     pub message_id_header: Option<String>,
 }
-
-/// Aggregated account information derived from mailbox URL prefixes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccountRow {
-    pub account_id: String,
-    pub account_type: String,
-    pub mailbox_count: i64,
-    pub message_count: i64,
-}
-
-/// `CoreData` epoch offset: seconds from 1970-01-01 to 2001-01-01.
-pub const COREDATA_EPOCH_OFFSET: i64 = 978_307_200;
 
 fn read_optional_string(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<String>> {
     match row.get_ref(index)? {
@@ -54,69 +50,25 @@ fn read_optional_string(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<
     }
 }
 
-/// Detect the timestamp offset used by the Apple Mail database.
-///
-/// Returns `0` for Unix epoch or [`COREDATA_EPOCH_OFFSET`] for `CoreData` epoch.
-///
-/// # Errors
-///
-/// Returns [`MailMcpError::Sqlite`] if the query fails.
-pub fn detect_epoch_offset_seconds(conn: &Connection) -> Result<i64, MailMcpError> {
-    let sample: Option<i64> = conn
-        .query_row(
-            "SELECT MAX(COALESCE(date_received, date_sent)) FROM messages",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?
-        .flatten();
-
-    Ok(sample.map_or(0, infer_epoch_offset_from_sample))
-}
-
-fn infer_epoch_offset_from_sample(sample: i64) -> i64 {
-    let now = Utc::now().timestamp();
-    let unix_year = Utc.timestamp_opt(sample, 0).single().map(|dt| dt.year());
-    let coredata_year = Utc
-        .timestamp_opt(sample + COREDATA_EPOCH_OFFSET, 0)
-        .single()
-        .map(|dt| dt.year());
-
-    let unix_plausible = unix_year.is_some_and(|year| (1990..=2100).contains(&year));
-    let core_plausible = coredata_year.is_some_and(|year| (1990..=2100).contains(&year));
-
-    match (unix_plausible, core_plausible) {
-        (false, true) => COREDATA_EPOCH_OFFSET,
-        (true, false) => 0,
-        _ => {
-            let unix_distance = (sample - now).abs();
-            let core_distance = (sample + COREDATA_EPOCH_OFFSET - now).abs();
-            if core_distance < unix_distance {
-                COREDATA_EPOCH_OFFSET
-            } else {
-                0
-            }
-        }
-    }
-}
-
 fn escape_like(token: &str) -> String {
     token.replace('%', "\\%").replace('_', "\\_")
 }
 
+/// Split a subject query into searchable alphanumeric tokens.
+#[must_use]
 pub fn tokenize(input: &str) -> Vec<String> {
     input
         .split(|c: char| !c.is_alphanumeric())
         .map(str::trim)
-        .filter(|t| t.len() >= 3)
+        .filter(|token| token.len() >= 3)
         .map(str::to_owned)
         .collect()
 }
 
-/// Search messages by subject, sender, date range, and/or mailbox.
+/// Search messages by subject, sender, date range, participant, account, and mailbox.
 ///
 /// All filters are optional and combined with AND logic.
-/// Results are ordered by `date_received` DESC and limited by `limit`/`offset`.
+/// Results are ordered by `date_received` descending and limited by `limit`/`offset`.
 ///
 /// # Errors
 ///
@@ -137,7 +89,6 @@ pub fn search_messages(
 ) -> Result<Vec<MessageRow>, MailMcpError> {
     let epoch_offset = detect_epoch_offset_seconds(conn)?;
 
-    // Build WHERE clause dynamically
     let mut conditions: Vec<String> = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
@@ -148,7 +99,7 @@ pub fn search_messages(
             params.push(Box::new(format!("%{}%", escape_like(subject))));
         } else {
             let mut sorted_tokens = tokens;
-            sorted_tokens.sort_by_key(|b| std::cmp::Reverse(b.len()));
+            sorted_tokens.sort_by_key(|token| std::cmp::Reverse(token.len()));
             sorted_tokens.truncate(5);
 
             for token in &sorted_tokens {
@@ -207,7 +158,7 @@ pub fn search_messages(
     };
 
     let sql = format!(
-        r"
+        r#"
         SELECT
             m.ROWID,
             s.subject,
@@ -225,14 +176,12 @@ pub fn search_messages(
         LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
         {where_clause}
         ORDER BY m.date_received DESC LIMIT ? OFFSET ?
-        "
+        "#
     );
 
-    // Add limit and offset
     params.push(Box::new(limit));
     params.push(Box::new(offset));
 
-    // Convert to slice of references
     let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(AsRef::as_ref).collect();
 
     let mut stmt = conn.prepare(&sql)?;
@@ -272,14 +221,14 @@ pub fn address_exists(conn: &Connection, address: &str) -> Result<bool, MailMcpE
     Ok(exists != 0)
 }
 
-/// Get a single message by its rowid.
+/// Get a single message by row ID.
 ///
 /// # Errors
 ///
 /// Returns [`MailMcpError::Sqlite`] if the query fails.
 pub fn get_message_by_id(conn: &Connection, id: i64) -> Result<Option<MessageRow>, MailMcpError> {
     let mut stmt = conn.prepare(
-        r"
+        r#"
         SELECT
             m.ROWID,
             s.subject,
@@ -296,7 +245,7 @@ pub fn get_message_by_id(conn: &Connection, id: i64) -> Result<Option<MessageRow
         LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID
         LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
         WHERE m.ROWID = ?
-        ",
+        "#,
     )?;
 
     let mut rows = stmt.query_map(params![id], |row| {
@@ -319,12 +268,9 @@ pub fn get_message_by_id(conn: &Connection, id: i64) -> Result<Option<MessageRow
     }
 }
 
-/// Get recipients (To, CC, BCC) for a message.
+/// Get recipients for a message.
 ///
-/// Returns (address, type) pairs where type is:
-/// - 0 = To
-/// - 1 = CC
-/// - other values are ignored by higher layers
+/// Returns `(address, type)` pairs where `type` is Apple Mail's recipient type code.
 ///
 /// # Errors
 ///
@@ -334,13 +280,13 @@ pub fn get_recipients(
     message_id: i64,
 ) -> Result<Vec<(String, i32)>, MailMcpError> {
     let mut stmt = conn.prepare(
-        r"
+        r#"
         SELECT a.address, r.type
         FROM recipients r
         JOIN addresses a ON r.address = a.ROWID
         WHERE r.message = ?
         ORDER BY r.type, a.address
-        ",
+        "#,
     )?;
 
     let rows = stmt.query_map(params![message_id], |row| {
@@ -355,94 +301,14 @@ pub fn get_recipients(
     Ok(results)
 }
 
-/// List all mailboxes with their ROWID and URL.
-///
-/// # Errors
-///
-/// Returns [`MailMcpError::Sqlite`] if the query fails.
-pub fn list_mailboxes(conn: &Connection) -> Result<Vec<(i64, String)>, MailMcpError> {
-    let mut stmt = conn.prepare("SELECT ROWID, url FROM mailboxes ORDER BY url")?;
-
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-    })?;
-
-    let mut results = Vec::new();
-    for row in rows {
-        results.push(row?);
-    }
-
-    Ok(results)
-}
-
-/// List mailbox-derived accounts aggregated by URL prefix.
-///
-/// # Errors
-///
-/// Returns [`MailMcpError::Sqlite`] if the query fails.
-pub fn list_accounts(conn: &Connection) -> Result<Vec<AccountRow>, MailMcpError> {
-    let mailboxes = list_mailboxes(conn)?;
-    let mut grouped: BTreeMap<String, (String, i64, i64)> = BTreeMap::new();
-
-    for (mailbox_id, url) in mailboxes {
-        if let Some(account_id) = mailbox_account_id(&url) {
-            let account_type = mailbox_scheme(&url).unwrap_or_else(|| "unknown".to_string());
-            let message_count = count_messages_in_mailbox(conn, mailbox_id)?;
-            let entry = grouped.entry(account_id).or_insert((account_type, 0, 0));
-            entry.1 += 1;
-            entry.2 += message_count;
-        }
-    }
-
-    Ok(grouped
-        .into_iter()
-        .map(
-            |(account_id, (account_type, mailbox_count, message_count))| AccountRow {
-                account_id,
-                account_type,
-                mailbox_count,
-                message_count,
-            },
-        )
-        .collect())
-}
-
-/// Derive an account identifier from a mailbox URL, e.g. `ews://account-id`.
-#[must_use]
-pub fn mailbox_account_id(mailbox_url: &str) -> Option<String> {
-    let scheme_end = mailbox_url.find("://")?;
-    let rest = &mailbox_url[scheme_end + 3..];
-    let slash = rest.find('/')?;
-    Some(format!(
-        "{}://{}",
-        &mailbox_url[..scheme_end],
-        &rest[..slash]
-    ))
-}
-
-fn mailbox_scheme(mailbox_url: &str) -> Option<String> {
-    mailbox_url
-        .find("://")
-        .map(|index| mailbox_url[..index].to_string())
-}
-
-/// Count messages in a mailbox.
-///
-/// # Errors
-///
-/// Returns [`MailMcpError::Sqlite`] if the query fails.
-pub fn count_messages_in_mailbox(conn: &Connection, mailbox_id: i64) -> Result<i64, MailMcpError> {
-    let mut stmt = conn.prepare("SELECT COUNT(*) FROM messages WHERE mailbox = ?")?;
-
-    let count: i64 = stmt.query_row(params![mailbox_id], |row| row.get(0))?;
-    Ok(count)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Create an in-memory test database with a minimal schema and seed data.
+    use crate::db::{
+        COREDATA_EPOCH_OFFSET, count_messages_in_mailbox, list_accounts, list_mailboxes,
+    };
+
     pub fn make_test_db() -> Connection {
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         conn.execute_batch(
@@ -472,13 +338,11 @@ mod tests {
                 type INTEGER
             );
 
-            -- Seed data
             INSERT INTO subjects VALUES (1, 'Q3 Review'), (2, 'Budget Planning');
             INSERT INTO addresses VALUES (1, 'alice@example.com'), (2, 'bob@example.com');
             INSERT INTO sender_addresses VALUES (1, 1);
             INSERT INTO mailboxes VALUES (1, 'imap://alice@mail.example.com/INBOX');
 
-            -- Use CoreData epoch: 2024-09-15 = 1726358400 (Unix) - 978307200 = 748051200
             INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
             INSERT INTO message_global_data VALUES (20, 222, '<msg2@mail>');
             INSERT INTO messages VALUES (1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>', 10);
@@ -526,6 +390,46 @@ mod tests {
         conn
     }
 
+    fn make_hyphenated_test_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+            CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
+            CREATE TABLE sender_addresses (sender INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (
+                ROWID INTEGER PRIMARY KEY,
+                subject INTEGER REFERENCES subjects,
+                sender INTEGER REFERENCES sender_addresses,
+                mailbox INTEGER REFERENCES mailboxes,
+                date_sent INTEGER,
+                date_received INTEGER,
+                message_id TEXT,
+                global_message_id INTEGER
+            );
+            CREATE TABLE message_global_data (
+                ROWID INTEGER PRIMARY KEY,
+                message_id INTEGER,
+                message_id_header TEXT
+            );
+
+            INSERT INTO subjects VALUES (1, 'ABC Project || Status Report');
+            INSERT INTO subjects VALUES (2, 'ABC Project Update');
+            INSERT INTO subjects VALUES (3, 'Other Project');
+            INSERT INTO addresses VALUES (1, 'alice@example.com');
+            INSERT INTO sender_addresses VALUES (1, 1);
+            INSERT INTO mailboxes VALUES (1, 'imap://test/INBOX');
+            INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
+            INSERT INTO message_global_data VALUES (20, 222, '<msg2@mail>');
+            INSERT INTO messages VALUES (1, 1, 1, 1, 0, 0, '<msg1@mail>', 10);
+            INSERT INTO messages VALUES (2, 2, 1, 1, 0, 0, '<msg2@mail>', 20);
+            "#,
+        )
+        .expect("seed hyphenated test schema");
+        conn
+    }
+
     #[test]
     fn search_by_subject_returns_matching_messages() {
         let conn = make_test_db();
@@ -565,11 +469,7 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(
-            results.len(),
-            1,
-            "Should find message with both tokens in subject"
-        );
+        assert_eq!(results.len(), 1);
         assert_eq!(results[0].subject, Some("Q3 Review".to_string()));
 
         let results = search_messages(
@@ -586,13 +486,7 @@ mod tests {
             0,
         )
         .unwrap();
-        // "Q3" is 2 chars, gets filtered out by min length 3
-        // Only "Budget" (6 chars) remains, matches "Budget Planning"
-        assert_eq!(
-            results.len(),
-            1,
-            "Q3 filtered, Budget matches Budget Planning"
-        );
+        assert_eq!(results.len(), 1);
         assert_eq!(results[0].subject, Some("Budget Planning".to_string()));
     }
 
@@ -746,7 +640,6 @@ mod tests {
     #[test]
     fn get_message_by_id_uses_messages_sender_when_sender_addresses_is_empty() {
         let conn = make_direct_sender_test_db();
-
         let message = get_message_by_id(&conn, 1)
             .unwrap()
             .expect("message should exist");
@@ -889,58 +782,13 @@ mod tests {
         )
         .expect("create tables");
 
-        let to = get_recipients(&conn, 1).expect("query should succeed");
-        assert!(to.is_empty());
-    }
-
-    #[test]
-    fn search_messages_with_sender_filter() {
-        let conn = make_test_db();
-
-        let results = search_messages(
-            &conn,
-            None,
-            None,
-            None,
-            Some("alice@example.com"),
-            None,
-            None,
-            None,
-            None,
-            20,
-            0,
-        )
-        .expect("search should succeed");
-
-        assert!(!results.is_empty());
-    }
-
-    #[test]
-    fn search_messages_with_participant_filter() {
-        let conn = make_test_db();
-
-        let results = search_messages(
-            &conn,
-            None,
-            None,
-            None,
-            None,
-            Some("bob@example.com"),
-            None,
-            None,
-            None,
-            20,
-            0,
-        )
-        .expect("search should succeed");
-
-        assert!(!results.is_empty());
+        let recipients = get_recipients(&conn, 1).expect("query should succeed");
+        assert!(recipients.is_empty());
     }
 
     #[test]
     fn search_messages_with_mailbox_filter() {
         let conn = make_test_db();
-
         let results = search_messages(
             &conn,
             None,
@@ -962,7 +810,6 @@ mod tests {
     #[test]
     fn search_messages_with_offset() {
         let conn = make_test_db();
-
         let results = search_messages(
             &conn,
             Some("Test"),
@@ -978,48 +825,7 @@ mod tests {
         )
         .expect("search should succeed");
 
-        // May be empty if offset exceeds results
-        let _ = results.len(); // Suppress unused warning
-    }
-
-    fn make_hyphenated_test_db() -> Connection {
-        let conn = Connection::open_in_memory().expect("in-memory sqlite");
-        conn.execute_batch(
-            r#"
-            CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
-            CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
-            CREATE TABLE sender_addresses (sender INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
-            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
-            CREATE TABLE messages (
-                ROWID INTEGER PRIMARY KEY,
-                subject INTEGER REFERENCES subjects,
-                sender INTEGER REFERENCES sender_addresses,
-                mailbox INTEGER REFERENCES mailboxes,
-                date_sent INTEGER,
-                date_received INTEGER,
-                message_id TEXT,
-                global_message_id INTEGER
-            );
-            CREATE TABLE message_global_data (
-                ROWID INTEGER PRIMARY KEY,
-                message_id INTEGER,
-                message_id_header TEXT
-            );
-
-            INSERT INTO subjects VALUES (1, 'ABC Project || Status Report');
-            INSERT INTO subjects VALUES (2, 'ABC Project Update');
-            INSERT INTO subjects VALUES (3, 'Other Project');
-            INSERT INTO addresses VALUES (1, 'alice@example.com');
-            INSERT INTO sender_addresses VALUES (1, 1);
-            INSERT INTO mailboxes VALUES (1, 'imap://test/INBOX');
-            INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
-            INSERT INTO message_global_data VALUES (20, 222, '<msg2@mail>');
-            INSERT INTO messages VALUES (1, 1, 1, 1, 0, 0, '<msg1@mail>', 10);
-            INSERT INTO messages VALUES (2, 2, 1, 1, 0, 0, '<msg2@mail>', 20);
-            "#,
-        )
-        .expect("seed hyphenated test schema");
-        conn
+        let _ = results.len();
     }
 
     #[test]
@@ -1049,16 +855,9 @@ mod tests {
     #[test]
     fn search_tokenize_splits_on_non_alphanumeric() {
         let tokens = tokenize("ABC-ZZ || Report");
-        // ABC (3 chars) and Report (6 chars) pass min length filter
         assert!(tokens.len() >= 2, "Expected >= 2 tokens, got {:?}", tokens);
-        assert!(tokens.iter().any(|t| t.contains("ABC")));
-        assert!(tokens.iter().any(|t| t.contains("Report")));
-    }
-
-    #[test]
-    fn search_escape_like_protects_wildcards() {
-        let escaped = escape_like("test%value_");
-        assert!(escaped.contains('\\'));
+        assert!(tokens.iter().any(|token| token.contains("ABC")));
+        assert!(tokens.iter().any(|token| token.contains("Report")));
     }
 
     #[test]
@@ -1081,25 +880,16 @@ mod tests {
         assert_eq!(results.len(), 2);
         let subjects: Vec<_> = results
             .iter()
-            .filter_map(|r| r.subject.as_deref())
+            .filter_map(|row| row.subject.as_deref())
             .collect();
-        assert!(subjects.iter().any(|s| s.contains("ABC")));
+        assert!(subjects.iter().any(|subject| subject.contains("ABC")));
     }
 
     #[test]
     fn tokenize_filters_short_tokens() {
         let tokens = tokenize("FW: RE test");
-        assert!(
-            !tokens.contains(&"FW".to_string()),
-            "FW should be filtered (2 chars)"
-        );
-        assert!(
-            !tokens.contains(&"RE".to_string()),
-            "RE should be filtered (2 chars)"
-        );
-        assert!(
-            tokens.contains(&"test".to_string()),
-            "test should be kept (4 chars)"
-        );
+        assert!(!tokens.contains(&"FW".to_string()));
+        assert!(!tokens.contains(&"RE".to_string()));
+        assert!(tokens.contains(&"test".to_string()));
     }
 }

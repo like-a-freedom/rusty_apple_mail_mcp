@@ -9,38 +9,17 @@
 //! 3. Fallback to bounded recursive search under `mail_directory/mail_version`/
 //! 4. Cache resolved `message_rowid` → `PathBuf` mappings in-memory
 
-use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
-use std::sync::Mutex;
+
 use walkdir::WalkDir;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct CacheKey {
-    mail_root: PathBuf,
-    message_rowid: i64,
-}
-
-/// In-memory cache for resolved message paths.
-/// Key: message ROWID, Value: resolved path to .emlx file
-static PATH_CACHE: LazyLock<Mutex<HashMap<CacheKey, PathBuf>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-static MESSAGE_ID_HEADER_CACHE: LazyLock<Mutex<HashMap<PathBuf, Option<String>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-#[derive(Debug, Clone, Default)]
-struct MailboxIndex {
-    by_header: HashMap<String, PathBuf>,
-    by_stem: HashMap<String, PathBuf>,
-    header_candidates: Vec<PathBuf>,
-    headers_loaded: bool,
-}
-
-static MAILBOX_INDEX_CACHE: LazyLock<Mutex<HashMap<PathBuf, MailboxIndex>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+use crate::mail::cache::{
+    CacheKey, MailboxIndex, header_cache_get, header_cache_insert, mailbox_index_cache_contains,
+    mailbox_index_cache_get_mut, mailbox_index_cache_insert, mailbox_index_lookup_by_header,
+    mailbox_index_lookup_by_stem, path_cache_get, path_cache_insert,
+};
 
 /// Locate the .emlx file for a given message.
 ///
@@ -86,13 +65,8 @@ pub fn locate_emlx_with_hints(
     };
 
     // Check cache first
-    {
-        let cache = PATH_CACHE.lock().ok()?;
-        if let Some(cached) = cache.get(&cache_key)
-            && cached.exists()
-        {
-            return Some(cached.clone());
-        }
+    if let Some(cached) = path_cache_get(&cache_key) {
+        return Some(cached);
     }
 
     let mut candidate_ids = numeric_hints.to_vec();
@@ -110,9 +84,7 @@ pub fn locate_emlx_with_hints(
         &[message_rowid.to_string()],
         false,
     ) {
-        if let Ok(mut cache) = PATH_CACHE.lock() {
-            cache.insert(cache_key.clone(), path.clone());
-        }
+        path_cache_insert(cache_key.clone(), path.clone());
         return Some(path);
     }
 
@@ -121,27 +93,21 @@ pub fn locate_emlx_with_hints(
     if let Some(path) = find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, false)
         && path_matches_message_id(&path, message_id_header)
     {
-        if let Ok(mut cache) = PATH_CACHE.lock() {
-            cache.insert(cache_key.clone(), path.clone());
-        }
+        path_cache_insert(cache_key.clone(), path.clone());
         return Some(path);
     }
 
     if let Some(path) = find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, true)
         && path_matches_message_id(&path, message_id_header)
     {
-        if let Ok(mut cache) = PATH_CACHE.lock() {
-            cache.insert(cache_key.clone(), path.clone());
-        }
+        path_cache_insert(cache_key.clone(), path.clone());
         return Some(path);
     }
 
     if let Some(header) = message_id_header {
         for mailbox_dir in &mailbox_dirs {
             if let Some(path) = lookup_mailbox_header(mailbox_dir, header) {
-                if let Ok(mut cache) = PATH_CACHE.lock() {
-                    cache.insert(cache_key.clone(), path.clone());
-                }
+                path_cache_insert(cache_key.clone(), path.clone());
                 return Some(path);
             }
         }
@@ -149,9 +115,7 @@ pub fn locate_emlx_with_hints(
 
     for mailbox_dir in &mailbox_dirs {
         if let Some(path) = lookup_mailbox_index(mailbox_dir, &candidate_ids, message_id_header) {
-            if let Ok(mut cache) = PATH_CACHE.lock() {
-                cache.insert(cache_key.clone(), path.clone());
-            }
+            path_cache_insert(cache_key.clone(), path.clone());
             return Some(path);
         }
     }
@@ -198,13 +162,8 @@ pub fn locate_emlx_quick_with_hints(
         message_rowid,
     };
 
-    {
-        let cache = PATH_CACHE.lock().ok()?;
-        if let Some(cached) = cache.get(&cache_key)
-            && cached.exists()
-        {
-            return Some(cached.clone());
-        }
+    if let Some(cached) = path_cache_get(&cache_key) {
+        return Some(cached);
     }
 
     let mut candidate_ids = numeric_hints.to_vec();
@@ -220,18 +179,14 @@ pub fn locate_emlx_quick_with_hints(
     if let Some(header) = message_id_header {
         for mailbox_dir in &mailbox_dirs {
             if let Some(path) = lookup_mailbox_header_cached(mailbox_dir, header) {
-                if let Ok(mut cache) = PATH_CACHE.lock() {
-                    cache.insert(cache_key.clone(), path.clone());
-                }
+                path_cache_insert(cache_key.clone(), path.clone());
                 return Some(path);
             }
         }
     }
 
     if let Some(path) = find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, false) {
-        if let Ok(mut cache) = PATH_CACHE.lock() {
-            cache.insert(cache_key.clone(), path.clone());
-        }
+        path_cache_insert(cache_key.clone(), path.clone());
         return Some(path);
     }
 
@@ -239,9 +194,7 @@ pub fn locate_emlx_quick_with_hints(
         if let Some(path) =
             lookup_mailbox_index_cached(mailbox_dir, &candidate_ids, message_id_header)
         {
-            if let Ok(mut cache) = PATH_CACHE.lock() {
-                cache.insert(cache_key.clone(), path.clone());
-            }
+            path_cache_insert(cache_key.clone(), path.clone());
             return Some(path);
         }
     }
@@ -288,12 +241,6 @@ fn find_emlx_file(
 }
 
 /// Try to construct a direct path from the mailbox URL.
-///
-/// Mailbox URL format is typically:
-/// `imap://user@mail.example.com/INBOX` or `imap://user@mail.example.com/INBOX.Subfolder`
-///
-/// The corresponding filesystem path is usually under:
-/// `~/Library/Mail/V10/[UUID]/[Mailbox Name].mbox/Messages/`
 fn try_direct_path(mailbox_dirs: &[PathBuf], candidate_ids: &[String]) -> Option<PathBuf> {
     mailbox_dirs
         .iter()
@@ -474,18 +421,16 @@ fn lookup_mailbox_index(
         return Some(path);
     }
 
-    if let Ok(mut cache) = MAILBOX_INDEX_CACHE.lock()
-        && let Some(index) = cache.get_mut(mailbox_dir)
-    {
+    if mailbox_index_cache_contains(&mailbox_dir.to_path_buf()) {
+        let mut index = mailbox_index_cache_get_mut(&mailbox_dir.to_path_buf())?;
         if let Some(header) = message_id_header {
-            ensure_mailbox_headers(index);
+            ensure_mailbox_headers(&mut index);
             if let Some(path) = index.by_header.get(header)
                 && path.exists()
             {
                 return Some(path.clone());
             }
         }
-
         if let Some(path) = candidate_ids
             .iter()
             .find_map(|candidate_id| index.by_stem.get(candidate_id))
@@ -493,7 +438,6 @@ fn lookup_mailbox_index(
         {
             return Some(path.clone());
         }
-
         return None;
     }
 
@@ -513,10 +457,7 @@ fn lookup_mailbox_index(
             .find_map(|candidate_id| index.by_stem.get(candidate_id).cloned())
     });
 
-    if let Ok(mut cache) = MAILBOX_INDEX_CACHE.lock() {
-        cache.insert(mailbox_dir.to_path_buf(), index);
-    }
-
+    mailbox_index_cache_insert(mailbox_dir.to_path_buf(), index);
     matched
 }
 
@@ -525,24 +466,16 @@ fn lookup_mailbox_index_cached(
     candidate_ids: &[String],
     message_id_header: Option<&str>,
 ) -> Option<PathBuf> {
-    let cache = MAILBOX_INDEX_CACHE.lock().ok()?;
-    let index = cache.get(mailbox_dir)?;
-
     if let Some(header) = message_id_header
-        && let Some(path) = index.by_header.get(header)
-        && path.exists()
+        && let Some(path) = mailbox_index_lookup_by_header(&mailbox_dir.to_path_buf(), header)
     {
-        return Some(path.clone());
+        return Some(path);
     }
-
     for candidate_id in candidate_ids {
-        if let Some(path) = index.by_stem.get(candidate_id)
-            && path.exists()
-        {
-            return Some(path.clone());
+        if let Some(path) = mailbox_index_lookup_by_stem(&mailbox_dir.to_path_buf(), candidate_id) {
+            return Some(path);
         }
     }
-
     None
 }
 
@@ -551,10 +484,9 @@ fn lookup_mailbox_header(mailbox_dir: &Path, message_id_header: &str) -> Option<
         return Some(path);
     }
 
-    if let Ok(mut cache) = MAILBOX_INDEX_CACHE.lock()
-        && let Some(index) = cache.get_mut(mailbox_dir)
-    {
-        ensure_mailbox_headers(index);
+    if mailbox_index_cache_contains(&mailbox_dir.to_path_buf()) {
+        let mut index = mailbox_index_cache_get_mut(&mailbox_dir.to_path_buf())?;
+        ensure_mailbox_headers(&mut index);
         if let Some(path) = index.by_header.get(message_id_header)
             && path.exists()
         {
@@ -566,31 +498,18 @@ fn lookup_mailbox_header(mailbox_dir: &Path, message_id_header: &str) -> Option<
     let mut index = build_mailbox_index(mailbox_dir)?;
     ensure_mailbox_headers(&mut index);
     let matched = index.by_header.get(message_id_header).cloned();
-
-    if let Ok(mut cache) = MAILBOX_INDEX_CACHE.lock() {
-        cache.insert(mailbox_dir.to_path_buf(), index);
-    }
-
+    mailbox_index_cache_insert(mailbox_dir.to_path_buf(), index);
     matched
 }
 
 fn lookup_mailbox_header_cached(mailbox_dir: &Path, message_id_header: &str) -> Option<PathBuf> {
-    if let Ok(cache) = MAILBOX_INDEX_CACHE.lock()
-        && let Some(index) = cache.get(mailbox_dir)
-        && let Some(path) = index.by_header.get(message_id_header)
-        && path.exists()
-    {
-        return Some(path.clone());
-    }
-
-    None
+    mailbox_index_lookup_by_header(&mailbox_dir.to_path_buf(), message_id_header)
 }
 
 fn build_mailbox_index(mailbox_dir: &Path) -> Option<MailboxIndex> {
     if !mailbox_dir.exists() {
         return None;
     }
-
     let mut index = MailboxIndex::default();
     for entry in WalkDir::new(mailbox_dir)
         .max_depth(8)
@@ -600,7 +519,6 @@ fn build_mailbox_index(mailbox_dir: &Path) -> Option<MailboxIndex> {
         if !entry.file_type().is_file() {
             continue;
         }
-
         let Some(file_name) = entry.file_name().to_str() else {
             continue;
         };
@@ -611,7 +529,6 @@ fn build_mailbox_index(mailbox_dir: &Path) -> Option<MailboxIndex> {
         if !is_emlx {
             continue;
         }
-
         let path = entry.path().to_path_buf();
         let stem = file_name
             .trim_end_matches(".partial.emlx")
@@ -622,7 +539,6 @@ fn build_mailbox_index(mailbox_dir: &Path) -> Option<MailboxIndex> {
             .or_insert(path.clone());
         index.header_candidates.push(path);
     }
-
     Some(index)
 }
 
@@ -630,7 +546,6 @@ fn ensure_mailbox_headers(index: &mut MailboxIndex) {
     if index.headers_loaded {
         return;
     }
-
     for path in &index.header_candidates {
         if let Some(header) = extract_message_id_header(path) {
             index
@@ -639,23 +554,15 @@ fn ensure_mailbox_headers(index: &mut MailboxIndex) {
                 .or_insert_with(|| path.clone());
         }
     }
-
     index.headers_loaded = true;
 }
 
 fn extract_message_id_header(path: &Path) -> Option<String> {
-    if let Ok(cache) = MESSAGE_ID_HEADER_CACHE.lock()
-        && let Some(cached) = cache.get(path)
-    {
-        return cached.clone();
+    if let Some(cached) = header_cache_get(&path.to_path_buf()) {
+        return cached;
     }
-
     let header = extract_message_id_header_uncached(path);
-
-    if let Ok(mut cache) = MESSAGE_ID_HEADER_CACHE.lock() {
-        cache.insert(path.to_path_buf(), header.clone());
-    }
-
+    header_cache_insert(path.to_path_buf(), header.clone());
     header
 }
 
@@ -711,9 +618,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn clear_locator_caches() {
-        PATH_CACHE.lock().unwrap().clear();
-        MAILBOX_INDEX_CACHE.lock().unwrap().clear();
-        MESSAGE_ID_HEADER_CACHE.lock().unwrap().clear();
+        crate::mail::cache::clear_all_caches();
     }
 
     #[test]
@@ -1106,10 +1011,7 @@ mod tests {
         .unwrap();
 
         let index = build_mailbox_index(&mailbox_dir).expect("mailbox index");
-        MAILBOX_INDEX_CACHE
-            .lock()
-            .unwrap()
-            .insert(mailbox_dir.clone(), index);
+        crate::mail::cache::mailbox_index_cache_insert_raw(mailbox_dir.clone(), index);
 
         assert_eq!(
             lookup_mailbox_header_cached(&mailbox_dir, "<lazy-cache@example.com>"),
@@ -1122,8 +1024,8 @@ mod tests {
             Some(emlx_path.clone())
         );
 
-        let cache = MAILBOX_INDEX_CACHE.lock().unwrap();
-        let cached = cache.get(&mailbox_dir).expect("cached mailbox index");
+        let cached = crate::mail::cache::mailbox_index_cache_get_raw(&mailbox_dir)
+            .expect("cached mailbox index");
         assert_eq!(
             cached.by_header.get("<lazy-cache@example.com>"),
             Some(&emlx_path)

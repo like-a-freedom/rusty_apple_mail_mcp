@@ -1,5 +1,6 @@
 //! Mail file reading utilities: locate, parse, and extract content.
 
+pub mod cache;
 pub mod docx;
 pub mod extractor;
 pub mod locator;
@@ -8,6 +9,7 @@ pub mod pdf;
 pub mod pptx;
 pub mod xlsx;
 
+pub use cache::{CacheKey, MailboxIndex};
 pub use docx::{DocxError, docx_to_markdown};
 pub use extractor::{ExtractionResult, extract_text, html_to_plain_text};
 pub use locator::{
