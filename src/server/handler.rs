@@ -1,4 +1,4 @@
-//! MCP Server handler implementation with manual tool routing.
+//! MCP Server handler implementation with typed tool schemas and routing helpers.
 
 use crate::config::MailConfig;
 use crate::error::MailMcpError;
@@ -16,9 +16,15 @@ use rmcp::{
     },
     service::{RequestContext, RoleServer},
 };
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EmptyToolParams {}
 
 /// `MailMcpServer` - MCP server for Apple Mail read-only access.
 #[derive(Clone)]
@@ -47,6 +53,19 @@ impl MailMcpServer {
         }
     }
 
+    /// Build an MCP input schema directly from the typed params struct.
+    fn tool_schema<T: JsonSchema>() -> Arc<Map<String, Value>> {
+        Self::value_to_schema(
+            serde_json::to_value(schemars::schema_for!(T)).unwrap_or(Value::Object(Map::new())),
+        )
+    }
+
+    /// Create a read-only tool definition backed by a typed params schema.
+    fn read_only_tool<T: JsonSchema>(name: &'static str, description: &'static str) -> Tool {
+        Tool::new(name, description, Self::tool_schema::<T>())
+            .with_annotations(ToolAnnotations::new().read_only(true))
+    }
+
     /// Format an elapsed duration as fractional seconds with millisecond precision.
     fn format_elapsed_seconds(elapsed: Duration) -> String {
         format!("{:.3}", elapsed.as_secs_f64())
@@ -62,148 +81,53 @@ impl MailMcpServer {
         );
     }
 
+    /// Parse typed tool parameters, execute the tool, and wrap its JSON response.
+    fn call_typed_tool<TParams, TResponse, F>(
+        &self,
+        arguments: Map<String, Value>,
+        tool_fn: F,
+    ) -> Result<CallToolResult, McpError>
+    where
+        TParams: DeserializeOwned,
+        TResponse: Serialize,
+        F: FnOnce(&MailConfig, TParams) -> Result<TResponse, MailMcpError>,
+    {
+        let params: TParams = serde_json::from_value(Value::Object(arguments))
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let response = tool_fn(self.config.as_ref(), params)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::json(response)?]))
+    }
+
     /// List all available tools.
     #[must_use]
-    #[allow(clippy::too_many_lines)]
     pub fn tool_definitions() -> Vec<Tool> {
         vec![
-            Tool::new(
+            Self::read_only_tool::<SearchMessagesParams>(
                 "search_messages",
                 "Search Apple Mail by subject, date, sender, participant, account, or mailbox. \
                  Returns id/subject/from/date/mailbox per result. At least one filter required.",
-                Self::value_to_schema(json!({
-                    "type": "object",
-                    "properties": {
-                        "subject_query": {
-                            "type": "string",
-                            "description": "Text to search in subject (partial match, case-insensitive)"
-                        },
-                        "date_from": {
-                            "type": "string",
-                            "description": "Start of date range (YYYY-MM-DD, inclusive)"
-                        },
-                        "date_to": {
-                            "type": "string",
-                            "description": "End of date range (YYYY-MM-DD, inclusive)"
-                        },
-                        "sender": {
-                            "type": "string",
-                            "description": "Sender email address (exact match)"
-                        },
-                        "participant": {
-                            "type": "string",
-                            "description": "Recipient email address (To/CC, exact match)"
-                        },
-                        "account": {
-                            "type": "string",
-                            "description": "Account identifier returned by list_accounts (for example, ews://account-id)"
-                        },
-                        "mailbox": {
-                            "type": "string",
-                            "description": "Mailbox name or fragment"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of results (default 20, max 100)",
-                            "default": 20
-                        },
-                        "include_body_preview": {
-                            "type": "boolean",
-                            "description": "Include ~200 character body preview",
-                            "default": false
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Offset for pagination (use next_offset from previous response)",
-                            "default": 0
-                        }
-                    }
-                })),
-            )
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
+            ),
+            Self::read_only_tool::<ListAccountsParams>(
                 "list_accounts",
                 "List available mail accounts for search_messages. \
                  Set include_mailboxes=true to get mailboxes grouped by account.",
-                Self::value_to_schema(json!({
-                    "type": "object",
-                    "properties": {
-                        "include_mailboxes": {
-                            "type": "boolean",
-                            "description": "Include mailboxes grouped by account (default false)",
-                            "default": false
-                        }
-                    }
-                })),
-            )
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
+            ),
+            Self::read_only_tool::<GetMessageParams>(
                 "get_message",
                 "Get full email by message_id: body, recipients, attachments. \
                  Recipients omitted by default; set include_recipients=true if needed.",
-                Self::value_to_schema(json!({
-                    "type": "object",
-                    "properties": {
-                        "message_id": {
-                            "type": "string",
-                            "description": "Stable message identifier (from search results)"
-                        },
-                        "include_body": {
-                            "type": "boolean",
-                            "description": "Include message body (default true)",
-                            "default": true
-                        },
-                        "include_attachments_summary": {
-                            "type": "boolean",
-                            "description": "Include attachment list (default true)",
-                            "default": true
-                        },
-                        "body_format": {
-                            "type": "string",
-                            "enum": ["text", "html", "both"],
-                            "description": "Body format (default: text). 'both' is deprecated, use 'text'.",
-                            "default": "text"
-                        },
-                        "include_recipients": {
-                            "type": "boolean",
-                            "description": "Include To/CC recipients lists (default false)",
-                            "default": false
-                        }
-                    },
-                    "required": ["message_id"]
-                })),
-            )
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
+            ),
+            Self::read_only_tool::<GetAttachmentParams>(
                 "get_attachment_content",
                 "Extract text content from an attachment. \
                  attachment_id format: \"{message_id}:{index}\" from get_message attachments list.",
-                Self::value_to_schema(json!({
-                    "type": "object",
-                    "properties": {
-                        "attachment_id": {
-                            "type": "string",
-                            "description": "Attachment identifier (format: \"{message_id}:{attachment_index}\")"
-                        },
-                        "message_id": {
-                            "type": "string",
-                            "description": "Parent message identifier (needed to locate the attachment file)"
-                        }
-                    },
-                    "required": ["attachment_id", "message_id"]
-                })),
-            )
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
+            ),
+            Self::read_only_tool::<EmptyToolParams>(
                 "list_mailboxes",
                 "Deprecated: prefer list_accounts with include_mailboxes=true. \
                  List all mailboxes with message counts.",
-                Self::value_to_schema(json!({
-                    "type": "object",
-                    "properties": {}
-                })),
-            )
-            .with_annotations(ToolAnnotations::new().read_only(true)),
+            ),
         ]
     }
 
@@ -214,40 +138,13 @@ impl MailMcpServer {
         arguments: Map<String, Value>,
     ) -> Result<CallToolResult, McpError> {
         match name {
-            "search_messages" => {
-                let params: SearchMessagesParams = serde_json::from_value(Value::Object(arguments))
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let response = tool_search_messages(&self.config, params)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![Content::json(response)?]))
-            }
-            "get_message" => {
-                let params: GetMessageParams = serde_json::from_value(Value::Object(arguments))
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let response = tool_get_message(&self.config, params)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![Content::json(response)?]))
-            }
-            "get_attachment_content" => {
-                let params: GetAttachmentParams = serde_json::from_value(Value::Object(arguments))
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let response = tool_get_attachment(&self.config, params)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![Content::json(response)?]))
-            }
-            "list_accounts" => {
-                let params: ListAccountsParams =
-                    serde_json::from_value(Value::Object(arguments))
-                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let response = tool_list_accounts(&self.config, params)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![Content::json(response)?]))
-            }
-            "list_mailboxes" => {
-                let response = tool_list_mailboxes(&self.config)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![Content::json(response)?]))
-            }
+            "search_messages" => self.call_typed_tool(arguments, tool_search_messages),
+            "get_message" => self.call_typed_tool(arguments, tool_get_message),
+            "get_attachment_content" => self.call_typed_tool(arguments, tool_get_attachment),
+            "list_accounts" => self.call_typed_tool(arguments, tool_list_accounts),
+            "list_mailboxes" => self.call_typed_tool(arguments, |config, _: EmptyToolParams| {
+                tool_list_mailboxes(config)
+            }),
             _ => Err(McpError::invalid_request("Unknown tool method", None)),
         }
     }
@@ -548,6 +445,41 @@ mod tests {
                 tool.name
             );
         }
+    }
+
+    #[test]
+    fn tool_definitions_expose_typed_input_schema_constraints() {
+        let tools = MailMcpServer::tool_definitions();
+
+        let search_messages = tools
+            .iter()
+            .find(|tool| tool.name == "search_messages")
+            .expect("search_messages tool");
+        let search_schema = serde_json::to_value(search_messages).expect("serialize tool");
+        assert_eq!(
+            search_schema["inputSchema"]["additionalProperties"],
+            json!(false)
+        );
+
+        let get_message = tools
+            .iter()
+            .find(|tool| tool.name == "get_message")
+            .expect("get_message tool");
+        let get_message_schema = serde_json::to_value(get_message).expect("serialize tool");
+        assert_eq!(
+            get_message_schema["inputSchema"]["required"],
+            json!(["message_id"])
+        );
+
+        let get_attachment = tools
+            .iter()
+            .find(|tool| tool.name == "get_attachment_content")
+            .expect("get_attachment_content tool");
+        let get_attachment_schema = serde_json::to_value(get_attachment).expect("serialize tool");
+        assert_eq!(
+            get_attachment_schema["inputSchema"]["required"],
+            json!(["attachment_id", "message_id"])
+        );
     }
 
     #[test]
