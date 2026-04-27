@@ -348,6 +348,94 @@ fn load_search_metadata(
     Ok(metadata)
 }
 
+fn reject_disallowed_account_filter(
+    config: &MailConfig,
+    account: Option<&str>,
+) -> Option<SearchMessagesResponse> {
+    let account = account?;
+    if config.is_account_allowed(account) {
+        return None;
+    }
+
+    Some(SearchMessagesResponse::error(format!(
+        "The requested account filter {account} is excluded by APPLE_MAIL_ACCOUNT."
+    )))
+}
+
+fn search_rows_with_subject_fallback(
+    conn: &Connection,
+    config: &MailConfig,
+    params: &SearchMessagesParams,
+    date_from_ts: Option<i64>,
+    date_to_ts: Option<i64>,
+) -> Result<Vec<crate::db::MessageRow>, MailMcpError> {
+    let mut rows = db_search(
+        conn,
+        params.subject_query.as_deref(),
+        date_from_ts,
+        date_to_ts,
+        params.sender.as_deref(),
+        params.participant.as_deref(),
+        params.account.as_deref(),
+        config.allowed_account_ids(),
+        params.mailbox.as_deref(),
+        params.limit,
+        params.offset,
+    )?;
+
+    if rows.is_empty()
+        && let Some(subject_query) = params.subject_query.as_deref()
+    {
+        let tokens = crate::db::tokenize(subject_query);
+        if !tokens.is_empty() {
+            tracing::debug!("Token search returned no results, trying fallback full-string search");
+
+            rows = db_search(
+                conn,
+                Some(subject_query),
+                date_from_ts,
+                date_to_ts,
+                params.sender.as_deref(),
+                params.participant.as_deref(),
+                params.account.as_deref(),
+                config.allowed_account_ids(),
+                params.mailbox.as_deref(),
+                params.limit,
+                params.offset,
+            )?;
+        }
+    }
+
+    Ok(rows)
+}
+
+fn build_not_found_guidance(
+    conn: &Connection,
+    params: &SearchMessagesParams,
+) -> Result<String, MailMcpError> {
+    if let Some(sender) = params.sender.as_deref() {
+        let sender_exists = address_exists(conn, sender)?;
+        return Ok(if sender_exists {
+            "No messages match the provided filters. Try broadening the date range or shortening subject_query to one or two keywords.".to_string()
+        } else {
+            format!("Sender address {sender} is not present in Apple Mail's address index.")
+        });
+    }
+
+    if let Some(participant) = params.participant.as_deref() {
+        let participant_exists = address_exists(conn, participant)?;
+        return Ok(if participant_exists {
+            "No messages match the provided filters. Try broadening the date range or changing the mailbox filter.".to_string()
+        } else {
+            format!(
+                "Participant address {participant} is not present in Apple Mail's address index."
+            )
+        });
+    }
+
+    Ok("No messages match the provided filters. Try broadening the date range, shortening subject_query to one or two keywords, or verifying the sender address with list_mailboxes.".to_string())
+}
+
 /// Execute `search_messages` against an already-open `SQLite` connection.
 ///
 /// # Errors
@@ -374,54 +462,14 @@ pub fn search_messages_with_conn(
     };
 
     let epoch_offset_s = detect_epoch_offset_seconds(conn)?;
-    if let Some(account) = params.account.as_deref()
-        && !config.is_account_allowed(account)
-    {
-        return Ok(SearchMessagesResponse::error(format!(
-            "The requested account filter {account} is excluded by APPLE_MAIL_ACCOUNT."
-        )));
+    if let Some(response) = reject_disallowed_account_filter(config, params.account.as_deref()) {
+        return Ok(response);
     }
 
     let sql_started = Instant::now();
 
-    let mut rows = db_search(
-        conn,
-        params.subject_query.as_deref(),
-        date_from_ts,
-        date_to_ts,
-        params.sender.as_deref(),
-        params.participant.as_deref(),
-        params.account.as_deref(),
-        config.allowed_account_ids(),
-        params.mailbox.as_deref(),
-        params.limit,
-        params.offset,
-    )?;
-
+    let rows = search_rows_with_subject_fallback(conn, config, &params, date_from_ts, date_to_ts)?;
     let sql_elapsed = sql_started.elapsed();
-
-    if rows.is_empty() && params.subject_query.is_some() {
-        let subject_query = params.subject_query.as_deref().unwrap();
-        let tokens = crate::db::tokenize(subject_query);
-
-        if !tokens.is_empty() {
-            tracing::debug!("Token search returned no results, trying fallback full-string search");
-
-            rows = db_search(
-                conn,
-                Some(subject_query),
-                date_from_ts,
-                date_to_ts,
-                params.sender.as_deref(),
-                params.participant.as_deref(),
-                params.account.as_deref(),
-                config.allowed_account_ids(),
-                params.mailbox.as_deref(),
-                params.limit,
-                params.offset,
-            )?;
-        }
-    }
 
     let metadata_started = Instant::now();
     let message_ids = rows.iter().map(|row| row.rowid).collect::<Vec<_>>();
@@ -436,27 +484,9 @@ pub fn search_messages_with_conn(
             total_started.elapsed().as_millis(),
             filters_description,
         );
-        let guidance = if let Some(sender) = params.sender.as_deref() {
-            let sender_exists = address_exists(conn, sender)?;
-            if sender_exists {
-                "No messages match the provided filters. Try broadening the date range or shortening subject_query to one or two keywords.".to_string()
-            } else {
-                format!("Sender address {sender} is not present in Apple Mail's address index.")
-            }
-        } else if let Some(participant) = params.participant.as_deref() {
-            let participant_exists = address_exists(conn, participant)?;
-            if participant_exists {
-                "No messages match the provided filters. Try broadening the date range or changing the mailbox filter.".to_string()
-            } else {
-                format!(
-                    "Participant address {participant} is not present in Apple Mail's address index."
-                )
-            }
-        } else {
-            "No messages match the provided filters. Try broadening the date range, shortening subject_query to one or two keywords, or verifying the sender address with list_mailboxes.".to_string()
-        };
-
-        return Ok(SearchMessagesResponse::not_found(guidance));
+        return Ok(SearchMessagesResponse::not_found(build_not_found_guidance(
+            conn, &params,
+        )?));
     }
 
     let hydration_started = Instant::now();
@@ -739,6 +769,66 @@ mod tests {
         let result = load_search_metadata(&conn, &[]);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    fn make_address_index(addresses: &[&str]) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch("CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);")
+            .expect("create addresses table");
+
+        for (index, address) in addresses.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO addresses (ROWID, address) VALUES (?1, ?2)",
+                rusqlite::params![i64::try_from(index + 1).expect("rowid"), address],
+            )
+            .expect("insert address");
+        }
+
+        conn
+    }
+
+    #[test]
+    fn build_not_found_guidance_reports_missing_sender_address() {
+        let conn = make_address_index(&[]);
+        let params = SearchMessagesParams {
+            subject_query: Some("budget".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: Some("missing@example.com".to_string()),
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            include_body_preview: false,
+            offset: 0,
+        };
+
+        let guidance = build_not_found_guidance(&conn, &params).expect("guidance");
+
+        assert!(guidance.contains("missing@example.com"));
+        assert!(guidance.contains("not present in Apple Mail's address index"));
+    }
+
+    #[test]
+    fn build_not_found_guidance_suggests_broadening_when_sender_exists() {
+        let conn = make_address_index(&["present@example.com"]);
+        let params = SearchMessagesParams {
+            subject_query: Some("budget".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: Some("present@example.com".to_string()),
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            include_body_preview: false,
+            offset: 0,
+        };
+
+        let guidance = build_not_found_guidance(&conn, &params).expect("guidance");
+
+        assert!(guidance.contains("No messages match the provided filters"));
+        assert!(guidance.contains("broadening the date range"));
     }
 
     #[test]
