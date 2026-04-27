@@ -717,6 +717,58 @@ fn get_message_reads_body_from_nested_mailbox_uuid_data_layout() {
 }
 
 #[test]
+fn get_attachment_reads_attachment_from_nested_mailbox_uuid_data_layout() {
+    let conn = make_test_db();
+    conn.execute(
+        "INSERT INTO attachments (ROWID, message, attachment_id, name) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![1_i64, 2_i64, "agenda-1", "agenda.txt"],
+    )
+    .unwrap();
+    let (_temp_dir, config) = make_test_config();
+    seed_emlx_in_nested_mailbox(
+        &config,
+        "account-b",
+        &["Inbox"],
+        "79665",
+        concat!(
+            "From: notifications@example.com\n",
+            "To: bob@example.com\n",
+            "Message-ID: <msg2@mail>\n",
+            "Subject: Budget Planning\n",
+            "MIME-Version: 1.0\n",
+            "Content-Type: multipart/mixed; boundary=\"boundary\"\n",
+            "\n",
+            "--boundary\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Nested mailbox body\n",
+            "--boundary\n",
+            "Content-Type: text/plain; name=\"agenda.txt\"\n",
+            "Content-Disposition: attachment; filename=\"agenda.txt\"\n",
+            "\n",
+            "Agenda attachment\n",
+            "--boundary--\n"
+        ),
+    );
+
+    let response = get_attachment_content_with_conn(
+        &config,
+        &conn,
+        GetAttachmentParams {
+            attachment_id: "2:0".to_string(),
+            message_id: "2".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(response.status, None);
+    let attachment = response.attachment.expect("attachment payload");
+    assert_eq!(attachment.filename, "agenda.txt");
+    assert_eq!(attachment.mime_type, "text/plain");
+    assert_eq!(attachment.content.as_deref(), Some("Agenda attachment"));
+}
+
+#[test]
 fn get_message_prefers_message_id_match_over_wrong_numeric_hint() {
     let conn = make_test_db();
     conn.execute(

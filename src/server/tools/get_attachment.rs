@@ -7,8 +7,11 @@ use serde::{Deserialize, Serialize};
 use crate::config::MailConfig;
 use crate::domain::{AttachmentMeta, ContentFormat};
 use crate::error::MailMcpError;
-use crate::mail::{extract_text, locate_emlx, parse_emlx};
+use crate::mail::{extract_text, parse_emlx};
 use crate::server::tools::ResponseStatus;
+use crate::server::tools::message_lookup::{
+    AccessibleMessage, load_accessible_message, locate_message_file,
+};
 
 /// Parameters for the `get_attachment_content` tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -130,26 +133,21 @@ pub fn get_attachment_content_with_conn(
         ));
     }
 
-    let Some(row) = crate::db::get_message_by_id(conn, message_id)? else {
-        return Ok(GetAttachmentResponse::not_found(
-            "Message not found in the index.",
-        ));
+    let row = match load_accessible_message(config, conn, message_id)? {
+        AccessibleMessage::Found(row) => row,
+        AccessibleMessage::NotFound => {
+            return Ok(GetAttachmentResponse::not_found(
+                "Message not found in the index.",
+            ));
+        }
+        AccessibleMessage::BlockedAccount => {
+            return Ok(GetAttachmentResponse::error(
+                "This attachment belongs to an account excluded by APPLE_MAIL_ACCOUNT.",
+            ));
+        }
     };
 
-    if let Some(mailbox_url) = row.mailbox_url.as_deref()
-        && !config.is_mailbox_allowed(mailbox_url)
-    {
-        return Ok(GetAttachmentResponse::error(
-            "This attachment belongs to an account excluded by APPLE_MAIL_ACCOUNT.",
-        ));
-    }
-
-    let Some(emlx_path) = locate_emlx(
-        &config.mail_directory,
-        &config.mail_version,
-        row.mailbox_url.as_deref().unwrap_or(""),
-        row.rowid,
-    ) else {
+    let Some(emlx_path) = locate_message_file(config, &row) else {
         return Ok(GetAttachmentResponse::not_found(
             "Message body file not found on disk.",
         ));

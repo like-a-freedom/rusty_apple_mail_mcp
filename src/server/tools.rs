@@ -4,6 +4,7 @@ mod get_attachment;
 mod get_message;
 mod list_accounts;
 mod list_mailboxes;
+mod message_lookup;
 mod search_messages;
 
 use schemars::JsonSchema;
