@@ -11,34 +11,25 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CARGO_TERM_COLOR: always
+
 jobs:
   checks:
-    name: Checks (fmt, clippy, tests)
+    name: Checks (fmt, clippy, tests, coverage)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Cache cargo registry
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo target directory
-        uses: actions/cache@v5
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-
 
       - name: Set up Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1.15.4
+        uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: stable
-          components: rustfmt,clippy
+          components: rustfmt, clippy, llvm-tools-preview
           cache: true
+          cache-workspaces: .
+
       - name: Run fmt check
         run: cargo fmt --all -- --check
 
@@ -46,29 +37,24 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests
+        if: github.event_name == 'pull_request'
         run: cargo test --all --no-fail-fast
 
-      - name: Cache tarpaulin coverage
-        if: runner.os == 'Linux' && github.event_name != 'pull_request'
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/tarpaulin
-          key: tarpaulin-coverage-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: tarpaulin-coverage-
+      - name: Install cargo-llvm-cov
+        if: github.event_name != 'pull_request'
+        run: cargo install cargo-llvm-cov --locked
 
-      - name: Install cargo-tarpaulin
-        if: runner.os == 'Linux' && github.event_name != 'pull_request'
-        run: cargo install cargo-tarpaulin --version 0.34.1 --locked
-
-      - name: Run coverage (tarpaulin)
-        if: runner.os == 'Linux' && github.event_name != 'pull_request'
-        run: cargo tarpaulin --out Xml --ciserver github --run-types Tests --timeout 900
+      - name: Run tests with coverage
+        if: github.event_name != 'pull_request'
+        env:
+          CARGO_INCREMENTAL: 0
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --no-fail-fast
 
       - name: Upload coverage to Codecov
-        if: runner.os == 'Linux' && github.event_name != 'pull_request'
-        uses: codecov/codecov-action@v5
+        if: github.event_name != 'pull_request'
+        uses: codecov/codecov-action@v6
         with:
-          files: ./cobertura.xml
+          files: ./lcov.info
           flags: coverage
           verbose: true
         env:
@@ -93,30 +79,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Cache cargo registry
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Set up Rust toolchain (with cache)
-        uses: actions-rust-lang/setup-rust-toolchain@v1.15.2
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: stable
-          components: clippy
           cache: true
-          cache-workspaces: true
+          cache-workspaces: .
           target: ${{ matrix.platform.target }}
-
-      - name: Cache target directory
-        uses: actions/cache@v5
-        with:
-          path: target/${{ matrix.platform.target }}
-          key: ${{ runner.os }}-cargo-target-${{ matrix.platform.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-${{ matrix.platform.target }}-
 
       - name: Build binary
         run: cargo build --bin rusty_apple_mail_mcp --release --target ${{ matrix.platform.target }}
@@ -132,7 +101,7 @@ jobs:
 
       - name: Upload release assets
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2.5.0
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           files: |
