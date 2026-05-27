@@ -156,8 +156,8 @@ pub fn get_message_with_conn(
     let message_id: i64 = match params.message_id.parse() {
         Ok(id) => id,
         Err(_) => {
-            return Ok(GetMessageResponse::error(
-                "Invalid message_id format. Expected a numeric ID from search results.",
+            return Err(MailMcpError::Validation(
+                "Invalid message_id format. Expected a numeric ID from search results.".to_string(),
             ));
         }
     };
@@ -166,13 +166,13 @@ pub fn get_message_with_conn(
     let row = match load_accessible_message(config, conn, message_id)? {
         AccessibleMessage::Found(row) => row,
         AccessibleMessage::NotFound => {
-            return Ok(GetMessageResponse::not_found(
-                "Message not found in the index. The message_id may be incorrect or the message was deleted.",
-            ));
+            return Err(MailMcpError::MessageNotFound {
+                id: params.message_id.clone(),
+            });
         }
         AccessibleMessage::BlockedAccount => {
-            return Ok(GetMessageResponse::error(
-                "This message belongs to an account excluded by APPLE_MAIL_ACCOUNT.",
+            return Err(MailMcpError::Validation(
+                "This message belongs to an account excluded by APPLE_MAIL_ACCOUNT.".to_string(),
             ));
         }
     };
@@ -417,16 +417,10 @@ mod tests {
             include_recipients: false,
         };
 
-        let response = get_message_with_conn(&config, &conn, params).unwrap();
+        let err = get_message_with_conn(&config, &conn, params).unwrap_err();
 
-        assert_eq!(response.status, Some(ResponseStatus::Error));
-        assert!(response.guidance.is_some());
-        assert!(
-            response
-                .guidance
-                .unwrap()
-                .contains("Invalid message_id format")
-        );
+        assert!(matches!(err, MailMcpError::Validation(_)));
+        assert!(err.to_string().contains("Invalid message_id format"));
     }
 
     #[test]
@@ -442,11 +436,10 @@ mod tests {
             include_recipients: false,
         };
 
-        let response = get_message_with_conn(&config, &conn, params).unwrap();
+        let err = get_message_with_conn(&config, &conn, params).unwrap_err();
 
-        assert_eq!(response.status, Some(ResponseStatus::NotFound));
-        assert!(response.guidance.is_some());
-        assert!(response.guidance.unwrap().contains("Message not found"));
+        assert!(matches!(err, MailMcpError::MessageNotFound { .. }));
+        assert!(err.to_string().contains("not found"));
     }
 
     #[test]
@@ -462,14 +455,11 @@ mod tests {
             include_recipients: false,
         };
 
-        let response = get_message_with_conn(&config, &conn, params).unwrap();
+        let err = get_message_with_conn(&config, &conn, params).unwrap_err();
 
-        assert_eq!(response.status, Some(ResponseStatus::Error));
-        assert!(response.guidance.is_some());
+        assert!(matches!(err, MailMcpError::Validation(_)));
         assert!(
-            response
-                .guidance
-                .unwrap()
+            err.to_string()
                 .contains("excluded by APPLE_MAIL_ACCOUNT")
         );
     }
