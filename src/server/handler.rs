@@ -96,7 +96,7 @@ impl MailMcpServer {
             Ok(params) => params,
             Err(e) => {
                 return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Invalid parameters: {e}",
+                    "Invalid parameters: {e}. Check the tool's input schema for valid fields.",
                 ))]));
             }
         };
@@ -506,8 +506,8 @@ mod tests {
         let call_result = result.unwrap();
         let content_json = serde_json::to_string(&call_result).unwrap();
         assert!(
-            content_json.contains("Invalid parameters"),
-            "expected Invalid parameters in: {content_json}"
+            content_json.contains("Invalid parameters:"),
+            "expected 'Invalid parameters:' in: {content_json}"
         );
     }
 

@@ -115,14 +115,14 @@ pub fn get_attachment_content_with_conn(
                 (Some(rowid), Some(index)) => (rowid, index),
                 _ => {
                     return Ok(GetAttachmentResponse::error(
-                        "Invalid attachment_id format. Expected \"{message_id}:{attachment_index}\".",
+                        "Invalid attachment_id format. Expected `message_id:index` (e.g. `42:0`).",
                     ));
                 }
             }
         }
         None => {
             return Ok(GetAttachmentResponse::error(
-                "Invalid attachment_id format. Expected \"{message_id}:{attachment_index}\".",
+                "Invalid attachment_id format. Expected `message_id:index` (e.g. `42:0`).",
             ));
         }
     };
@@ -137,7 +137,7 @@ pub fn get_attachment_content_with_conn(
         AccessibleMessage::Found(row) => row,
         AccessibleMessage::NotFound => {
             return Ok(GetAttachmentResponse::not_found(
-                "Message not found in the index.",
+                "Message not found in the index. The message_id may be incorrect or the message was deleted.",
             ));
         }
         AccessibleMessage::BlockedAccount => {
@@ -149,7 +149,7 @@ pub fn get_attachment_content_with_conn(
 
     let Some(emlx_path) = locate_message_file(config, &row) else {
         return Ok(GetAttachmentResponse::not_found(
-            "Message body file not found on disk.",
+            "Message body file not found on disk (emlx missing). The message may not be downloaded yet or the local file was deleted.",
         ));
     };
 
@@ -164,7 +164,7 @@ pub fn get_attachment_content_with_conn(
                 error
             );
             return Ok(GetAttachmentResponse::error(
-                "Failed to parse message body file.",
+                "Failed to parse the message file. The file may be corrupt or in an unexpected format.",
             ));
         }
     };
@@ -189,7 +189,7 @@ pub fn get_attachment_content_with_conn(
 
     let Some(content) = raw_attachment.content.as_deref() else {
         return Ok(GetAttachmentResponse::error(
-            "Attachment content is unavailable in the parsed message.",
+            "Attachment content is not available. The attachment data may be stored externally by Apple Mail or is in a format that cannot be decoded inline.",
         ));
     };
 
