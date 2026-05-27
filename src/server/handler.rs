@@ -23,7 +23,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 struct EmptyToolParams {}
 
 /// `MailMcpServer` - MCP server for Apple Mail read-only access.
@@ -451,16 +450,6 @@ mod tests {
     fn tool_definitions_expose_typed_input_schema_constraints() {
         let tools = MailMcpServer::tool_definitions();
 
-        let search_messages = tools
-            .iter()
-            .find(|tool| tool.name == "search_messages")
-            .expect("search_messages tool");
-        let search_schema = serde_json::to_value(search_messages).expect("serialize tool");
-        assert_eq!(
-            search_schema["inputSchema"]["additionalProperties"],
-            json!(false)
-        );
-
         let get_message = tools
             .iter()
             .find(|tool| tool.name == "get_message")
@@ -590,5 +579,53 @@ mod tests {
 
         // Should return an error response (not a panic)
         assert!(result.is_err() || (result.is_ok() && !result.unwrap().content.is_empty()));
+    }
+
+    #[test]
+    fn call_tool_by_name_search_messages_unknown_field_ignored() {
+        let (_temp_dir, config) = create_temp_config();
+        let server = MailMcpServer::new(config).expect("server creation");
+
+        let mut args = Map::new();
+        args.insert("searchText".to_string(), json!("Nutanix"));
+
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { server.call_tool_by_name("search_messages", args).await });
+
+        assert!(result.is_ok(), "unknown fields should not cause JSON-RPC error");
+        let call_result = result.unwrap();
+        assert!(!call_result.content.is_empty());
+    }
+
+    #[test]
+    fn call_tool_by_name_get_message_unknown_field_ignored() {
+        let (_temp_dir, config) = create_temp_config();
+        let server = MailMcpServer::new(config).expect("server creation");
+
+        let mut args = Map::new();
+        args.insert("message_id".to_string(), json!("1"));
+        args.insert("unknown_param".to_string(), json!("value"));
+
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { server.call_tool_by_name("get_message", args).await });
+
+        assert!(result.is_ok(), "unknown fields should not cause JSON-RPC error");
+    }
+
+    #[test]
+    fn call_tool_by_name_list_accounts_unknown_field_ignored() {
+        let (_temp_dir, config) = create_temp_config();
+        let server = MailMcpServer::new(config).expect("server creation");
+
+        let mut args = Map::new();
+        args.insert("unknown_field".to_string(), json!(true));
+
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { server.call_tool_by_name("list_accounts", args).await });
+
+        assert!(result.is_ok(), "unknown fields should not cause JSON-RPC error");
     }
 }
