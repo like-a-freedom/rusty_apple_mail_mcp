@@ -102,8 +102,7 @@ pub fn get_attachment_content_with_conn(
         Ok(id) => id,
         Err(_) => {
             return Err(MailMcpError::Validation(
-                "Invalid message_id format. Expected a numeric ID from search results."
-                    .to_string(),
+                "Invalid message_id format. Expected a numeric ID from search results.".to_string(),
             ));
         }
     };
@@ -145,8 +144,7 @@ pub fn get_attachment_content_with_conn(
         }
         AccessibleMessage::BlockedAccount => {
             return Err(MailMcpError::Validation(
-                "This attachment belongs to an account excluded by APPLE_MAIL_ACCOUNT."
-                    .to_string(),
+                "This attachment belongs to an account excluded by APPLE_MAIL_ACCOUNT.".to_string(),
             ));
         }
     };
@@ -380,8 +378,7 @@ mod tests {
             message_id: "1".to_string(),
         };
 
-        let err =
-            get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
+        let err = get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::Validation(_)));
         assert!(err.to_string().contains("Invalid attachment_id format"));
@@ -397,8 +394,7 @@ mod tests {
             message_id: "999".to_string(),
         };
 
-        let err =
-            get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
+        let err = get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::MessageNotFound { .. }));
         assert!(err.to_string().contains("not found"));
@@ -414,14 +410,10 @@ mod tests {
             message_id: "1".to_string(),
         };
 
-        let err =
-            get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
+        let err = get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::Validation(_)));
-        assert!(
-            err.to_string()
-                .contains("excluded by APPLE_MAIL_ACCOUNT")
-        );
+        assert!(err.to_string().contains("excluded by APPLE_MAIL_ACCOUNT"));
     }
 
     #[test]
@@ -454,8 +446,7 @@ mod tests {
         let emlx_content = format!("{}\n{}", email_content.len(), email_content);
         fs::write(&emlx_path, emlx_content).unwrap();
 
-        let err =
-            get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
+        let err = get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::AttachmentNotFound { .. }));
         assert!(err.to_string().contains("not found"));

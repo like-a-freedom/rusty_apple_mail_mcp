@@ -1285,8 +1285,10 @@ SGVsbG8gZnJvbSBiYXNlNjQh
         match result {
             ExtractionResult::Text { content, method } => {
                 assert_eq!(method, "rfc822_parse");
-                assert!(content.contains("Hello from base64!"),
-                    "expected decoded body, got: {content}");
+                assert!(
+                    content.contains("Hello from base64!"),
+                    "expected decoded body, got: {content}"
+                );
             }
             ExtractionResult::NotSupported { reason } => {
                 panic!("Expected parsed RFC 822, got: {reason}");
@@ -1308,8 +1310,10 @@ Date: Mon, 1 Jan 2024 10:00:00 +0000
                 assert_eq!(method, "rfc822_parse");
                 assert!(content.contains("Subject: No Body"));
                 let body_part = content.split("\n\n").nth(1).unwrap_or("");
-                assert!(body_part.is_empty() || body_part.trim().is_empty(),
-                    "expected no body content after headers, got: {body_part}");
+                assert!(
+                    body_part.is_empty() || body_part.trim().is_empty(),
+                    "expected no body content after headers, got: {body_part}"
+                );
             }
             ExtractionResult::NotSupported { reason } => {
                 panic!("Expected parsed RFC 822, got: {reason}");
@@ -1374,10 +1378,14 @@ Group body.";
             ExtractionResult::Text { content, method } => {
                 assert_eq!(method, "rfc822_parse");
                 // Group addresses should be flattened to individual mailboxes
-                assert!(content.contains("Bob <bob@example.com>"),
-                    "expected Bob in group, got: {content}");
-                assert!(content.contains("Charlie <charlie@example.com>"),
-                    "expected Charlie in group, got: {content}");
+                assert!(
+                    content.contains("Bob <bob@example.com>"),
+                    "expected Bob in group, got: {content}"
+                );
+                assert!(
+                    content.contains("Charlie <charlie@example.com>"),
+                    "expected Charlie in group, got: {content}"
+                );
                 assert!(content.contains("Group body."));
             }
             ExtractionResult::NotSupported { reason } => {
@@ -1400,8 +1408,10 @@ Body.";
             ExtractionResult::Text { content, method } => {
                 assert_eq!(method, "rfc822_parse");
                 // mail-parser decodes RFC 2047 encoded headers
-                assert!(content.contains("Subject:") || content.contains("="),
-                    "expected subject line, got: {content}");
+                assert!(
+                    content.contains("Subject:") || content.contains("="),
+                    "expected subject line, got: {content}"
+                );
             }
             ExtractionResult::NotSupported { reason } => {
                 panic!("Expected parsed RFC 822, got: {reason}");
@@ -1424,8 +1434,10 @@ Hello =E2=82=AC world!";
             ExtractionResult::Text { content, method } => {
                 assert_eq!(method, "rfc822_parse");
                 // mail-parser should decode QP: =E2=82=AC is €
-                assert!(content.contains("Hello"),
-                    "expected decoded QP body, got: {content}");
+                assert!(
+                    content.contains("Hello"),
+                    "expected decoded QP body, got: {content}"
+                );
             }
             ExtractionResult::NotSupported { reason } => {
                 panic!("Expected parsed RFC 822, got: {reason}");
@@ -1470,8 +1482,10 @@ binary data here
             ExtractionResult::Text { content, method } => {
                 assert_eq!(method, "rfc822_parse");
                 // body_text(0) gets the first text part in multipart/mixed
-                assert!(content.contains("This is the body text."),
-                    "expected body text, got: {content}");
+                assert!(
+                    content.contains("This is the body text."),
+                    "expected body text, got: {content}"
+                );
             }
             ExtractionResult::NotSupported { reason } => {
                 panic!("Expected parsed RFC 822, got: {reason}");
