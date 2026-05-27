@@ -2,6 +2,7 @@
 
 mod support;
 
+use rusty_apple_mail_mcp::error::MailMcpError;
 use rusty_apple_mail_mcp::server::{MailMcpServer, tools::*};
 use support::{
     make_restricted_test_config, make_test_config, make_test_db, seed_emlx_in_account,
@@ -221,7 +222,7 @@ fn search_messages_rejects_disallowed_explicit_account_filter() {
     let conn = make_test_db();
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
 
-    let response = search_messages_with_conn(
+    let err = search_messages_with_conn(
         &config,
         &conn,
         SearchMessagesParams {
@@ -237,15 +238,10 @@ fn search_messages_rejects_disallowed_explicit_account_filter() {
             offset: 0,
         },
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(response.status, Some(ResponseStatus::Error));
-    assert!(
-        response
-            .guidance
-            .expect("guidance")
-            .contains("excluded by APPLE_MAIL_ACCOUNT")
-    );
+    assert!(matches!(err, MailMcpError::Validation(_)));
+    assert!(err.to_string().contains("excluded by APPLE_MAIL_ACCOUNT"));
 }
 
 #[test]
@@ -454,7 +450,7 @@ fn search_with_no_filters_returns_validation_error() {
     let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
 
-    let response = search_messages_with_conn(
+    let err = search_messages_with_conn(
         &config,
         &conn,
         SearchMessagesParams {
@@ -470,10 +466,10 @@ fn search_with_no_filters_returns_validation_error() {
             offset: 0,
         },
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(response.status, Some(ResponseStatus::Error));
-    assert!(response.guidance.unwrap().contains("At least one filter"));
+    assert!(matches!(err, MailMcpError::Validation(_)));
+    assert!(err.to_string().contains("At least one filter"));
 }
 
 #[test]
@@ -602,7 +598,7 @@ fn get_message_blocks_disallowed_accounts() {
     let conn = make_test_db();
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
 
-    let response = get_message_with_conn(
+    let err = get_message_with_conn(
         &config,
         &conn,
         GetMessageParams {
@@ -613,15 +609,10 @@ fn get_message_blocks_disallowed_accounts() {
             include_recipients: false,
         },
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(response.status, Some(ResponseStatus::Error));
-    assert!(
-        response
-            .guidance
-            .expect("guidance")
-            .contains("excluded by APPLE_MAIL_ACCOUNT")
-    );
+    assert!(matches!(err, MailMcpError::Validation(_)));
+    assert!(err.to_string().contains("excluded by APPLE_MAIL_ACCOUNT"));
 }
 
 #[test]
@@ -653,7 +644,7 @@ fn get_attachment_blocks_disallowed_accounts() {
         ),
     );
 
-    let response = get_attachment_content_with_conn(
+    let err = get_attachment_content_with_conn(
         &config,
         &conn,
         GetAttachmentParams {
@@ -661,15 +652,10 @@ fn get_attachment_blocks_disallowed_accounts() {
             message_id: "1".to_string(),
         },
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(response.status, Some(ResponseStatus::Error));
-    assert!(
-        response
-            .guidance
-            .expect("guidance")
-            .contains("excluded by APPLE_MAIL_ACCOUNT")
-    );
+    assert!(matches!(err, MailMcpError::Validation(_)));
+    assert!(err.to_string().contains("excluded by APPLE_MAIL_ACCOUNT"));
 }
 
 #[test]
