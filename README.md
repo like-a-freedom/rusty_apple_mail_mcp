@@ -6,7 +6,11 @@
 ![Platform macOS](https://img.shields.io/badge/platform-macOS-111827?style=flat-square&logo=apple)
 ![Access read-only](https://img.shields.io/badge/access-read--only-15803d?style=flat-square)
 
+## TL;DR
+
 Read-only MCP server for Apple Mail on macOS.
+
+Need an AI agent to safely search and read Apple Mail on your Mac? This project provides a clean, read-only MCP layer over Apple Mail’s native storage — fast index-based searches, on‑demand body hydration from `.emlx`, and zero write access.
 
 It gives an LLM or AI agent fast local access to Apple Mail metadata, message bodies, and attachment text **without AppleScript and without IMAP/POP/EWS network calls**.
 
@@ -337,7 +341,3 @@ cargo doc --no-deps
 - stdio transport only
 - requires Apple Mail storage to be present on disk
 - some binary attachment formats may yield metadata instead of extracted text
-
-## TL;DR
-
-Need an AI agent to safely search and read Apple Mail on your Mac? This project provides a clean, read-only MCP layer over Apple Mail’s native storage — fast index-based searches, on‑demand body hydration from `.emlx`, and zero write access.
