@@ -187,6 +187,11 @@ pub fn extract_text(bytes: &[u8], mime_type: &str) -> ExtractionResult {
         };
     }
 
+    // RFC822 embedded message — parse as an email and extract subject/body
+    if mime_lower == "message/rfc822" {
+        return parse_rfc822_attachment(bytes);
+    }
+
     // Legacy Office documents - not supported
     if mime_lower == "application/msword"
         || mime_lower == "application/vnd.ms-excel"
@@ -290,6 +295,79 @@ pub fn html_to_plain_text(html: &str) -> String {
     }
 
     output
+}
+
+/// Parse a `message/rfc822` attachment and extract its content as structured text.
+///
+/// Attempts to parse the embedded email and returns a formatted representation
+/// including subject, from, to, date, and body text. Falls back to raw UTF-8 text
+/// if parsing fails.
+fn parse_rfc822_attachment(bytes: &[u8]) -> ExtractionResult {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return ExtractionResult::NotSupported {
+            reason: "RFC822 message with invalid UTF-8 encoding",
+        };
+    };
+
+    if text.trim().is_empty() {
+        return ExtractionResult::Text {
+            content: String::new(),
+            method: "rfc822_raw",
+        };
+    }
+
+    if let Some(parsed) = mail_parser::MessageParser::default().parse(bytes) {
+        let mut parts: Vec<String> = Vec::with_capacity(7);
+
+        push_header(&mut parts, "Subject", parsed.subject().map(str::to_string));
+        push_header(&mut parts, "From", format_addresses(parsed.from()));
+        push_header(&mut parts, "To", format_addresses(parsed.to()));
+        push_header(&mut parts, "Cc", format_addresses(parsed.cc()));
+        push_header(&mut parts, "Date", parsed.date().map(|d| d.to_string()));
+
+        parts.push(String::new());
+
+        if let Some(body) = parsed.body_text(0) {
+            parts.push(body.to_string());
+        } else if let Some(html) = parsed.body_html(0) {
+            parts.push(html_to_plain_text(&html));
+        }
+
+        ExtractionResult::Text {
+            content: parts.join("\n"),
+            method: "rfc822_parse",
+        }
+    } else {
+        ExtractionResult::Text {
+            content: text.to_string(),
+            method: "rfc822_raw",
+        }
+    }
+}
+
+/// Push a header line into `parts` if the value is present.
+fn push_header(parts: &mut Vec<String>, name: &'static str, value: Option<String>) {
+    if let Some(v) = value {
+        parts.push(format!("{name}: {v}"));
+    }
+}
+
+/// Format an `Address` (mailbox or group) into a comma-separated string.
+fn format_addresses(addr: Option<&mail_parser::Address<'_>>) -> Option<String> {
+    let parts: Vec<String> = addr?
+        .iter()
+        .map(|mb| {
+            if let Some(name) = mb.name.as_deref() {
+                format!("{name} <{}>", mb.address.as_deref().unwrap_or(""))
+            } else {
+                mb.address.as_deref().unwrap_or("").to_string()
+            }
+        })
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join(", "))
 }
 
 #[cfg(test)]
@@ -941,6 +1019,463 @@ startxref
             assert!(reason.contains("ZIP"));
         } else {
             panic!("Expected NotSupported");
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_simple_with_all_fields() {
+        let email = b"From: Alice <alice@example.com>
+To: Bob <bob@example.com>
+Subject: Hello Bob
+Date: Mon, 1 Jan 2024 10:00:00 +0000
+
+Hi Bob, just checking in!";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                assert!(content.contains("Subject: Hello Bob"));
+                assert!(content.contains("From: Alice <alice@example.com>"));
+                assert!(content.contains("To: Bob <bob@example.com>"));
+                assert!(content.contains("Date:"));
+                assert!(content.contains("Hi Bob, just checking in!"));
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_cc_field_included() {
+        let email = b"From: Alice <alice@example.com>
+To: Bob <bob@example.com>
+Cc: Charlie <charlie@example.com>
+Subject: Group Update
+Date: Tue, 2 Jan 2024 12:00:00 +0000
+
+Meeting at 3pm.";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, .. } => {
+                assert!(content.contains("Cc: Charlie <charlie@example.com>"));
+                assert!(content.contains("Meeting at 3pm."));
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_multiple_recipients() {
+        let email = b"From: sender@example.com
+To: one@example.com, two@example.com
+Subject: Multiple To
+
+Body text.";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, .. } => {
+                assert!(content.contains("one@example.com"));
+                assert!(content.contains("two@example.com"));
+                assert!(content.contains("Body text."));
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_no_subject() {
+        let email = b"From: alice@example.com
+To: bob@example.com
+
+Just a note.";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                assert!(!content.contains("Subject:"), "no Subject header expected");
+                assert!(content.contains("Just a note."));
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_html_body_fallback() {
+        let email = b"From: alice@example.com
+To: bob@example.com
+Subject: HTML Email
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Hello <b>Bob</b>!</p></body></html>";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                assert!(content.contains("Subject: HTML Email"));
+                // Body should be extracted as plain text
+                assert!(content.contains("Hello Bob"));
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_empty_body() {
+        let email = b"From: alice@example.com
+To: bob@example.com
+Subject: Empty
+
+";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { method, .. } => {
+                assert_eq!(method, "rfc822_parse");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_invalid_utf8() {
+        // Invalid UTF-8 bytes
+        let bytes = b"\xff\xfe\x00\x01";
+        let result = parse_rfc822_attachment(bytes);
+        match result {
+            ExtractionResult::NotSupported { reason } => {
+                assert!(
+                    reason.contains("UTF-8"),
+                    "expected UTF-8 error, got: {reason}"
+                );
+            }
+            ExtractionResult::Text { content, .. } => {
+                panic!("Expected NotSupported for invalid UTF-8, got: {content}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_whitespace_only() {
+        let result = parse_rfc822_attachment(b"   \n\n  ");
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_raw");
+                assert_eq!(content, "");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected empty text, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_via_extract_text() {
+        let email = b"From: Alice <alice@example.com>
+To: Bob <bob@example.com>
+Subject: Via extract_text
+Date: Wed, 3 Jan 2024 08:00:00 +0000
+
+Hello from RFC822!";
+        let result = extract_text(email, "message/rfc822");
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                assert!(content.contains("Subject: Via extract_text"));
+                assert!(content.contains("Hello from RFC822!"));
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_mime_content_type_subtype() {
+        let email = b"From: test@example.com
+To: recipient@example.com
+Subject: MIME Type Test
+
+MIME body.";
+        let result = extract_text(email, "MESSAGE/RFC822");
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                assert!(content.contains("Subject: MIME Type Test"));
+                assert!(content.contains("MIME body."));
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_only_from_and_body() {
+        let email = b"From: alice@example.com
+
+Minimal email body.";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                assert!(content.contains("From:"));
+                assert!(content.contains("Minimal email body."));
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_multipart_alternative_prefers_text() {
+        let email = b"From: alice@example.com
+To: bob@example.com
+Subject: Multipart
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary=boundary42
+
+--boundary42
+Content-Type: text/plain; charset=utf-8
+
+Plain text body.
+--boundary42
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>HTML body</p></body></html>
+--boundary42--";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                assert!(content.contains("Subject: Multipart"));
+                assert!(content.contains("Plain text body."));
+                assert!(!content.contains("HTML body"));
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_base64_encoded_body() {
+        // "Hello from base64!" encoded in base64
+        let email = b"From: alice@example.com
+To: bob@example.com
+Subject: Base64
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+SGVsbG8gZnJvbSBiYXNlNjQh
+";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                assert!(content.contains("Hello from base64!"),
+                    "expected decoded body, got: {content}");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_headers_only_no_body() {
+        let email = b"From: alice@example.com
+To: bob@example.com
+Subject: No Body
+Date: Mon, 1 Jan 2024 10:00:00 +0000
+
+";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                assert!(content.contains("Subject: No Body"));
+                let body_part = content.split("\n\n").nth(1).unwrap_or("");
+                assert!(body_part.is_empty() || body_part.trim().is_empty(),
+                    "expected no body content after headers, got: {body_part}");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_crlf_line_endings() {
+        let email = b"From: alice@example.com\r\nTo: bob@example.com\r\nSubject: CRLF\r\n\r\nBody with CRLF.";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                assert!(content.contains("Subject: CRLF"));
+                assert!(content.contains("Body with CRLF."));
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_invalid_utf8_via_extract_text() {
+        let bytes = b"\xff\xfe\x00\x01";
+        let result = extract_text(bytes, "message/rfc822");
+        match result {
+            ExtractionResult::NotSupported { reason } => {
+                assert!(reason.contains("UTF-8"));
+            }
+            ExtractionResult::Text { content, .. } => {
+                panic!("Expected NotSupported for invalid UTF-8, got: {content}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_no_headers_returns_parsed() {
+        // mail-parser is lenient — treats bare text as a body-only message
+        let bytes = b"Just a bare body with no headers.";
+        let result = parse_rfc822_attachment(bytes);
+        match result {
+            ExtractionResult::Text { method, .. } => {
+                assert_eq!(method, "rfc822_parse");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_group_address_formatting() {
+        let email = b"From: alice@example.com
+To: Team: Bob <bob@example.com>, Charlie <charlie@example.com>;
+Subject: Group Address
+
+Group body.";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                // Group addresses should be flattened to individual mailboxes
+                assert!(content.contains("Bob <bob@example.com>"),
+                    "expected Bob in group, got: {content}");
+                assert!(content.contains("Charlie <charlie@example.com>"),
+                    "expected Charlie in group, got: {content}");
+                assert!(content.contains("Group body."));
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_encoded_non_ascii_subject() {
+        let email = b"From: alice@example.com
+To: bob@example.com
+Subject: =?UTF-8?B?SGVsbG8gw5tkw6lTw6k=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Body.";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                // mail-parser decodes RFC 2047 encoded headers
+                assert!(content.contains("Subject:") || content.contains("="),
+                    "expected subject line, got: {content}");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_quoted_printable_body() {
+        let email = b"From: alice@example.com
+To: bob@example.com
+Subject: QP
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Hello =E2=82=AC world!";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                // mail-parser should decode QP: =E2=82=AC is €
+                assert!(content.contains("Hello"),
+                    "expected decoded QP body, got: {content}");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_empty_bytes_via_extract_text() {
+        let result = extract_text(b"", "message/rfc822");
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_raw");
+                assert_eq!(content, "");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected empty content, got: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rfc822_mixed_multipart_mixed() {
+        let email = b"From: alice@example.com
+To: bob@example.com
+Subject: Mixed
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=boundary42
+
+--boundary42
+Content-Type: text/plain; charset=utf-8
+
+This is the body text.
+--boundary42
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename=test.bin
+
+binary data here
+--boundary42--";
+        let result = parse_rfc822_attachment(email);
+        match result {
+            ExtractionResult::Text { content, method } => {
+                assert_eq!(method, "rfc822_parse");
+                // body_text(0) gets the first text part in multipart/mixed
+                assert!(content.contains("This is the body text."),
+                    "expected body text, got: {content}");
+            }
+            ExtractionResult::NotSupported { reason } => {
+                panic!("Expected parsed RFC822, got: {reason}");
+            }
         }
     }
 }
