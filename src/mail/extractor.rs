@@ -187,7 +187,7 @@ pub fn extract_text(bytes: &[u8], mime_type: &str) -> ExtractionResult {
         };
     }
 
-    // RFC822 embedded message — parse as an email and extract subject/body
+    // RFC 822 embedded message — parse as an email and extract subject/body
     if mime_lower == "message/rfc822" {
         return parse_rfc822_attachment(bytes);
     }
@@ -305,7 +305,7 @@ pub fn html_to_plain_text(html: &str) -> String {
 fn parse_rfc822_attachment(bytes: &[u8]) -> ExtractionResult {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return ExtractionResult::NotSupported {
-            reason: "RFC822 message with invalid UTF-8 encoding",
+            reason: "RFC 822 message with invalid UTF-8 encoding",
         };
     };
 
@@ -1041,7 +1041,7 @@ Hi Bob, just checking in!";
                 assert!(content.contains("Hi Bob, just checking in!"));
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1062,7 +1062,7 @@ Meeting at 3pm.";
                 assert!(content.contains("Meeting at 3pm."));
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1082,7 +1082,7 @@ Body text.";
                 assert!(content.contains("Body text."));
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1101,7 +1101,7 @@ Just a note.";
                 assert!(content.contains("Just a note."));
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1124,7 +1124,7 @@ Content-Type: text/html; charset=utf-8
                 assert!(content.contains("Hello Bob"));
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1142,7 +1142,7 @@ Subject: Empty
                 assert_eq!(method, "rfc822_parse");
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1186,16 +1186,16 @@ To: Bob <bob@example.com>
 Subject: Via extract_text
 Date: Wed, 3 Jan 2024 08:00:00 +0000
 
-Hello from RFC822!";
+Hello from RFC 822!";
         let result = extract_text(email, "message/rfc822");
         match result {
             ExtractionResult::Text { content, method } => {
                 assert_eq!(method, "rfc822_parse");
                 assert!(content.contains("Subject: Via extract_text"));
-                assert!(content.contains("Hello from RFC822!"));
+                assert!(content.contains("Hello from RFC 822!"));
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1215,7 +1215,7 @@ MIME body.";
                 assert!(content.contains("MIME body."));
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1233,7 +1233,7 @@ Minimal email body.";
                 assert!(content.contains("Minimal email body."));
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1264,7 +1264,7 @@ Content-Type: text/html; charset=utf-8
                 assert!(!content.contains("HTML body"));
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1289,7 +1289,7 @@ SGVsbG8gZnJvbSBiYXNlNjQh
                     "expected decoded body, got: {content}");
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1312,7 +1312,7 @@ Date: Mon, 1 Jan 2024 10:00:00 +0000
                     "expected no body content after headers, got: {body_part}");
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1328,7 +1328,7 @@ Date: Mon, 1 Jan 2024 10:00:00 +0000
                 assert!(content.contains("Body with CRLF."));
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1357,7 +1357,7 @@ Date: Mon, 1 Jan 2024 10:00:00 +0000
                 assert_eq!(method, "rfc822_parse");
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1381,7 +1381,7 @@ Group body.";
                 assert!(content.contains("Group body."));
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1404,7 +1404,7 @@ Body.";
                     "expected subject line, got: {content}");
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1428,7 +1428,7 @@ Hello =E2=82=AC world!";
                     "expected decoded QP body, got: {content}");
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
@@ -1474,7 +1474,7 @@ binary data here
                     "expected body text, got: {content}");
             }
             ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC822, got: {reason}");
+                panic!("Expected parsed RFC 822, got: {reason}");
             }
         }
     }
