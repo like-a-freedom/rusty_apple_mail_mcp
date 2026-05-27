@@ -76,7 +76,7 @@ pub fn list_mailboxes_with_conn(
 
     if mailboxes.is_empty() {
         return Ok(ListMailboxesResponse::not_found(
-            "No mailboxes found. Apple Mail may not be configured, or APPLE_MAIL_ACCOUNT may be excluding all mailboxes.",
+            "No mailboxes found. Apple Mail may not be configured.",
         ));
     }
 

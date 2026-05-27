@@ -101,8 +101,9 @@ pub fn get_attachment_content_with_conn(
     let message_id: i64 = match params.message_id.parse() {
         Ok(id) => id,
         Err(_) => {
-            return Ok(GetAttachmentResponse::error(
-                "Invalid message_id format. Expected a numeric ID from search results.",
+            return Err(MailMcpError::Validation(
+                "Invalid message_id format. Expected a numeric ID from search results."
+                    .to_string(),
             ));
         }
     };
@@ -114,42 +115,45 @@ pub fn get_attachment_content_with_conn(
             match (rowid, index) {
                 (Some(rowid), Some(index)) => (rowid, index),
                 _ => {
-                    return Ok(GetAttachmentResponse::error(
-                        "Invalid attachment_id format. Expected `message_id:index` (e.g. `42:0`).",
+                    return Err(MailMcpError::Validation(
+                        "Invalid attachment_id format. Expected \"{message_id}:{attachment_index}\"."
+                            .to_string(),
                     ));
                 }
             }
         }
         None => {
-            return Ok(GetAttachmentResponse::error(
-                "Invalid attachment_id format. Expected `message_id:index` (e.g. `42:0`).",
+            return Err(MailMcpError::Validation(
+                "Invalid attachment_id format. Expected \"{message_id}:{attachment_index}\"."
+                    .to_string(),
             ));
         }
     };
 
     if attachment_rowid != message_id {
-        return Ok(GetAttachmentResponse::error(
-            "attachment_id does not belong to the provided message_id.",
+        return Err(MailMcpError::Validation(
+            "attachment_id does not belong to the provided message_id.".to_string(),
         ));
     }
 
     let row = match load_accessible_message(config, conn, message_id)? {
         AccessibleMessage::Found(row) => row,
         AccessibleMessage::NotFound => {
-            return Ok(GetAttachmentResponse::not_found(
-                "Message not found in the index. The message_id may be incorrect or the message was deleted.",
-            ));
+            return Err(MailMcpError::MessageNotFound {
+                id: params.message_id,
+            });
         }
         AccessibleMessage::BlockedAccount => {
-            return Ok(GetAttachmentResponse::error(
-                "This attachment belongs to an account excluded by APPLE_MAIL_ACCOUNT.",
+            return Err(MailMcpError::Validation(
+                "This attachment belongs to an account excluded by APPLE_MAIL_ACCOUNT."
+                    .to_string(),
             ));
         }
     };
 
     let Some(emlx_path) = locate_message_file(config, &row) else {
-        return Ok(GetAttachmentResponse::not_found(
-            "Message body file not found on disk (emlx missing). The message may not be downloaded yet or the local file was deleted.",
+        return Err(MailMcpError::Validation(
+            "Message body file not found on disk (emlx missing). The message may not be downloaded yet or the local file was deleted.".to_string(),
         ));
     };
 
@@ -163,17 +167,17 @@ pub fn get_attachment_content_with_conn(
                 emlx_path.display(),
                 error
             );
-            return Ok(GetAttachmentResponse::error(
-                "Failed to parse the message file. The file may be corrupt or in an unexpected format.",
+            return Err(MailMcpError::Validation(
+                "Failed to parse message body file. The file may be corrupt or in an unexpected format.".to_string(),
             ));
         }
     };
 
     let Some(raw_attachment) = parsed.attachments.get(attachment_index) else {
-        return Ok(GetAttachmentResponse::not_found(format!(
-            "Attachment index {attachment_index} out of range. Message has {} attachment(s).",
-            parsed.attachments.len()
-        )));
+        return Err(MailMcpError::AttachmentNotFound {
+            id: params.attachment_id,
+            message_id: params.message_id,
+        });
     };
 
     let meta = AttachmentMeta {
@@ -188,8 +192,8 @@ pub fn get_attachment_content_with_conn(
     };
 
     let Some(content) = raw_attachment.content.as_deref() else {
-        return Ok(GetAttachmentResponse::error(
-            "Attachment content is not available. The attachment data may be stored externally by Apple Mail or is in a format that cannot be decoded inline.",
+        return Err(MailMcpError::Validation(
+            "Attachment content is unavailable in the parsed message. The attachment data may be stored externally by Apple Mail or is in a format that cannot be decoded inline.".to_string(),
         ));
     };
 
@@ -376,16 +380,11 @@ mod tests {
             message_id: "1".to_string(),
         };
 
-        let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
+        let err =
+            get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
 
-        assert_eq!(response.status, Some(ResponseStatus::Error));
-        assert!(response.guidance.is_some());
-        assert!(
-            response
-                .guidance
-                .unwrap()
-                .contains("Invalid attachment_id format")
-        );
+        assert!(matches!(err, MailMcpError::Validation(_)));
+        assert!(err.to_string().contains("Invalid attachment_id format"));
     }
 
     #[test]
@@ -398,11 +397,11 @@ mod tests {
             message_id: "999".to_string(),
         };
 
-        let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
+        let err =
+            get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
 
-        assert_eq!(response.status, Some(ResponseStatus::NotFound));
-        assert!(response.guidance.is_some());
-        assert!(response.guidance.unwrap().contains("Message not found"));
+        assert!(matches!(err, MailMcpError::MessageNotFound { .. }));
+        assert!(err.to_string().contains("not found"));
     }
 
     #[test]
@@ -415,14 +414,12 @@ mod tests {
             message_id: "1".to_string(),
         };
 
-        let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
+        let err =
+            get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
 
-        assert_eq!(response.status, Some(ResponseStatus::Error));
-        assert!(response.guidance.is_some());
+        assert!(matches!(err, MailMcpError::Validation(_)));
         assert!(
-            response
-                .guidance
-                .unwrap()
+            err.to_string()
                 .contains("excluded by APPLE_MAIL_ACCOUNT")
         );
     }
@@ -457,11 +454,11 @@ mod tests {
         let emlx_content = format!("{}\n{}", email_content.len(), email_content);
         fs::write(&emlx_path, emlx_content).unwrap();
 
-        let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
+        let err =
+            get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
 
-        assert_eq!(response.status, Some(ResponseStatus::NotFound));
-        assert!(response.guidance.is_some());
-        assert!(response.guidance.unwrap().contains("out of range"));
+        assert!(matches!(err, MailMcpError::AttachmentNotFound { .. }));
+        assert!(err.to_string().contains("not found"));
     }
 
     #[test]

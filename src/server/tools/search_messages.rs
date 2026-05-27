@@ -351,15 +351,15 @@ fn load_search_metadata(
 fn reject_disallowed_account_filter(
     config: &MailConfig,
     account: Option<&str>,
-) -> Option<SearchMessagesResponse> {
+) -> Option<String> {
     let account = account?;
     if config.is_account_allowed(account) {
         return None;
     }
 
-    Some(SearchMessagesResponse::error(format!(
+    Some(format!(
         "The requested account filter {account} is excluded by APPLE_MAIL_ACCOUNT."
-    )))
+    ))
 }
 
 fn search_rows_with_subject_fallback(
@@ -451,19 +451,19 @@ pub fn search_messages_with_conn(
     let total_started = Instant::now();
     let filters_description = describe_search_filters(&params);
     if let Err(message) = validate_params(&params) {
-        return Ok(SearchMessagesResponse::error(message));
+        return Err(MailMcpError::Validation(message));
     }
 
     let (date_from_ts, date_to_ts) = match parse_date_range(&params) {
         Ok(range) => range,
         Err(message) => {
-            return Ok(SearchMessagesResponse::error(message));
+            return Err(MailMcpError::Validation(message));
         }
     };
 
     let epoch_offset_s = detect_epoch_offset_seconds(conn)?;
-    if let Some(response) = reject_disallowed_account_filter(config, params.account.as_deref()) {
-        return Ok(response);
+    if let Some(message) = reject_disallowed_account_filter(config, params.account.as_deref()) {
+        return Err(MailMcpError::Validation(message));
     }
 
     let sql_started = Instant::now();
@@ -532,11 +532,11 @@ pub fn search_messages(
     params: SearchMessagesParams,
 ) -> Result<SearchMessagesResponse, MailMcpError> {
     if let Err(message) = validate_params(&params) {
-        return Ok(SearchMessagesResponse::error(message));
+        return Err(MailMcpError::Validation(message));
     }
 
     if let Err(message) = parse_date_range(&params) {
-        return Ok(SearchMessagesResponse::error(message));
+        return Err(MailMcpError::Validation(message));
     }
 
     let db_path = config.envelope_db_path();
@@ -571,9 +571,9 @@ mod tests {
             offset: 0,
         };
 
-        let result = search_messages(&config, params).unwrap();
-        assert_eq!(result.status, Some(ResponseStatus::Error));
-        assert!(result.guidance.is_some());
+        let err = search_messages(&config, params).unwrap_err();
+        assert!(matches!(err, MailMcpError::Validation(_)));
+        assert!(err.to_string().contains("At least one filter"));
     }
 
     #[test]
