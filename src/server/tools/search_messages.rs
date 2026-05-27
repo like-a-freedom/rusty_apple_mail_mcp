@@ -348,10 +348,7 @@ fn load_search_metadata(
     Ok(metadata)
 }
 
-fn reject_disallowed_account_filter(
-    config: &MailConfig,
-    account: Option<&str>,
-) -> Option<String> {
+fn reject_disallowed_account_filter(config: &MailConfig, account: Option<&str>) -> Option<String> {
     let account = account?;
     if config.is_account_allowed(account) {
         return None;
