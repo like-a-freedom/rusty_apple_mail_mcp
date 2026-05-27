@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct EmptyToolParams {}
 
 /// `MailMcpServer` - MCP server for Apple Mail read-only access.
@@ -91,8 +92,14 @@ impl MailMcpServer {
         TResponse: Serialize,
         F: FnOnce(&MailConfig, TParams) -> Result<TResponse, MailMcpError>,
     {
-        let params: TParams = serde_json::from_value(Value::Object(arguments))
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let params: TParams = match serde_json::from_value(Value::Object(arguments)) {
+            Ok(params) => params,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Invalid parameters: {e}",
+                ))]));
+            }
+        };
         let response = tool_fn(self.config.as_ref(), params)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::json(response)?]))
@@ -450,6 +457,16 @@ mod tests {
     fn tool_definitions_expose_typed_input_schema_constraints() {
         let tools = MailMcpServer::tool_definitions();
 
+        let search_messages = tools
+            .iter()
+            .find(|tool| tool.name == "search_messages")
+            .expect("search_messages tool");
+        let search_schema = serde_json::to_value(search_messages).expect("serialize tool");
+        assert_eq!(
+            search_schema["inputSchema"]["additionalProperties"],
+            json!(false)
+        );
+
         let get_message = tools
             .iter()
             .find(|tool| tool.name == "get_message")
@@ -476,7 +493,7 @@ mod tests {
         let (_temp_dir, config) = create_temp_config();
         let server = MailMcpServer::new(config).expect("server creation");
 
-        // Pass invalid JSON for search_messages params
+        // Pass invalid JSON type for search_messages params
         let mut args = Map::new();
         args.insert("limit".to_string(), json!("not_a_number"));
 
@@ -484,7 +501,14 @@ mod tests {
             .unwrap()
             .block_on(async { server.call_tool_by_name("search_messages", args).await });
 
-        assert!(result.is_err());
+        // Returns a graceful tool error, not a JSON-RPC protocol error
+        assert!(result.is_ok());
+        let call_result = result.unwrap();
+        let content_json = serde_json::to_string(&call_result).unwrap();
+        assert!(
+            content_json.contains("Invalid parameters"),
+            "expected Invalid parameters in: {content_json}"
+        );
     }
 
     #[test]
@@ -582,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn call_tool_by_name_search_messages_unknown_field_ignored() {
+    fn call_tool_by_name_search_messages_unknown_field_returns_error_response() {
         let (_temp_dir, config) = create_temp_config();
         let server = MailMcpServer::new(config).expect("server creation");
 
@@ -593,13 +617,22 @@ mod tests {
             .unwrap()
             .block_on(async { server.call_tool_by_name("search_messages", args).await });
 
-        assert!(result.is_ok(), "unknown fields should not cause JSON-RPC error");
+        // Returns graceful tool error, not JSON-RPC protocol error
+        assert!(result.is_ok());
         let call_result = result.unwrap();
-        assert!(!call_result.content.is_empty());
+        let content_json = serde_json::to_string(&call_result).unwrap();
+        assert!(
+            content_json.contains("unknown field"),
+            "expected 'unknown field' in: {content_json}",
+        );
+        assert!(
+            content_json.contains("searchText"),
+            "expected 'searchText' in: {content_json}",
+        );
     }
 
     #[test]
-    fn call_tool_by_name_get_message_unknown_field_ignored() {
+    fn call_tool_by_name_get_message_unknown_field_returns_error_response() {
         let (_temp_dir, config) = create_temp_config();
         let server = MailMcpServer::new(config).expect("server creation");
 
@@ -611,11 +644,22 @@ mod tests {
             .unwrap()
             .block_on(async { server.call_tool_by_name("get_message", args).await });
 
-        assert!(result.is_ok(), "unknown fields should not cause JSON-RPC error");
+        // Unknown field with valid message_id -> graceful tool error
+        assert!(result.is_ok());
+        let call_result = result.unwrap();
+        let content_json = serde_json::to_string(&call_result).unwrap();
+        assert!(
+            content_json.contains("unknown field"),
+            "expected 'unknown field' in: {content_json}",
+        );
+        assert!(
+            content_json.contains("unknown_param"),
+            "expected 'unknown_param' in: {content_json}",
+        );
     }
 
     #[test]
-    fn call_tool_by_name_list_accounts_unknown_field_ignored() {
+    fn call_tool_by_name_list_accounts_unknown_field_returns_error_response() {
         let (_temp_dir, config) = create_temp_config();
         let server = MailMcpServer::new(config).expect("server creation");
 
@@ -626,6 +670,17 @@ mod tests {
             .unwrap()
             .block_on(async { server.call_tool_by_name("list_accounts", args).await });
 
-        assert!(result.is_ok(), "unknown fields should not cause JSON-RPC error");
+        // Unknown field -> graceful tool error, not JSON-RPC protocol error
+        assert!(result.is_ok());
+        let call_result = result.unwrap();
+        let content_json = serde_json::to_string(&call_result).unwrap();
+        assert!(
+            content_json.contains("unknown field"),
+            "expected 'unknown field' in: {content_json}",
+        );
+        assert!(
+            content_json.contains("unknown_field"),
+            "expected 'unknown_field' in: {content_json}",
+        );
     }
 }

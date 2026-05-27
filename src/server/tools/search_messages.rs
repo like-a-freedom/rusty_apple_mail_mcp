@@ -17,6 +17,7 @@ use crate::server::tools::ResponseStatus;
 
 /// Parameters for the `search_messages` tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SearchMessagesParams {
     /// Text to search in subject (partial match, case-insensitive)
     pub subject_query: Option<String>,
@@ -651,12 +652,12 @@ mod tests {
     }
 
     #[test]
-    fn deserialization_ignores_unknown_fields() {
+    fn deserialization_rejects_unknown_fields() {
         let json = r#"{"subject_query":"test","body_query":"internet"}"#;
         let result: Result<SearchMessagesParams, _> = serde_json::from_str(json);
-        assert!(result.is_ok());
-        let params = result.unwrap();
-        assert_eq!(params.subject_query.as_deref(), Some("test"));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unknown field") || err.contains("body_query"));
     }
 
     #[test]
