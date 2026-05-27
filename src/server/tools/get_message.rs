@@ -458,10 +458,7 @@ mod tests {
         let err = get_message_with_conn(&config, &conn, params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::Validation(_)));
-        assert!(
-            err.to_string()
-                .contains("excluded by APPLE_MAIL_ACCOUNT")
-        );
+        assert!(err.to_string().contains("excluded by APPLE_MAIL_ACCOUNT"));
     }
 
     #[test]

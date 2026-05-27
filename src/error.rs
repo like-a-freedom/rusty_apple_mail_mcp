@@ -44,21 +44,15 @@ impl From<MailMcpError> for rmcp::ErrorData {
             MailMcpError::DatabaseNotFound { path } => {
                 Self::internal_error(format!("Database not found at: {}", path.display()), None)
             }
-            MailMcpError::DatabaseLocked(msg) => {
-                Self::internal_error(msg, None)
-            }
-            MailMcpError::Sqlite(e) => {
-                Self::internal_error(format!("SQLite error: {e}"), None)
-            }
+            MailMcpError::DatabaseLocked(msg) => Self::internal_error(msg, None),
+            MailMcpError::Sqlite(e) => Self::internal_error(format!("SQLite error: {e}"), None),
             MailMcpError::MessageNotFound { id } => {
                 Self::invalid_params(format!("Message {id} not found in the index"), None)
             }
-            MailMcpError::AttachmentNotFound { id, message_id } => {
-                Self::invalid_params(
-                    format!("Attachment {id} not found for message {message_id}"),
-                    None,
-                )
-            }
+            MailMcpError::AttachmentNotFound { id, message_id } => Self::invalid_params(
+                format!("Attachment {id} not found for message {message_id}"),
+                None,
+            ),
             MailMcpError::BodyFileNotFound { path } => {
                 Self::internal_error(format!("Body file not found at: {}", path.display()), None)
             }
