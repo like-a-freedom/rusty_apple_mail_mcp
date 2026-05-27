@@ -99,7 +99,7 @@ pub fn list_accounts_with_conn(
 
     if accounts.is_empty() {
         return Ok(ListAccountsResponse::not_found(
-            "No mail accounts were derived from mailbox URLs. Apple Mail may not be configured.",
+            "No mail accounts found. Apple Mail may not be configured, or APPLE_MAIL_ACCOUNT may be excluding all accounts.",
         ));
     }
 
