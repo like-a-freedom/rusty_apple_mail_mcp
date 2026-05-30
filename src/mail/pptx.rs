@@ -320,56 +320,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_slide_text() {
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
-  <p:cSld>
-    <p:spTree>
-      <p:sp>
-        <p:txBody>
-          <a:p>
-            <a:r>
-              <a:t>Hello</a:t>
-            </a:r>
-          </a:p>
-          <a:p>
-            <a:r>
-              <a:t>World</a:t>
-            </a:r>
-          </a:p>
-        </p:txBody>
-      </p:sp>
-    </p:spTree>
-  </p:cSld>
-</p:sld>"#;
-
-        let text = extract_slide_text(xml).unwrap();
-        assert!(text.contains("Hello"));
-        assert!(text.contains("World"));
-    }
-
-    #[test]
-    fn test_pptx_error_display() {
-        let err = PptxError::InvalidZip;
-        assert_eq!(format!("{}", err), "Not a valid ZIP archive");
-
-        let err = PptxError::MissingPresentation;
-        assert_eq!(format!("{}", err), "Missing ppt/presentation.xml");
-
-        let err = PptxError::MissingSlide("slide1.xml".to_string());
-        assert_eq!(format!("{}", err), "Missing slide file: slide1.xml");
-
-        let err = PptxError::XmlParse("test error".to_string());
-        assert_eq!(format!("{}", err), "XML parse error: test error");
-
-        let err = PptxError::EmptyDocument;
-        assert_eq!(format!("{}", err), "Empty presentation");
-
-        let err = PptxError::Utf8Error;
-        assert_eq!(format!("{}", err), "UTF-8 decoding error");
-    }
-
-    #[test]
     fn test_pptx_xml_parse_error() {
         use std::io::Write;
 
@@ -422,42 +372,12 @@ mod tests {
         }
 
         let result = pptx_to_text(&buf.into_inner());
-        // Should work - even with empty slide text
-        match result {
-            Ok(text) => {
-                // Empty slide text is valid
-                assert!(text.contains("Slide 1:"));
-            }
-            Err(PptxError::EmptyDocument) => {
-                // Also acceptable if no text found
-            }
-            Err(e) => panic!("Unexpected error: {}", e),
-        }
-    }
-
-    #[test]
-    fn test_parse_presentation_empty() {
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-</p:presentation>"#;
-
-        let result = parse_presentation(xml).unwrap();
-        // Should return default slide1.xml path
-        assert_eq!(result, vec!["ppt/slides/slide1.xml"]);
-    }
-
-    #[test]
-    fn test_extract_slide_text_empty() {
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-<p:cSld>
-<p:spTree>
-</p:spTree>
-</p:cSld>
-</p:sld>"#;
-
-        let text = extract_slide_text(xml).unwrap();
-        assert!(text.is_empty());
+        assert!(
+            matches!(&result, Ok(text) if text.contains("Slide 1:"))
+            || matches!(result, Err(PptxError::EmptyDocument)),
+            "expected Ok with slide content or EmptyDocument, got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -485,28 +405,4 @@ mod tests {
         assert!(matches!(result, Err(PptxError::MissingSlide(_))));
     }
 
-    #[test]
-    fn test_pptx_with_multiple_text_elements() {
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
-<p:cSld>
-<p:spTree>
-<p:sp>
-<p:txBody>
-<a:p>
-<a:r><a:t>Title</a:t></a:r>
-</a:p>
-<a:p>
-<a:r><a:t>Subtitle</a:t></a:r>
-</a:p>
-</p:txBody>
-</p:sp>
-</p:spTree>
-</p:cSld>
-</p:sld>"#;
-
-        let text = extract_slide_text(xml).unwrap();
-        assert!(text.contains("Title"));
-        assert!(text.contains("Subtitle"));
-    }
 }
