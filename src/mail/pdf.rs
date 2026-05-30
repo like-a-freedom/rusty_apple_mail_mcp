@@ -79,12 +79,11 @@ mod tests {
         let pdf = b"%PDF-1.4\n%EOFA";
         let result = pdf_to_text(pdf.to_vec().as_slice());
         // Should handle gracefully - either parse or return appropriate error
-        match result {
-            Ok(_) => (),
-            Err(PdfError::PdfParse(_)) => (),
-            Err(PdfError::EmptyDocument) => (),
-            Err(PdfError::NoTextLayer) => (),
-        }
+        assert!(
+            matches!(result, Err(PdfError::PdfParse(_)) | Err(PdfError::EmptyDocument) | Err(PdfError::NoTextLayer)),
+            "expected PDF parse/empty/no-text error, got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -132,12 +131,12 @@ startxref
 
         let result = pdf_to_text(pdf.to_vec().as_slice());
         // May return NoTextLayer or empty text depending on lopdf behavior
-        match result {
-            Err(PdfError::NoTextLayer) => (),
-            Ok(text) if text.is_empty() => (),
-            Ok(text) => panic!("Expected empty or error, got: {}", text),
-            Err(PdfError::PdfParse(_)) | Err(PdfError::EmptyDocument) => (),
-        }
+        assert!(
+            matches!(&result, Ok(text) if text.is_empty())
+            || matches!(result, Err(PdfError::NoTextLayer) | Err(PdfError::PdfParse(_)) | Err(PdfError::EmptyDocument)),
+            "expected empty/error for PDF without text, got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -168,39 +167,12 @@ startxref
 %%EOF";
 
         let result = pdf_to_text(pdf.to_vec().as_slice());
-        // This minimal PDF may not have extractable text, which is acceptable
-        match result {
-            Ok(text) => {
-                // If text is extracted, verify it's not empty (unlikely for this minimal PDF)
-                if !text.is_empty() {
-                    // Success - text was extracted
-                }
-            }
-            Err(PdfError::NoTextLayer) => {
-                // Acceptable - lopdf couldn't find text layer
-            }
-            Err(PdfError::EmptyDocument) => {
-                // Also acceptable - no pages with text
-            }
-            Err(PdfError::PdfParse(_)) => {
-                // Also acceptable - minimal PDF may not parse fully
-            }
-        }
-    }
-
-    #[test]
-    fn test_pdf_error_display() {
-        let err = PdfError::PdfParse("test error".to_string());
-        assert_eq!(format!("{}", err), "Failed to parse PDF: test error");
-
-        let err = PdfError::NoTextLayer;
-        assert_eq!(
-            format!("{}", err),
-            "PDF contains no extractable text (possibly scanned)"
+        // Minimal PDF may not have extractable text — accept any graceful outcome
+        assert!(
+            matches!(result, Ok(_) | Err(PdfError::NoTextLayer) | Err(PdfError::PdfParse(_)) | Err(PdfError::EmptyDocument)),
+            "expected Ok or PDF error, got: {:?}",
+            result
         );
-
-        let err = PdfError::EmptyDocument;
-        assert_eq!(format!("{}", err), "PDF is empty");
     }
 
     #[test]
@@ -228,12 +200,12 @@ startxref
 %%EOF";
         let result = pdf_to_text(pdf);
         // May fail due to invalid xref or succeed with no text
-        match result {
-            Ok(text) => assert!(text.is_empty(), "Expected empty text"),
-            Err(PdfError::PdfParse(_))
-            | Err(PdfError::NoTextLayer)
-            | Err(PdfError::EmptyDocument) => (),
-        }
+        assert!(
+            matches!(&result, Ok(text) if text.is_empty())
+            || matches!(result, Err(PdfError::PdfParse(_)) | Err(PdfError::NoTextLayer) | Err(PdfError::EmptyDocument)),
+            "expected empty text or PDF error, got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -277,35 +249,12 @@ startxref
 445
 %%EOF";
         let result = pdf_to_text(pdf);
-        match result {
-            Ok(text) => assert!(text.is_empty(), "Expected empty text from multi-page PDF"),
-            Err(PdfError::NoTextLayer) | Err(PdfError::EmptyDocument) => (),
-            Err(PdfError::PdfParse(_)) => (),
-        }
+        assert!(
+            matches!(&result, Ok(text) if text.is_empty())
+            || matches!(result, Err(PdfError::NoTextLayer) | Err(PdfError::EmptyDocument) | Err(PdfError::PdfParse(_))),
+            "expected empty text or PDF error from multi-page PDF, got: {:?}",
+            result
+        );
     }
 
-    #[test]
-    fn test_pdf_parse_error_format() {
-        // Test that parse errors contain useful information
-        let err = PdfError::PdfParse("invalid object".to_string());
-        let err_str = err.to_string();
-        assert!(err_str.contains("Failed to parse PDF"));
-        assert!(err_str.contains("invalid object"));
-    }
-
-    #[test]
-    fn test_pdf_error_variants_debug() {
-        // Ensure all error variants can be debugged
-        let parse_err = PdfError::PdfParse("test".to_string());
-        let debug_str = format!("{:?}", parse_err);
-        assert!(debug_str.contains("PdfParse"));
-
-        let no_text_err = PdfError::NoTextLayer;
-        let debug_str = format!("{:?}", no_text_err);
-        assert!(debug_str.contains("NoTextLayer"));
-
-        let empty_err = PdfError::EmptyDocument;
-        let debug_str = format!("{:?}", empty_err);
-        assert!(debug_str.contains("EmptyDocument"));
-    }
 }

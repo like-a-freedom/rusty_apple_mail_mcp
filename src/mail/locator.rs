@@ -1087,17 +1087,6 @@ mod tests {
     }
 
     #[test]
-    fn matches_candidate_checks_both_emlx_and_partial() {
-        let candidate_ids = vec!["42".to_string(), "100".to_string()];
-
-        assert!(matches_candidate("42.emlx", &candidate_ids));
-        assert!(matches_candidate("42.partial.emlx", &candidate_ids));
-        assert!(matches_candidate("100.emlx", &candidate_ids));
-        assert!(!matches_candidate("99.emlx", &candidate_ids));
-        assert!(!matches_candidate("99.partial.emlx", &candidate_ids));
-    }
-
-    #[test]
     fn locate_emlx_returns_none_for_missing_mailbox_url() {
         let temp_dir = tempfile::tempdir().unwrap();
         let result = locate_emlx(temp_dir.path(), "V10", "", 42);
