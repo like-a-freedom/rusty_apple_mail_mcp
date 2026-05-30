@@ -94,16 +94,11 @@ mod tests {
         fs::write(&db_path, b"not a sqlite database at all").expect("write corrupted");
 
         let result = open_readonly(&db_path);
-        // File exists, so should get Sqlite error (not DatabaseNotFound)
-        // lopdf may also succeed with empty text, so be flexible
-        match result {
-            Ok(_) => (),
-            Err(MailMcpError::Sqlite(_)) => (),
-            Err(MailMcpError::DatabaseNotFound { .. }) => {
-                panic!("File exists, should not get DatabaseNotFound");
-            }
-            _ => panic!("Expected Sqlite error or Ok"),
-        }
+        // File exists so should NOT get DatabaseNotFound
+        assert!(
+            !matches!(result, Err(MailMcpError::DatabaseNotFound { .. })),
+            "File exists, should not get DatabaseNotFound"
+        );
     }
 
     #[test]

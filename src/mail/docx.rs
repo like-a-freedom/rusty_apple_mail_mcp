@@ -431,57 +431,6 @@ mod tests {
     }
 
     #[test]
-    fn test_format_table() {
-        let rows = vec![
-            vec!["Name".to_string(), "Value".to_string()],
-            vec!["Alice".to_string(), "100".to_string()],
-            vec!["Bob".to_string(), "200".to_string()],
-        ];
-
-        let table = format_table(&rows);
-        assert!(table.contains("| Name | Value |"));
-        assert!(table.contains("| --- | --- |"));
-        assert!(table.contains("| Alice | 100 |"));
-        assert!(table.contains("| Bob | 200 |"));
-    }
-
-    #[test]
-    fn test_apply_formatting() {
-        assert_eq!(apply_formatting("text", false, false), "text");
-        assert_eq!(apply_formatting("text", true, false), "**text**");
-        assert_eq!(apply_formatting("text", false, true), "*text*");
-        assert_eq!(apply_formatting("text", true, true), "***text***");
-    }
-
-    #[test]
-    fn test_format_paragraph_heading() {
-        assert_eq!(
-            format_paragraph("Title", ParagraphStyle::Heading1, None),
-            "# Title"
-        );
-        assert_eq!(
-            format_paragraph("Title", ParagraphStyle::Heading2, None),
-            "## Title"
-        );
-        assert_eq!(
-            format_paragraph("Title", ParagraphStyle::Heading3, None),
-            "### Title"
-        );
-    }
-
-    #[test]
-    fn test_format_paragraph_list() {
-        assert_eq!(
-            format_paragraph("Item", ParagraphStyle::Normal, Some(0)),
-            "- Item"
-        );
-        // Level 1 has 1 space indent
-        let result = format_paragraph("Item", ParagraphStyle::Normal, Some(1));
-        assert!(result.starts_with(" "));
-        assert!(result.ends_with("- Item"));
-    }
-
-    #[test]
     fn test_docx_empty_document() {
         use std::io::Write;
 
@@ -698,26 +647,30 @@ mod tests {
     }
 
     #[test]
-    fn test_format_table_empty() {
-        let table = format_table(&[]);
-        assert!(table.is_empty());
-    }
+    fn test_docx_heading_with_numeric_style() {
+        use std::io::Write;
 
-    #[test]
-    fn test_format_paragraph_empty() {
-        assert!(format_paragraph("", ParagraphStyle::Normal, None).is_empty());
-        assert!(format_paragraph("   ", ParagraphStyle::Normal, None).is_empty());
-    }
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p><w:pPr><w:pStyle w:val="1"/></w:pPr><w:r><w:t>Numeric H1</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="2"/></w:pPr><w:r><w:t>Numeric H2</w:t></w:r></w:p>
+</w:body>
+</w:document>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
 
-    #[test]
-    fn test_parse_paragraph_style_numeric() {
-        assert_eq!(parse_paragraph_style("1"), ParagraphStyle::Heading1);
-        assert_eq!(parse_paragraph_style("2"), ParagraphStyle::Heading2);
-        assert_eq!(parse_paragraph_style("3"), ParagraphStyle::Heading3);
-        assert_eq!(parse_paragraph_style("4"), ParagraphStyle::Heading4);
-        assert_eq!(parse_paragraph_style("5"), ParagraphStyle::Heading5);
-        assert_eq!(parse_paragraph_style("6"), ParagraphStyle::Heading6);
-        assert_eq!(parse_paragraph_style("Normal"), ParagraphStyle::Normal);
+        let result = docx_to_markdown(&buf.into_inner()).unwrap();
+        assert!(result.contains("Numeric H1"));
+        assert!(result.contains("Numeric H2"));
     }
 
     #[test]

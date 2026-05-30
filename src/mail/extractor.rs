@@ -374,38 +374,45 @@ fn format_addresses(addr: Option<&mail_parser::Address<'_>>) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn assert_text(result: ExtractionResult) -> (String, &'static str) {
+        let ExtractionResult::Text { content, method } = result else {
+            panic!("expected Text, got: {:?}", result);
+        };
+        (content, method)
+    }
+
+    fn assert_not_supported(result: ExtractionResult) -> &'static str {
+        let ExtractionResult::NotSupported { reason } = result else {
+            panic!("expected NotSupported, got: {:?}", result);
+        };
+        reason
+    }
+
     #[test]
     fn extract_text_plain() {
         let bytes = b"Hello, World!";
         let result = extract_text(bytes, "text/plain");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, method } = result {
-            assert_eq!(content, "Hello, World!");
-            assert_eq!(method, "direct_utf8");
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(content, "Hello, World!");
+        assert_eq!(method, "direct_utf8");
     }
 
     #[test]
     fn extract_text_json() {
         let bytes = b"{\"key\": \"value\"}";
         let result = extract_text(bytes, "application/json");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, .. } = result {
-            assert!(content.contains("\"key\""));
-            assert!(content.contains("\"value\""));
-        }
+        let (content, _) = assert_text(result);
+        assert!(content.contains("\"key\""));
+        assert!(content.contains("\"value\""));
     }
 
     #[test]
     fn extract_text_html() {
         let bytes = b"<html><body><h1>Hello</h1><p>World!</p></body></html>";
         let result = extract_text(bytes, "text/html");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, .. } = result {
-            assert!(content.contains("Hello"));
-            assert!(content.contains("World!"));
-            // Note: our simple stripper may leave some artifacts, so we just check key text is present
-        }
+        let (content, _) = assert_text(result);
+        assert!(content.contains("Hello"));
+        assert!(content.contains("World!"));
     }
 
     #[test]
@@ -419,57 +426,49 @@ mod tests {
     fn extract_text_image_not_supported() {
         let bytes = b"\x89PNG";
         let result = extract_text(bytes, "image/png");
-        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("OCR"));
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("OCR"));
     }
 
     #[test]
     fn extract_text_xml() {
         let bytes = b"<?xml version=\"1.0\"?><root><item>test</item></root>";
         let result = extract_text(bytes, "application/xml");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, method } = result {
-            assert!(content.contains("test"));
-            assert_eq!(method, "direct_utf8");
-        }
+        let (content, method) = assert_text(result);
+        assert!(content.contains("test"));
+        assert_eq!(method, "direct_utf8");
     }
 
     #[test]
     fn extract_text_xml_text_variant() {
         let bytes = b"<?xml version=\"1.0\"?><root><item>test</item></root>";
         let result = extract_text(bytes, "text/xml");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
+        let (_content, _method) = assert_text(result);
     }
 
     #[test]
     fn extract_text_csv() {
         let bytes = b"name,email\nJohn,john@example.com";
         let result = extract_text(bytes, "text/csv");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, method } = result {
-            assert!(content.contains("John"));
-            assert_eq!(method, "direct_utf8");
-        }
+        let (content, method) = assert_text(result);
+        assert!(content.contains("John"));
+        assert_eq!(method, "direct_utf8");
     }
 
     #[test]
     fn extract_text_markdown() {
         let bytes = b"# Header\n\nSome **bold** text.";
         let result = extract_text(bytes, "text/markdown");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, method } = result {
-            assert!(content.contains("Header"));
-            assert_eq!(method, "direct_utf8");
-        }
+        let (content, method) = assert_text(result);
+        assert!(content.contains("Header"));
+        assert_eq!(method, "direct_utf8");
     }
 
     #[test]
     fn extract_text_markdown_with_extension() {
         let bytes = b"# Header\n\nSome text.";
         let result = extract_text(bytes, "text/markdown; charset=utf-8");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
+        let (_content, _method) = assert_text(result);
     }
 
     #[test]
@@ -479,14 +478,12 @@ mod tests {
             bytes,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         );
-        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(
-                reason.contains("ZIP"),
-                "Expected ZIP-related error for invalid DOCX, got: {}",
-                reason
-            );
-        }
+        let reason = assert_not_supported(result);
+        assert!(
+            reason.contains("ZIP"),
+            "Expected ZIP-related error for invalid DOCX, got: {}",
+            reason
+        );
     }
 
     #[test]
@@ -500,10 +497,8 @@ mod tests {
     fn extract_text_audio_not_supported() {
         let bytes = b"fake audio data";
         let result = extract_text(bytes, "audio/mpeg");
-        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("audio"));
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("audio"));
     }
 
     #[test]
@@ -518,40 +513,32 @@ mod tests {
         // Invalid UTF-8 sequence
         let bytes = b"\xFF\xFE";
         let result = extract_text(bytes, "text/plain");
-        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("invalid UTF-8"));
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("invalid UTF-8"));
     }
 
     #[test]
     fn extract_text_json_invalid() {
         let bytes = b"{invalid json}";
         let result = extract_text(bytes, "application/json");
-        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("invalid JSON"));
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("invalid JSON"));
     }
 
     #[test]
     fn extract_text_html_invalid_utf8() {
         let bytes = b"<html>\xFF\xFE</html>";
         let result = extract_text(bytes, "text/html");
-        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("UTF-8"));
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("UTF-8"));
     }
 
     #[test]
     fn extract_text_xml_invalid_utf8() {
         let bytes = b"<?xml version=\"1.0\"?>\xFF\xFE";
         let result = extract_text(bytes, "application/xml");
-        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("UTF-8"));
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("UTF-8"));
     }
 
     #[test]
@@ -572,41 +559,34 @@ mod tests {
     fn extract_text_html_with_script_and_style() {
         let bytes = b"<html><head><script>alert('xss');</script><style>body{}</style></head><body><p>text</p></body></html>";
         let result = extract_text(bytes, "text/html");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, .. } = result {
-            assert!(content.contains("text"), "should contain body text");
-            assert!(
-                !content.contains("alert"),
-                "script content should be stripped"
-            );
-            assert!(
-                !content.contains("body{}"),
-                "style content should be stripped"
-            );
-        }
+        let (content, _) = assert_text(result);
+        assert!(content.contains("text"), "should contain body text");
+        assert!(
+            !content.contains("alert"),
+            "script content should be stripped"
+        );
+        assert!(
+            !content.contains("body{}"),
+            "style content should be stripped"
+        );
     }
 
     #[test]
     fn extract_text_html_with_entities() {
         let bytes = b"<p>Hello &nbsp; world &amp; more &lt;test&gt; &quot;quote&quot;</p>";
         let result = extract_text(bytes, "text/html");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, .. } = result {
-            // Check for decoded entities
-            assert!(
-                content.contains("Hello") && content.contains("world") && content.contains("test")
-            );
-        }
+        let (content, _) = assert_text(result);
+        assert!(
+            content.contains("Hello") && content.contains("world") && content.contains("test")
+        );
     }
 
     #[test]
     fn extract_text_binary_format() {
         let bytes = b"\x00\x01\x02\x03";
         let result = extract_text(bytes, "application/octet-stream");
-        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("binary format"));
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("binary format"));
     }
 
     #[test]
@@ -622,11 +602,9 @@ mod tests {
     fn extract_text_html_with_nested_tags() {
         let bytes = b"<div><p>Hello <strong>world</strong></p></div>";
         let result = extract_text(bytes, "text/html");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, .. } = result {
-            assert!(content.contains("Hello"));
-            assert!(content.contains("world"));
-        }
+        let (content, _) = assert_text(result);
+        assert!(content.contains("Hello"));
+        assert!(content.contains("world"));
     }
 
     #[test]
@@ -647,31 +625,25 @@ mod tests {
     fn extract_text_unknown_mime_type() {
         let bytes = b"some data";
         let result = extract_text(bytes, "application/unknown");
-        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("binary format"));
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("binary format"));
     }
 
     #[test]
     fn extract_text_plain_empty() {
         let bytes = b"";
         let result = extract_text(bytes, "text/plain");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, .. } = result {
-            assert!(content.is_empty());
-        }
+        let (content, _) = assert_text(result);
+        assert!(content.is_empty());
     }
 
     #[test]
     fn extract_text_plain_with_unicode() {
         let bytes = "Hello 世界 🌍".as_bytes();
         let result = extract_text(bytes, "text/plain");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, .. } = result {
-            assert!(content.contains("世界"));
-            assert!(content.contains("🌍"));
-        }
+        let (content, _) = assert_text(result);
+        assert!(content.contains("世界"));
+        assert!(content.contains("🌍"));
     }
 
     #[test]
@@ -685,11 +657,9 @@ mod tests {
     fn extract_text_csv_with_headers_only() {
         let bytes = b"name,email,age\n";
         let result = extract_text(bytes, "text/csv");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, .. } = result {
-            assert!(content.contains("name"));
-            assert!(content.contains("email"));
-        }
+        let (content, _) = assert_text(result);
+        assert!(content.contains("name"));
+        assert!(content.contains("email"));
     }
 
     #[test]
@@ -710,10 +680,8 @@ mod tests {
     fn extract_text_json_nested() {
         let bytes = b"{\"user\": {\"name\": \"John\", \"emails\": [\"a@b.com\"]}}";
         let result = extract_text(bytes, "application/json");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, .. } = result {
-            assert!(content.contains("John"));
-        }
+        let (content, _) = assert_text(result);
+        assert!(content.contains("John"));
     }
 
     #[test]
@@ -727,10 +695,8 @@ mod tests {
     fn extract_text_xml_with_attributes() {
         let bytes = b"<?xml version=\"1.0\"?><root attr=\"value\">text</root>";
         let result = extract_text(bytes, "application/xml");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, .. } = result {
-            assert!(content.contains("text"));
-        }
+        let (content, _) = assert_text(result);
+        assert!(content.contains("text"));
     }
 
     #[test]
@@ -744,10 +710,8 @@ mod tests {
     fn extract_text_markdown_with_headers() {
         let bytes = b"# Header\n## Subheader\nContent";
         let result = extract_text(bytes, "text/markdown");
-        assert!(matches!(result, ExtractionResult::Text { .. }));
-        if let ExtractionResult::Text { content, .. } = result {
-            assert!(content.contains("Header"));
-        }
+        let (content, _) = assert_text(result);
+        assert!(content.contains("Header"));
     }
 
     #[test]
@@ -758,43 +722,19 @@ mod tests {
     }
 
     #[test]
-    fn extraction_result_debug_format() {
-        let result = ExtractionResult::Text {
-            content: "test".to_string(),
-            method: "test_method",
-        };
-        let debug_str = format!("{:?}", result);
-        assert!(debug_str.contains("Text"));
-    }
-
-    #[test]
-    fn extraction_result_not_supported_debug_format() {
-        let result = ExtractionResult::NotSupported {
-            reason: "test reason",
-        };
-        let debug_str = format!("{:?}", result);
-        assert!(debug_str.contains("NotSupported"));
-        assert!(debug_str.contains("test reason"));
-    }
-
-    #[test]
     fn extract_text_image_by_extension() {
         let bytes = b"fake image data";
         let result = extract_text(bytes, "image/jpeg");
-        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("image"));
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("image"));
     }
 
     #[test]
     fn extract_text_pdf_explicitly_not_supported() {
         let bytes = b"%PDF fake pdf";
         let result = extract_text(bytes, "application/pdf");
-        assert!(matches!(result, ExtractionResult::NotSupported { .. }));
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("PDF"));
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("PDF"));
     }
 
     #[test]
@@ -858,15 +798,9 @@ mod tests {
             &buf.into_inner(),
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         );
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert!(content.contains("Hello from DOCX"));
-                assert_eq!(method, "docx_to_markdown");
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected success, got: {}", reason);
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert!(content.contains("Hello from DOCX"));
+        assert_eq!(method, "docx_to_markdown");
     }
 
     #[test]
@@ -894,15 +828,9 @@ mod tests {
             &buf.into_inner(),
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         );
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert!(content.contains("Cell Content"));
-                assert_eq!(method, "xlsx_to_csv");
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected success, got: {}", reason);
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert!(content.contains("Cell Content"));
+        assert_eq!(method, "xlsx_to_csv");
     }
 
     #[test]
@@ -935,15 +863,9 @@ mod tests {
             &buf.into_inner(),
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         );
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert!(content.contains("Slide Text"));
-                assert_eq!(method, "pptx_to_text");
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected success, got: {}", reason);
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert!(content.contains("Slide Text"));
+        assert_eq!(method, "pptx_to_text");
     }
 
     #[test]
@@ -972,15 +894,12 @@ startxref
 
         let result = extract_text(pdf, "application/pdf");
         // PDF text extraction may or may not succeed depending on lopdf
-        match result {
-            ExtractionResult::Text { method, .. } => {
-                assert_eq!(method, "pdf_text_extract");
-            }
-            ExtractionResult::NotSupported { reason } => {
-                // Acceptable if lopdf can't extract from this minimal PDF
-                assert!(reason.contains("PDF") || reason.contains("text"));
-            }
-        }
+        assert!(
+            matches!(&result, ExtractionResult::Text { method, .. } if *method == "pdf_text_extract")
+            || matches!(result, ExtractionResult::NotSupported { reason } if reason.contains("PDF") || reason.contains("text")),
+            "expected PDF text extract or not-supported error, got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -989,11 +908,8 @@ startxref
             b"not a zip",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         );
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("ZIP"));
-        } else {
-            panic!("Expected NotSupported");
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("ZIP"));
     }
 
     #[test]
@@ -1002,11 +918,8 @@ startxref
             b"not a zip",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         );
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("ZIP"));
-        } else {
-            panic!("Expected NotSupported");
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("ZIP"));
     }
 
     #[test]
@@ -1015,11 +928,8 @@ startxref
             b"not a zip",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         );
-        if let ExtractionResult::NotSupported { reason } = result {
-            assert!(reason.contains("ZIP"));
-        } else {
-            panic!("Expected NotSupported");
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("ZIP"));
     }
 
     #[test]
@@ -1031,19 +941,13 @@ Date: Mon, 1 Jan 2024 10:00:00 +0000
 
 Hi Bob, just checking in!";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                assert!(content.contains("Subject: Hello Bob"));
-                assert!(content.contains("From: Alice <alice@example.com>"));
-                assert!(content.contains("To: Bob <bob@example.com>"));
-                assert!(content.contains("Date:"));
-                assert!(content.contains("Hi Bob, just checking in!"));
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        assert!(content.contains("Subject: Hello Bob"));
+        assert!(content.contains("From: Alice <alice@example.com>"));
+        assert!(content.contains("To: Bob <bob@example.com>"));
+        assert!(content.contains("Date:"));
+        assert!(content.contains("Hi Bob, just checking in!"));
     }
 
     #[test]
@@ -1056,15 +960,9 @@ Date: Tue, 2 Jan 2024 12:00:00 +0000
 
 Meeting at 3pm.";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, .. } => {
-                assert!(content.contains("Cc: Charlie <charlie@example.com>"));
-                assert!(content.contains("Meeting at 3pm."));
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, _) = assert_text(result);
+        assert!(content.contains("Cc: Charlie <charlie@example.com>"));
+        assert!(content.contains("Meeting at 3pm."));
     }
 
     #[test]
@@ -1075,16 +973,10 @@ Subject: Multiple To
 
 Body text.";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, .. } => {
-                assert!(content.contains("one@example.com"));
-                assert!(content.contains("two@example.com"));
-                assert!(content.contains("Body text."));
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, _) = assert_text(result);
+        assert!(content.contains("one@example.com"));
+        assert!(content.contains("two@example.com"));
+        assert!(content.contains("Body text."));
     }
 
     #[test]
@@ -1094,16 +986,10 @@ To: bob@example.com
 
 Just a note.";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                assert!(!content.contains("Subject:"), "no Subject header expected");
-                assert!(content.contains("Just a note."));
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        assert!(!content.contains("Subject:"), "no Subject header expected");
+        assert!(content.contains("Just a note."));
     }
 
     #[test]
@@ -1116,17 +1002,11 @@ Content-Type: text/html; charset=utf-8
 
 <html><body><p>Hello <b>Bob</b>!</p></body></html>";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                assert!(content.contains("Subject: HTML Email"));
-                // Body should be extracted as plain text
-                assert!(content.contains("Hello Bob"));
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        assert!(content.contains("Subject: HTML Email"));
+        // Body should be extracted as plain text
+        assert!(content.contains("Hello Bob"));
     }
 
     #[test]
@@ -1137,14 +1017,8 @@ Subject: Empty
 
 ";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { method, .. } => {
-                assert_eq!(method, "rfc822_parse");
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (_, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
     }
 
     #[test]
@@ -1152,31 +1026,19 @@ Subject: Empty
         // Invalid UTF-8 bytes
         let bytes = b"\xff\xfe\x00\x01";
         let result = parse_rfc822_attachment(bytes);
-        match result {
-            ExtractionResult::NotSupported { reason } => {
-                assert!(
-                    reason.contains("UTF-8"),
-                    "expected UTF-8 error, got: {reason}"
-                );
-            }
-            ExtractionResult::Text { content, .. } => {
-                panic!("Expected NotSupported for invalid UTF-8, got: {content}");
-            }
-        }
+        let reason = assert_not_supported(result);
+        assert!(
+            reason.contains("UTF-8"),
+            "expected UTF-8 error, got: {reason}"
+        );
     }
 
     #[test]
     fn parse_rfc822_whitespace_only() {
         let result = parse_rfc822_attachment(b"   \n\n  ");
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_raw");
-                assert_eq!(content, "");
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected empty text, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_raw");
+        assert_eq!(content, "");
     }
 
     #[test]
@@ -1188,16 +1050,10 @@ Date: Wed, 3 Jan 2024 08:00:00 +0000
 
 Hello from RFC 822!";
         let result = extract_text(email, "message/rfc822");
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                assert!(content.contains("Subject: Via extract_text"));
-                assert!(content.contains("Hello from RFC 822!"));
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        assert!(content.contains("Subject: Via extract_text"));
+        assert!(content.contains("Hello from RFC 822!"));
     }
 
     #[test]
@@ -1208,16 +1064,10 @@ Subject: MIME Type Test
 
 MIME body.";
         let result = extract_text(email, "MESSAGE/RFC822");
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                assert!(content.contains("Subject: MIME Type Test"));
-                assert!(content.contains("MIME body."));
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        assert!(content.contains("Subject: MIME Type Test"));
+        assert!(content.contains("MIME body."));
     }
 
     #[test]
@@ -1226,16 +1076,10 @@ MIME body.";
 
 Minimal email body.";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                assert!(content.contains("From:"));
-                assert!(content.contains("Minimal email body."));
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        assert!(content.contains("From:"));
+        assert!(content.contains("Minimal email body."));
     }
 
     #[test]
@@ -1256,17 +1100,11 @@ Content-Type: text/html; charset=utf-8
 <html><body><p>HTML body</p></body></html>
 --boundary42--";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                assert!(content.contains("Subject: Multipart"));
-                assert!(content.contains("Plain text body."));
-                assert!(!content.contains("HTML body"));
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        assert!(content.contains("Subject: Multipart"));
+        assert!(content.contains("Plain text body."));
+        assert!(!content.contains("HTML body"));
     }
 
     #[test]
@@ -1282,18 +1120,12 @@ Content-Transfer-Encoding: base64
 SGVsbG8gZnJvbSBiYXNlNjQh
 ";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                assert!(
-                    content.contains("Hello from base64!"),
-                    "expected decoded body, got: {content}"
-                );
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        assert!(
+            content.contains("Hello from base64!"),
+            "expected decoded body, got: {content}"
+        );
     }
 
     #[test]
@@ -1305,50 +1137,32 @@ Date: Mon, 1 Jan 2024 10:00:00 +0000
 
 ";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                assert!(content.contains("Subject: No Body"));
-                let body_part = content.split("\n\n").nth(1).unwrap_or("");
-                assert!(
-                    body_part.is_empty() || body_part.trim().is_empty(),
-                    "expected no body content after headers, got: {body_part}"
-                );
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        assert!(content.contains("Subject: No Body"));
+        let body_part = content.split("\n\n").nth(1).unwrap_or("");
+        assert!(
+            body_part.is_empty() || body_part.trim().is_empty(),
+            "expected no body content after headers, got: {body_part}"
+        );
     }
 
     #[test]
     fn parse_rfc822_crlf_line_endings() {
         let email = b"From: alice@example.com\r\nTo: bob@example.com\r\nSubject: CRLF\r\n\r\nBody with CRLF.";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                assert!(content.contains("Subject: CRLF"));
-                assert!(content.contains("Body with CRLF."));
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        assert!(content.contains("Subject: CRLF"));
+        assert!(content.contains("Body with CRLF."));
     }
 
     #[test]
     fn parse_rfc822_invalid_utf8_via_extract_text() {
         let bytes = b"\xff\xfe\x00\x01";
         let result = extract_text(bytes, "message/rfc822");
-        match result {
-            ExtractionResult::NotSupported { reason } => {
-                assert!(reason.contains("UTF-8"));
-            }
-            ExtractionResult::Text { content, .. } => {
-                panic!("Expected NotSupported for invalid UTF-8, got: {content}");
-            }
-        }
+        let reason = assert_not_supported(result);
+        assert!(reason.contains("UTF-8"));
     }
 
     #[test]
@@ -1356,14 +1170,8 @@ Date: Mon, 1 Jan 2024 10:00:00 +0000
         // mail-parser is lenient — treats bare text as a body-only message
         let bytes = b"Just a bare body with no headers.";
         let result = parse_rfc822_attachment(bytes);
-        match result {
-            ExtractionResult::Text { method, .. } => {
-                assert_eq!(method, "rfc822_parse");
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (_, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
     }
 
     #[test]
@@ -1374,24 +1182,18 @@ Subject: Group Address
 
 Group body.";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                // Group addresses should be flattened to individual mailboxes
-                assert!(
-                    content.contains("Bob <bob@example.com>"),
-                    "expected Bob in group, got: {content}"
-                );
-                assert!(
-                    content.contains("Charlie <charlie@example.com>"),
-                    "expected Charlie in group, got: {content}"
-                );
-                assert!(content.contains("Group body."));
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        // Group addresses should be flattened to individual mailboxes
+        assert!(
+            content.contains("Bob <bob@example.com>"),
+            "expected Bob in group, got: {content}"
+        );
+        assert!(
+            content.contains("Charlie <charlie@example.com>"),
+            "expected Charlie in group, got: {content}"
+        );
+        assert!(content.contains("Group body."));
     }
 
     #[test]
@@ -1404,19 +1206,13 @@ Content-Type: text/plain; charset=utf-8
 
 Body.";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                // mail-parser decodes RFC 2047 encoded headers
-                assert!(
-                    content.contains("Subject:") || content.contains("="),
-                    "expected subject line, got: {content}"
-                );
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        // mail-parser decodes RFC 2047 encoded headers
+        assert!(
+            content.contains("Subject:") || content.contains("="),
+            "expected subject line, got: {content}"
+        );
     }
 
     #[test]
@@ -1430,33 +1226,21 @@ Content-Transfer-Encoding: quoted-printable
 
 Hello =E2=82=AC world!";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                // mail-parser should decode QP: =E2=82=AC is €
-                assert!(
-                    content.contains("Hello"),
-                    "expected decoded QP body, got: {content}"
-                );
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        // mail-parser should decode QP: =E2=82=AC is €
+        assert!(
+            content.contains("Hello"),
+            "expected decoded QP body, got: {content}"
+        );
     }
 
     #[test]
     fn parse_rfc822_empty_bytes_via_extract_text() {
         let result = extract_text(b"", "message/rfc822");
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_raw");
-                assert_eq!(content, "");
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected empty content, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_raw");
+        assert_eq!(content, "");
     }
 
     #[test]
@@ -1478,18 +1262,12 @@ Content-Disposition: attachment; filename=test.bin
 binary data here
 --boundary42--";
         let result = parse_rfc822_attachment(email);
-        match result {
-            ExtractionResult::Text { content, method } => {
-                assert_eq!(method, "rfc822_parse");
-                // body_text(0) gets the first text part in multipart/mixed
-                assert!(
-                    content.contains("This is the body text."),
-                    "expected body text, got: {content}"
-                );
-            }
-            ExtractionResult::NotSupported { reason } => {
-                panic!("Expected parsed RFC 822, got: {reason}");
-            }
-        }
+        let (content, method) = assert_text(result);
+        assert_eq!(method, "rfc822_parse");
+        // body_text(0) gets the first text part in multipart/mixed
+        assert!(
+            content.contains("This is the body text."),
+            "expected body text, got: {content}"
+        );
     }
 }

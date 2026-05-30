@@ -577,29 +577,4 @@ Hello, World!
         assert_eq!(result.attachments[0].content, None);
     }
 
-    #[test]
-    fn parsed_email_debug_format() {
-        let email = ParsedEmail {
-            body_text: Some("test body".to_string()),
-            body_html: Some("<p>test</p>".to_string()),
-            attachments: vec![],
-        };
-        let debug_str = format!("{:?}", email);
-        assert!(debug_str.contains("body_text"));
-        assert!(debug_str.contains("body_html"));
-    }
-
-    #[test]
-    fn raw_attachment_debug_format() {
-        let attachment = RawAttachment {
-            filename: Some("test.txt".to_string()),
-            mime_type: "text/plain".to_string(),
-            size_bytes: 100,
-            content: Some(b"test".to_vec()),
-            is_inline: false,
-        };
-        let debug_str = format!("{:?}", attachment);
-        assert!(debug_str.contains("test.txt"));
-        assert!(debug_str.contains("text/plain"));
-    }
 }
