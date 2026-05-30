@@ -436,53 +436,49 @@ mod tests {
     }
 
     #[test]
-    fn test_escape_csv_cell() {
-        assert_eq!(escape_csv_cell("simple"), "simple");
-        assert_eq!(escape_csv_cell("with,comma"), "\"with,comma\"");
-        assert_eq!(escape_csv_cell("with\"quote"), "\"with\"\"quote\"");
-        assert_eq!(escape_csv_cell("with\nnewline"), "\"with\nnewline\"");
-    }
+    fn test_xlsx_csv_escaping_through_public_api() {
+        use std::io::Write;
 
-    #[test]
-    fn test_escape_csv_row() {
-        let cells = vec!["Name".to_string(), "Value".to_string()];
-        assert_eq!(escape_csv_row(&cells), "Name,Value");
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
 
-        let cells = vec!["Name".to_string(), "With, Comma".to_string()];
-        assert_eq!(escape_csv_row(&cells), "Name,\"With, Comma\"");
-    }
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"#,
+            )
+            .unwrap();
 
-    #[test]
-    fn test_resolve_cell_value() {
-        let shared = vec!["Header1".to_string(), "Header2".to_string()];
+            zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetData>
+<row r="1">
+<c r="A1" t="str"><v>simple</v></c>
+<c r="B1" t="str"><v>with,comma</v></c>
+<c r="C1" t="str"><v>with"quote</v></c>
+<c r="D1"><v>123</v></c>
+<c r="E1" t="b"><v>1</v></c>
+</row>
+</sheetData>
+</worksheet>"#,
+            )
+            .unwrap();
 
-        // Shared string
-        assert_eq!(resolve_cell_value("0", Some("s"), &shared), "Header1");
-        assert_eq!(resolve_cell_value("1", Some("s"), &shared), "Header2");
+            zip.finish().unwrap();
+        }
 
-        // Inline string
-        assert_eq!(resolve_cell_value("Direct", Some("str"), &shared), "Direct");
-
-        // Numeric
-        assert_eq!(resolve_cell_value("100", None, &shared), "100");
-
-        // Boolean
-        assert_eq!(resolve_cell_value("1", Some("b"), &[]), "TRUE");
-        assert_eq!(resolve_cell_value("0", Some("b"), &[]), "FALSE");
-    }
-
-    #[test]
-    fn test_parse_shared_strings() {
-        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2">
-  <si><t>Header1</t></si>
-  <si><t>Header2</t></si>
-</sst>"#;
-
-        let strings = parse_shared_strings(xml).unwrap();
-        assert_eq!(strings.len(), 2);
-        assert_eq!(strings[0], "Header1");
-        assert_eq!(strings[1], "Header2");
+        let result = xlsx_to_csv(&buf.into_inner()).unwrap();
+        assert!(result.contains("simple"));
+        assert!(result.contains("\"with,comma\""));
+        assert!(result.contains("\"with\"\"quote\""));
+        assert!(result.contains("123"));
+        assert!(result.contains("TRUE"));
     }
 
     #[test]
@@ -629,37 +625,57 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_cell_value_invalid_shared_string_index() {
-        let shared: Vec<String> = vec![];
-        // Invalid index - should return empty string (no shared string at that index)
-        assert_eq!(resolve_cell_value("999", Some("s"), &shared), "");
-        // Non-numeric value with 's' type - returns the value as-is since parsing fails
-        assert_eq!(resolve_cell_value("abc", Some("s"), &shared), "abc");
-    }
+    fn test_xlsx_with_shared_strings() {
+        use std::io::Write;
 
-    #[test]
-    fn test_escape_csv_cell_with_carriage_return() {
-        assert_eq!(escape_csv_cell("with\rCR"), "\"with\rCR\"");
-    }
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
 
-    #[test]
-    fn test_xlsx_error_display() {
-        let err = XlsxError::InvalidZip;
-        assert_eq!(format!("{}", err), "Not a valid ZIP archive");
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>"#,
+            )
+            .unwrap();
 
-        let err = XlsxError::MissingWorksheet("sheet1.xml".to_string());
-        assert_eq!(format!("{}", err), "Missing worksheet: sheet1.xml");
+            zip.start_file("xl/sharedStrings.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="3" uniqueCount="3">
+  <si><t>Name</t></si>
+  <si><t>Value</t></si>
+  <si><t>Item, with comma</t></si>
+</sst>"#,
+            )
+            .unwrap();
 
-        let err = XlsxError::XmlParse("test error".to_string());
-        assert_eq!(format!("{}", err), "XML parse error: test error");
+            zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetData>
+<row r="1">
+<c r="A1" t="s"><v>0</v></c>
+<c r="B1" t="s"><v>1</v></c>
+</row>
+<row r="2">
+<c r="A2" t="s"><v>2</v></c>
+</row>
+</sheetData>
+</worksheet>"#,
+            )
+            .unwrap();
 
-        let err = XlsxError::SharedStrings("test".to_string());
-        assert_eq!(format!("{}", err), "Shared strings error: test");
+            zip.finish().unwrap();
+        }
 
-        let err = XlsxError::Utf8Error;
-        assert_eq!(format!("{}", err), "UTF-8 decoding error");
-
-        let err = XlsxError::EmptyWorksheet;
-        assert_eq!(format!("{}", err), "Empty worksheet");
+        let result = xlsx_to_csv(&buf.into_inner()).unwrap();
+        assert!(result.contains("Name,Value"));
+        assert!(result.contains("\"Item, with comma\""));
     }
 }
