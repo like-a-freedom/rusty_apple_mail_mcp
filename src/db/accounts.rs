@@ -71,3 +71,47 @@ fn mailbox_scheme(mailbox_url: &str) -> Option<String> {
         .find("://")
         .map(|index| mailbox_url[..index].to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mailbox_account_id_parses_standard_url() {
+        assert_eq!(
+            mailbox_account_id("ews://work.example.com/INBOX"),
+            Some("ews://work.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn mailbox_account_id_returns_none_without_scheme() {
+        assert_eq!(mailbox_account_id("just-a-string"), None);
+    }
+
+    #[test]
+    fn mailbox_account_id_returns_none_without_slash_after_host() {
+        assert_eq!(mailbox_account_id("ews://nopath"), None);
+    }
+
+    #[test]
+    fn mailbox_account_id_handles_imap_url() {
+        assert_eq!(
+            mailbox_account_id("imap://personal.example.com/INBOX"),
+            Some("imap://personal.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn mailbox_scheme_returns_scheme_for_valid_url() {
+        assert_eq!(
+            mailbox_scheme("ews://work/INBOX"),
+            Some("ews".to_string())
+        );
+    }
+
+    #[test]
+    fn mailbox_scheme_returns_none_without_scheme() {
+        assert_eq!(mailbox_scheme("no-scheme"), None);
+    }
+}
