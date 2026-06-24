@@ -2,6 +2,38 @@ use crate::error::MailMcpError;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
+/// Percent-encode a filesystem path for use in a `file:` URI.
+///
+/// Encodes characters that are not safe in URI paths per RFC 3986.
+/// The space character (` ` → `%20`) is the most common case in Apple Mail
+/// paths (e.g., `Envelope Index`).
+fn percent_encode_path(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    let mut result = String::with_capacity(s.len() * 3);
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~'
+            | b'/'
+            | b':' => result.push(byte as char),
+            b' ' => result.push_str("%20"),
+            _ => result.push_str(&format!("{:02X}", byte)),
+        }
+    }
+    result
+}
+
+/// Determine whether a SQLite error indicates a locked/busy database.
+fn is_locked_error(e: &rusqlite::Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("locked") || msg.contains("busy")
+}
+
 /// Open the Envelope Index database in read-only mode.
 ///
 /// Uses `SQLite` URI to prevent any accidental writes.
@@ -20,7 +52,7 @@ pub fn open_readonly(path: impl AsRef<Path>) -> Result<Connection, MailMcpError>
             path: path.to_owned(),
         });
     }
-    let uri = format!("file:{}?mode=ro", path.to_string_lossy());
+    let uri = format!("file:{}?mode=ro", percent_encode_path(path));
     Connection::open_with_flags(
         &uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -28,7 +60,7 @@ pub fn open_readonly(path: impl AsRef<Path>) -> Result<Connection, MailMcpError>
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| {
-        if e.to_string().contains("locked") {
+        if is_locked_error(&e) {
             MailMcpError::DatabaseLocked(e.to_string())
         } else {
             MailMcpError::Sqlite(e)
@@ -157,6 +189,37 @@ mod tests {
         // Open with path containing unicode - should not panic
         let result = open_readonly(&db_path);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn percent_encode_path_encodes_spaces() {
+        let path = std::path::PathBuf::from("/Users/test/Library/Mail/V10/MailData/Envelope Index");
+        assert_eq!(
+            percent_encode_path(&path),
+            "/Users/test/Library/Mail/V10/MailData/Envelope%20Index"
+        );
+    }
+
+    #[test]
+    fn percent_encode_path_preserves_safe_characters() {
+        let path = std::path::PathBuf::from("/Users/test/Mail/V10/db.sqlite");
+        assert_eq!(percent_encode_path(&path), "/Users/test/Mail/V10/db.sqlite");
+    }
+
+    #[test]
+    fn open_valid_sqlite_with_space_in_path() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_dir = temp_dir.path().join("Mail Data");
+        fs::create_dir_all(&db_dir).expect("create dir");
+        let db_path = db_dir.join("Envelope Index");
+
+        let conn = Connection::open(&db_path).expect("create db");
+        conn.execute("CREATE TABLE test (id INTEGER)", [])
+            .expect("create table");
+        drop(conn);
+
+        let result = open_readonly(&db_path);
+        assert!(result.is_ok(), "should open db with space in path");
     }
 
     #[test]

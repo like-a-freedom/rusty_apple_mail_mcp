@@ -6,7 +6,9 @@ use thiserror::Error;
 #[allow(dead_code)]
 pub enum MailMcpError {
     #[error(
-        "Envelope Index database not found at: {path}. Check mail_directory and mail_version config."
+        "Envelope Index database not found at: {path}. \
+         Ensure Apple Mail is configured with at least one email account, \
+         or set APPLE_MAIL_DIR and APPLE_MAIL_VERSION to the correct path."
     )]
     DatabaseNotFound { path: PathBuf },
 
