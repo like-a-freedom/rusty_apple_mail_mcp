@@ -12,15 +12,9 @@ fn percent_encode_path(path: &Path) -> String {
     let mut result = String::with_capacity(s.len() * 3);
     for byte in s.bytes() {
         match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'~'
-            | b'/'
-            | b':' => result.push(byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' | b':' => {
+                result.push(byte as char)
+            }
             b' ' => result.push_str("%20"),
             _ => result.push_str(&format!("{:02X}", byte)),
         }
