@@ -47,6 +47,18 @@ The current tool set is intentionally compact:
 - Apple Mail installed and synced at least once
 - Rust toolchain (`rustup`, `cargo`)
 
+> **Note — macOS Full Disk Access required**
+>
+> Apple Mail's data directory (`~/Library/Mail`) is protected by macOS TCC (Transparency, Consent, and Control). The MCP server process **must** have Full Disk Access to read the Envelope Index database.
+>
+> Grant Full Disk Access to the application that runs the MCP server:
+>
+> 1. Open **System Settings → Privacy & Security → Full Disk Access**
+> 2. Click **+** and add the application (e.g., your terminal emulator, VS Code, Zed, Cursor)
+> 3. Ensure the toggle is enabled
+>
+> Without this, the server will fail with `SQLite error: unable to open database file` even though the file exists.
+
 ### Build from source
 
 ```bash
