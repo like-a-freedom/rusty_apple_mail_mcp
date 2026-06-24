@@ -20,12 +20,7 @@ pub fn list_accounts(config: &MailConfig, include_mailboxes: bool) -> Result<(),
 }
 
 /// Execute list_mailboxes command.
-pub fn list_mailboxes(
-    config: &MailConfig,
-    _account_filter: Option<String>,
-) -> Result<(), MailMcpError> {
-    // For list_mailboxes, we just call without filtering at the CLI level
-    // The config already handles account filtering
+pub fn list_mailboxes(config: &MailConfig) -> Result<(), MailMcpError> {
     let result = server_list_mailboxes(config)?;
     serde_json::to_writer_pretty(std::io::stdout(), &result)?;
     Ok(())
