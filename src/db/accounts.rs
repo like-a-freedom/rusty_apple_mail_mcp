@@ -104,10 +104,7 @@ mod tests {
 
     #[test]
     fn mailbox_scheme_returns_scheme_for_valid_url() {
-        assert_eq!(
-            mailbox_scheme("ews://work/INBOX"),
-            Some("ews".to_string())
-        );
+        assert_eq!(mailbox_scheme("ews://work/INBOX"), Some("ews".to_string()));
     }
 
     #[test]

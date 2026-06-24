@@ -159,5 +159,3 @@ mod tests {
         assert_invalid_params(err, "limit must be between 1 and 100");
     }
 }
-
-
