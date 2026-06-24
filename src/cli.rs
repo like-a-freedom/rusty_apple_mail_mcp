@@ -51,11 +51,7 @@ pub struct ListAccountsArgs {
 
 /// Arguments for list_mailboxes command.
 #[derive(Debug, Parser)]
-pub struct ListMailboxesArgs {
-    /// Filter by account identifier
-    #[arg(long)]
-    pub account: Option<String>,
-}
+pub struct ListMailboxesArgs {}
 
 /// Arguments for search_messages command.
 #[derive(Debug, Parser)]
