@@ -80,7 +80,12 @@ mod tests {
         let result = pdf_to_text(pdf.to_vec().as_slice());
         // Should handle gracefully - either parse or return appropriate error
         assert!(
-            matches!(result, Err(PdfError::PdfParse(_)) | Err(PdfError::EmptyDocument) | Err(PdfError::NoTextLayer)),
+            matches!(
+                result,
+                Err(PdfError::PdfParse(_))
+                    | Err(PdfError::EmptyDocument)
+                    | Err(PdfError::NoTextLayer)
+            ),
             "expected PDF parse/empty/no-text error, got: {:?}",
             result
         );
@@ -133,7 +138,12 @@ startxref
         // May return NoTextLayer or empty text depending on lopdf behavior
         assert!(
             matches!(&result, Ok(text) if text.is_empty())
-            || matches!(result, Err(PdfError::NoTextLayer) | Err(PdfError::PdfParse(_)) | Err(PdfError::EmptyDocument)),
+                || matches!(
+                    result,
+                    Err(PdfError::NoTextLayer)
+                        | Err(PdfError::PdfParse(_))
+                        | Err(PdfError::EmptyDocument)
+                ),
             "expected empty/error for PDF without text, got: {:?}",
             result
         );
@@ -169,7 +179,13 @@ startxref
         let result = pdf_to_text(pdf.to_vec().as_slice());
         // Minimal PDF may not have extractable text — accept any graceful outcome
         assert!(
-            matches!(result, Ok(_) | Err(PdfError::NoTextLayer) | Err(PdfError::PdfParse(_)) | Err(PdfError::EmptyDocument)),
+            matches!(
+                result,
+                Ok(_)
+                    | Err(PdfError::NoTextLayer)
+                    | Err(PdfError::PdfParse(_))
+                    | Err(PdfError::EmptyDocument)
+            ),
             "expected Ok or PDF error, got: {:?}",
             result
         );
@@ -202,7 +218,12 @@ startxref
         // May fail due to invalid xref or succeed with no text
         assert!(
             matches!(&result, Ok(text) if text.is_empty())
-            || matches!(result, Err(PdfError::PdfParse(_)) | Err(PdfError::NoTextLayer) | Err(PdfError::EmptyDocument)),
+                || matches!(
+                    result,
+                    Err(PdfError::PdfParse(_))
+                        | Err(PdfError::NoTextLayer)
+                        | Err(PdfError::EmptyDocument)
+                ),
             "expected empty text or PDF error, got: {:?}",
             result
         );
@@ -251,10 +272,14 @@ startxref
         let result = pdf_to_text(pdf);
         assert!(
             matches!(&result, Ok(text) if text.is_empty())
-            || matches!(result, Err(PdfError::NoTextLayer) | Err(PdfError::EmptyDocument) | Err(PdfError::PdfParse(_))),
+                || matches!(
+                    result,
+                    Err(PdfError::NoTextLayer)
+                        | Err(PdfError::EmptyDocument)
+                        | Err(PdfError::PdfParse(_))
+                ),
             "expected empty text or PDF error from multi-page PDF, got: {:?}",
             result
         );
     }
-
 }

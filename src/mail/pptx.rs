@@ -374,7 +374,7 @@ mod tests {
         let result = pptx_to_text(&buf.into_inner());
         assert!(
             matches!(&result, Ok(text) if text.contains("Slide 1:"))
-            || matches!(result, Err(PptxError::EmptyDocument)),
+                || matches!(result, Err(PptxError::EmptyDocument)),
             "expected Ok with slide content or EmptyDocument, got: {:?}",
             result
         );
@@ -404,5 +404,4 @@ mod tests {
         // Should fail because slide1.xml is missing
         assert!(matches!(result, Err(PptxError::MissingSlide(_))));
     }
-
 }
