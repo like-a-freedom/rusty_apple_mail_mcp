@@ -576,9 +576,7 @@ mod tests {
         let bytes = b"<p>Hello &nbsp; world &amp; more &lt;test&gt; &quot;quote&quot;</p>";
         let result = extract_text(bytes, "text/html");
         let (content, _) = assert_text(result);
-        assert!(
-            content.contains("Hello") && content.contains("world") && content.contains("test")
-        );
+        assert!(content.contains("Hello") && content.contains("world") && content.contains("test"));
     }
 
     #[test]
@@ -896,7 +894,7 @@ startxref
         // PDF text extraction may or may not succeed depending on lopdf
         assert!(
             matches!(&result, ExtractionResult::Text { method, .. } if *method == "pdf_text_extract")
-            || matches!(result, ExtractionResult::NotSupported { reason } if reason.contains("PDF") || reason.contains("text")),
+                || matches!(result, ExtractionResult::NotSupported { reason } if reason.contains("PDF") || reason.contains("text")),
             "expected PDF text extract or not-supported error, got: {:?}",
             result
         );

@@ -157,8 +157,12 @@ pub fn mailbox_index_lookup_by_stem(path: &PathBuf, stem: &str) -> Option<PathBu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use once_cell::sync::Lazy;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    static CACHE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     fn index_with_entry(path: PathBuf, header: &str, stem: &str) -> MailboxIndex {
         let mut index = MailboxIndex::default();
@@ -169,6 +173,7 @@ mod tests {
 
     #[test]
     fn path_cache_roundtrip() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("123.emlx");
         std::fs::write(&file_path, b"content").unwrap();
@@ -184,6 +189,7 @@ mod tests {
 
     #[test]
     fn path_cache_returns_none_for_stale_entry() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("stale.emlx");
         let key = CacheKey {
@@ -198,6 +204,7 @@ mod tests {
 
     #[test]
     fn header_cache_roundtrip() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let path = PathBuf::from("/tmp/test.emlx");
         assert!(header_cache_get(&path).is_none());
         header_cache_insert(path.clone(), Some("<msg@id>".to_string()));
@@ -206,6 +213,7 @@ mod tests {
 
     #[test]
     fn header_cache_stores_none_for_headerless() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let path = PathBuf::from("/tmp/noheader.emlx");
         header_cache_insert(path.clone(), None);
         assert_eq!(header_cache_get(&path), Some(None));
@@ -213,6 +221,7 @@ mod tests {
 
     #[test]
     fn mailbox_index_cache_contains_true_after_insert() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let key = PathBuf::from("/mail");
         assert!(!mailbox_index_cache_contains(&key));
         mailbox_index_cache_insert(key.clone(), MailboxIndex::default());
@@ -221,13 +230,18 @@ mod tests {
 
     #[test]
     fn mailbox_index_cache_get_mut_and_drop_writes_back() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let key = PathBuf::from("/mail/mut");
         let mut index = MailboxIndex::default();
-        index.by_stem.insert("1".to_string(), PathBuf::from("/tmp/1.emlx"));
+        index
+            .by_stem
+            .insert("1".to_string(), PathBuf::from("/tmp/1.emlx"));
         mailbox_index_cache_insert(key.clone(), index);
 
         let mut guard = mailbox_index_cache_get_mut(&key).unwrap();
-        guard.by_stem.insert("2".to_string(), PathBuf::from("/tmp/2.emlx"));
+        guard
+            .by_stem
+            .insert("2".to_string(), PathBuf::from("/tmp/2.emlx"));
         drop(guard);
 
         let retrieved = mailbox_index_cache_get_raw(&key).unwrap();
@@ -237,11 +251,13 @@ mod tests {
 
     #[test]
     fn mailbox_index_cache_get_mut_returns_none_for_missing() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         assert!(mailbox_index_cache_get_mut(&PathBuf::from("/nonexistent")).is_none());
     }
 
     #[test]
     fn mailbox_index_cache_insert_raw_delegates() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let key = PathBuf::from("/raw");
         mailbox_index_cache_insert_raw(key.clone(), MailboxIndex::default());
         assert!(mailbox_index_cache_contains(&key));
@@ -249,15 +265,25 @@ mod tests {
 
     #[test]
     fn mailbox_index_cache_get_raw_roundtrip() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let key = PathBuf::from("/getraw");
         let mut index = MailboxIndex::default();
-        index.by_header.insert("<h>".to_string(), PathBuf::from("/h.emlx"));
+        index
+            .by_header
+            .insert("<h>".to_string(), PathBuf::from("/h.emlx"));
         mailbox_index_cache_insert(key.clone(), index.clone());
-        assert_eq!(mailbox_index_cache_get_raw(&key).unwrap().by_header.get("<h>"), Some(&PathBuf::from("/h.emlx")));
+        assert_eq!(
+            mailbox_index_cache_get_raw(&key)
+                .unwrap()
+                .by_header
+                .get("<h>"),
+            Some(&PathBuf::from("/h.emlx"))
+        );
     }
 
     #[test]
     fn mailbox_index_lookup_by_header_found_when_path_exists() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let file = temp.path().join("header_test.emlx");
         std::fs::write(&file, b"h").unwrap();
@@ -272,6 +298,7 @@ mod tests {
 
     #[test]
     fn mailbox_index_lookup_by_header_returns_none_when_path_missing() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let file = temp.path().join("ghost.emlx");
 
@@ -285,12 +312,14 @@ mod tests {
 
     #[test]
     fn mailbox_index_lookup_by_header_returns_none_for_missing_key() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let result = mailbox_index_lookup_by_header(&PathBuf::from("/missing"), "<any>");
         assert!(result.is_none());
     }
 
     #[test]
     fn mailbox_index_lookup_by_stem_found_when_path_exists() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let file = temp.path().join("456.emlx");
         std::fs::write(&file, b"s").unwrap();
@@ -305,6 +334,7 @@ mod tests {
 
     #[test]
     fn mailbox_index_lookup_by_stem_returns_none_when_path_missing() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let file = temp.path().join("ghost_stem.emlx");
 
@@ -318,12 +348,14 @@ mod tests {
 
     #[test]
     fn mailbox_index_lookup_by_stem_returns_none_for_missing_key() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let result = mailbox_index_lookup_by_stem(&PathBuf::from("/missing"), "789");
         assert!(result.is_none());
     }
 
     #[test]
     fn clear_all_caches_clears_everything() {
+        let _guard = CACHE_LOCK.lock().unwrap();
         let key = PathBuf::from("/clear");
         mailbox_index_cache_insert(key.clone(), MailboxIndex::default());
         assert!(mailbox_index_cache_contains(&key));

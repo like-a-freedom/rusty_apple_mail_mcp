@@ -576,5 +576,4 @@ Hello, World!
         assert_eq!(result.attachments[0].size_bytes, 17);
         assert_eq!(result.attachments[0].content, None);
     }
-
 }
