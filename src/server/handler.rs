@@ -39,6 +39,27 @@ impl MailMcpServer {
     ///
     /// Returns [`MailMcpError::Config`] if validation fails.
     pub fn new(config: MailConfig) -> Result<Self, MailMcpError> {
+        let db_path = config.envelope_db_path();
+        if !config.mail_directory.exists() {
+            tracing::warn!(
+                "mail_directory does not exist: {}",
+                config.mail_directory.display()
+            );
+        } else if std::fs::read_dir(&config.mail_directory)
+            .map(|mut i| i.next().is_none())
+            .unwrap_or(false)
+        {
+            tracing::warn!(
+                "mail_directory is empty: {}. Apple Mail may not be configured.",
+                config.mail_directory.display()
+            );
+        }
+        if !db_path.exists() {
+            tracing::warn!(
+                "Envelope Index not found at: {}. Trying to continue...",
+                db_path.display()
+            );
+        }
         config.validate()?;
         Ok(Self {
             config: Arc::new(config),
