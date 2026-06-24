@@ -76,3 +76,93 @@ fn build_config(cli: &Cli) -> Result<MailConfig, MailMcpError> {
         account: cli.account.clone(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::Cli;
+    use crate::error::MailMcpError;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn create_db_for_version(base: &Path, version: &str) {
+        let db_dir = base.join(version).join("MailData");
+        std::fs::create_dir_all(&db_dir).expect("mail data dir");
+        std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder")
+            .expect("db placeholder");
+    }
+
+    #[test]
+    fn build_config_uses_cli_mail_directory() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mail_directory = temp_dir.path().to_path_buf();
+        create_db_for_version(&mail_directory, "V9");
+        let cli = Cli::parse_from([
+            "test",
+            "--mail-directory",
+            mail_directory.to_str().unwrap(),
+            "--mail-version",
+            "V9",
+        ]);
+
+        let config = build_config(&cli).expect("config should build");
+        assert_eq!(config.mail_directory, mail_directory);
+        assert_eq!(config.mail_version, "V9");
+    }
+
+    #[test]
+    fn build_config_uses_cli_mail_version() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mail_directory = temp_dir.path().to_path_buf();
+        create_db_for_version(&mail_directory, "V8");
+        let cli = Cli::parse_from([
+            "test",
+            "--mail-directory",
+            mail_directory.to_str().unwrap(),
+            "--mail-version",
+            "V8",
+        ]);
+        let config = build_config(&cli).expect("config should build");
+        assert_eq!(config.mail_version, "V8");
+    }
+
+    #[test]
+    fn build_config_works_with_directory_only() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mail_directory = temp_dir.path().to_path_buf();
+        create_db_for_version(&mail_directory, "V10");
+        let cli = Cli::parse_from([
+            "test",
+            "--mail-directory",
+            mail_directory.to_str().unwrap(),
+            "--mail-version",
+            "V10",
+        ]);
+        let config = build_config(&cli).expect("config should build");
+        assert_eq!(config.mail_directory, mail_directory);
+        assert_eq!(config.allowed_account_ids(), None);
+    }
+
+    #[test]
+    fn build_config_fails_on_invalid_mail_directory() {
+        let cli = Cli::parse_from(["test", "--mail-directory", "/nonexistent"]);
+        let err = build_config(&cli).expect_err("should fail on missing directory");
+        assert!(matches!(err, MailMcpError::DatabaseNotFound { .. }));
+    }
+
+    #[test]
+    fn build_config_fails_on_empty_mail_version() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mail_directory = temp_dir.path().to_path_buf();
+        create_db_for_version(&mail_directory, "V10");
+        let cli = Cli::parse_from([
+            "test",
+            "--mail-directory",
+            mail_directory.to_str().unwrap(),
+            "--mail-version",
+            "",
+        ]);
+        let err = build_config(&cli).expect_err("empty mail version should fail");
+        assert!(matches!(err, MailMcpError::Config(_)));
+    }
+}
