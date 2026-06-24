@@ -41,8 +41,8 @@ pub async fn run() -> Result<()> {
         Some(Command::ListAccounts(args)) => {
             crate::cli::commands::list_accounts(&config, args.include_mailboxes)?;
         }
-        Some(Command::ListMailboxes(args)) => {
-            crate::cli::commands::list_mailboxes(&config, args.account)?;
+        Some(Command::ListMailboxes(_args)) => {
+            crate::cli::commands::list_mailboxes(&config)?;
         }
         Some(Command::Search(args)) => {
             crate::cli::commands::search_messages(&config, args)?;
