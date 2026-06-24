@@ -28,6 +28,29 @@ pub fn list_mailboxes(config: &MailConfig) -> Result<(), MailMcpError> {
 
 /// Execute search_messages command.
 pub fn search_messages(config: &MailConfig, args: super::SearchArgs) -> Result<(), MailMcpError> {
+    let has_any_filter = args.subject_query.is_some()
+        || args.date_from.is_some()
+        || args.date_to.is_some()
+        || args.sender.is_some()
+        || args.participant.is_some()
+        || args.account.is_some()
+        || args.mailbox.is_some();
+
+    if !has_any_filter {
+        return Err(MailMcpError::Validation(
+            "At least one filter must be provided: --subject-query, --date-from, --date-to, \
+             --sender, --participant, --account, or --mailbox."
+                .to_string(),
+        ));
+    }
+
+    if args.limit > 100 {
+        return Err(MailMcpError::Validation(format!(
+            "limit must be between 1 and 100, got {}",
+            args.limit
+        )));
+    }
+
     let params = SearchMessagesParams {
         subject_query: args.subject_query,
         date_from: args.date_from,
@@ -36,7 +59,7 @@ pub fn search_messages(config: &MailConfig, args: super::SearchArgs) -> Result<(
         participant: args.participant,
         account: args.account,
         mailbox: args.mailbox,
-        limit: args.limit.clamp(1, 100),
+        limit: args.limit,
         offset: args.offset,
         include_body_preview: args.include_body_preview,
     };
@@ -76,4 +99,64 @@ pub fn get_attachment(
     let result = server_get_attachment(config, params)?;
     serde_json::to_writer_pretty(std::io::stdout(), &result)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_validation_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn dummy_config() -> (TempDir, MailConfig) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mail_directory = temp_dir.path().to_path_buf();
+        let db_dir = mail_directory.join("V10").join("MailData");
+        std::fs::create_dir_all(&db_dir).expect("mail data dir");
+        std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
+        let config = MailConfig::from_parts_with_accounts(
+            mail_directory,
+            "V10".to_string(),
+            None,
+            std::collections::HashMap::new(),
+        )
+        .expect("valid dummy config");
+        (temp_dir, config)
+    }
+
+    #[test]
+    fn search_rejects_no_filters() {
+        let (_temp, config) = dummy_config();
+        let args = super::super::SearchArgs {
+            subject_query: None,
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            offset: 0,
+            include_body_preview: false,
+        };
+        let err = search_messages(&config, args).unwrap_err();
+        assert!(err.to_string().contains("At least one filter"));
+    }
+
+    #[test]
+    fn search_rejects_limit_over_100() {
+        let (_temp, config) = dummy_config();
+        let args = super::super::SearchArgs {
+            subject_query: Some("test".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 101,
+            offset: 0,
+            include_body_preview: false,
+        };
+        let err = search_messages(&config, args).unwrap_err();
+        assert!(err.to_string().contains("limit must be between 1 and 100"));
+    }
 }
