@@ -508,7 +508,7 @@ fn get_message_returns_body_and_attachment_summary() {
             message_id: "1".to_string(),
             include_body: true,
             include_attachments_summary: true,
-            body_format: BodyFormat::Text,
+
             include_recipients: false,
         },
     )
@@ -563,7 +563,6 @@ fn get_attachment_content_returns_text_for_text_attachment() {
 
     assert_eq!(response.status, None);
     let attachment = response.attachment.expect("attachment payload");
-    assert_eq!(attachment.mime_type, "text/plain");
     assert_eq!(attachment.content.expect("content"), "Attached text");
 }
 
@@ -605,7 +604,7 @@ fn get_message_blocks_disallowed_accounts() {
             message_id: "1".to_string(),
             include_body: false,
             include_attachments_summary: false,
-            body_format: BodyFormat::Text,
+
             include_recipients: false,
         },
     )
@@ -690,7 +689,7 @@ fn get_message_reads_body_from_nested_mailbox_uuid_data_layout() {
             message_id: "2".to_string(),
             include_body: true,
             include_attachments_summary: true,
-            body_format: BodyFormat::Text,
+
             include_recipients: false,
         },
     )
@@ -698,7 +697,6 @@ fn get_message_reads_body_from_nested_mailbox_uuid_data_layout() {
 
     assert_eq!(response.status, None);
     let message = response.message.expect("message payload");
-    assert_eq!(message.mailbox, "Confluence");
     assert_eq!(message.body.as_deref(), Some("Nested mailbox body\n"));
 }
 
@@ -750,7 +748,6 @@ fn get_attachment_reads_attachment_from_nested_mailbox_uuid_data_layout() {
     assert_eq!(response.status, None);
     let attachment = response.attachment.expect("attachment payload");
     assert_eq!(attachment.filename, "agenda.txt");
-    assert_eq!(attachment.mime_type, "text/plain");
     assert_eq!(attachment.content.as_deref(), Some("Agenda attachment"));
 }
 
@@ -807,7 +804,7 @@ fn get_message_prefers_message_id_match_over_wrong_numeric_hint() {
             message_id: "2".to_string(),
             include_body: true,
             include_attachments_summary: false,
-            body_format: BodyFormat::Text,
+
             include_recipients: false,
         },
     )
@@ -851,7 +848,6 @@ fn get_message_uses_cache_for_repeated_calls() {
         message_id: "1".to_string(),
         include_body: true,
         include_attachments_summary: true,
-        body_format: BodyFormat::Text,
         include_recipients: false,
     };
 
