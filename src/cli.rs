@@ -100,9 +100,6 @@ pub struct GetMessageArgs {
     /// Include attachment list (default: true)
     #[arg(long, default_value = "true")]
     pub include_attachments_summary: bool,
-    /// Body format: text, html, or both (default: text)
-    #[arg(long, default_value = "text")]
-    pub body_format: String,
     /// Include To/CC recipients (default: false)
     #[arg(long, default_value = "false")]
     pub include_recipients: bool,

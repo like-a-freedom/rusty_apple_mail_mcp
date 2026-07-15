@@ -42,9 +42,6 @@ pub struct GetMessageParams {
     /// Include attachment list (default true)
     #[serde(default = "default_true")]
     pub include_attachments_summary: bool,
-    /// Body format: "text", "html", or "both"
-    #[serde(default)]
-    pub body_format: BodyFormat,
     /// Include To/CC recipients lists (default false).
     /// Enable when you need to check who received the message.
     #[serde(default)]
@@ -53,16 +50,6 @@ pub struct GetMessageParams {
 
 fn default_true() -> bool {
     true
-}
-
-/// Body format option.
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum BodyFormat {
-    #[default]
-    Text,
-    Html,
-    Both,
 }
 
 /// Response for `get_message` tool.
@@ -129,10 +116,7 @@ pub struct GetMessageResult {
     pub cc: Vec<String>,
     pub date_sent: Option<String>,
     pub date_received: Option<String>,
-    pub mailbox: String,
     pub body: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub body_html: Option<String>,
     pub attachments: Vec<AttachmentMeta>,
 }
 
@@ -181,11 +165,6 @@ pub fn get_message_with_conn(
 
     let recipients = get_recipients(conn, message_id)?;
     let db_elapsed = db_started.elapsed();
-    let mailbox = row
-        .mailbox_url
-        .as_deref()
-        .map(crate::domain::extract_mailbox_name)
-        .unwrap_or_else(|| "Unknown".to_string());
 
     let mut to = Vec::new();
     let mut cc = Vec::new();
@@ -218,9 +197,7 @@ pub fn get_message_with_conn(
         date_received: row
             .date_received
             .map(|ts| crate::domain::timestamp_to_iso(ts, epoch_offset_s)),
-        mailbox,
         body: None,
-        body_html: None,
         attachments: Vec::new(),
     };
 
@@ -273,17 +250,12 @@ pub fn get_message_with_conn(
             };
 
             if params.include_body {
-                result.body = match params.body_format {
-                    BodyFormat::Text => body_text
-                        .or_else(|| body_html.as_deref().map(crate::mail::html_to_plain_text)),
-                    BodyFormat::Html => body_html.clone(),
-                    BodyFormat::Both => {
-                        let text = body_text
-                            .or_else(|| body_html.as_deref().map(crate::mail::html_to_plain_text));
-                        result.body_html = body_html;
-                        text
-                    }
-                };
+                result.body = body_text
+                    .or_else(|| body_html.as_deref().map(crate::mail::html_to_markdown))
+                    .map(|text| {
+                        let stripped = crate::mail::strip_quoted_replies(&text);
+                        stripped.to_string()
+                    });
             }
 
             if params.include_attachments_summary {
@@ -413,7 +385,7 @@ mod tests {
             message_id: "invalid".to_string(),
             include_body: false,
             include_attachments_summary: false,
-            body_format: BodyFormat::Text,
+
             include_recipients: false,
         };
 
@@ -432,7 +404,7 @@ mod tests {
             message_id: "999".to_string(),
             include_body: false,
             include_attachments_summary: false,
-            body_format: BodyFormat::Text,
+
             include_recipients: false,
         };
 
@@ -451,7 +423,7 @@ mod tests {
             message_id: "1".to_string(),
             include_body: false,
             include_attachments_summary: false,
-            body_format: BodyFormat::Text,
+
             include_recipients: false,
         };
 
@@ -470,7 +442,7 @@ mod tests {
             message_id: "1".to_string(),
             include_body: false,
             include_attachments_summary: false,
-            body_format: BodyFormat::Text,
+
             include_recipients: false,
         };
 
@@ -510,7 +482,7 @@ mod tests {
             message_id: "1".to_string(),
             include_body: false,
             include_attachments_summary: false,
-            body_format: BodyFormat::Text,
+
             include_recipients: true,
         };
 
@@ -552,7 +524,7 @@ mod tests {
             message_id: "1".to_string(),
             include_body: true,
             include_attachments_summary: false,
-            body_format: BodyFormat::Text,
+
             include_recipients: false,
         };
 
@@ -563,100 +535,6 @@ mod tests {
         let msg = response.message.unwrap();
         assert!(msg.body.is_some());
         assert!(msg.body.unwrap().contains("Hello, World!"));
-    }
-
-    #[test]
-    fn get_message_with_conn_body_format_html() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
-        let config = make_test_config(&temp_dir, None);
-
-        // Create a fake .emlx file with HTML body
-        let mail_dir = temp_dir
-            .path()
-            .join("V10")
-            .join("account-a")
-            .join("INBOX.mbox")
-            .join("Messages");
-        fs::create_dir_all(&mail_dir).unwrap();
-        let emlx_path = mail_dir.join("1.emlx");
-        let email_content = concat!(
-            "From: sender@example.com\n",
-            "To: recipient@example.com\n",
-            "Subject: Test Subject\n",
-            "Content-Type: text/html; charset=utf-8\n",
-            "\n",
-            "<html><body><p>Hello HTML!</p></body></html>\n"
-        );
-        let emlx_content = format!("{}\n{}", email_content.len(), email_content);
-        fs::write(&emlx_path, emlx_content).unwrap();
-
-        let params = GetMessageParams {
-            message_id: "1".to_string(),
-            include_body: true,
-            include_attachments_summary: false,
-            body_format: BodyFormat::Html,
-            include_recipients: false,
-        };
-
-        let response = get_message_with_conn(&config, &conn, params).unwrap();
-
-        assert_eq!(response.status, None);
-        let msg = response.message.unwrap();
-        assert!(msg.body.is_some());
-        assert!(msg.body.unwrap().contains("<html>"));
-    }
-
-    #[test]
-    fn get_message_with_conn_body_format_both() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
-        let config = make_test_config(&temp_dir, None);
-
-        // Create a fake .emlx file with both text and HTML
-        let mail_dir = temp_dir
-            .path()
-            .join("V10")
-            .join("account-a")
-            .join("INBOX.mbox")
-            .join("Messages");
-        fs::create_dir_all(&mail_dir).unwrap();
-        let emlx_path = mail_dir.join("1.emlx");
-        let email_content = concat!(
-            "From: sender@example.com\n",
-            "To: recipient@example.com\n",
-            "Subject: Test Subject\n",
-            "MIME-Version: 1.0\n",
-            "Content-Type: multipart/alternative; boundary=\"boundary\"\n",
-            "\n",
-            "--boundary\n",
-            "Content-Type: text/plain; charset=utf-8\n",
-            "\n",
-            "Plain text body\n",
-            "--boundary\n",
-            "Content-Type: text/html; charset=utf-8\n",
-            "\n",
-            "<html><body>HTML body</body></html>\n",
-            "--boundary--\n"
-        );
-        let emlx_content = format!("{}\n{}", email_content.len(), email_content);
-        fs::write(&emlx_path, emlx_content).unwrap();
-
-        let params = GetMessageParams {
-            message_id: "1".to_string(),
-            include_body: true,
-            include_attachments_summary: false,
-            body_format: BodyFormat::Both,
-            include_recipients: false,
-        };
-
-        let response = get_message_with_conn(&config, &conn, params).unwrap();
-
-        assert_eq!(response.status, None);
-        let msg = response.message.unwrap();
-        // With BodyFormat::Both, body should contain text, and body_html should have HTML
-        assert!(msg.body.is_some());
-        assert!(msg.body_html.is_some());
     }
 
     #[test]
@@ -698,9 +576,7 @@ mod tests {
             cc: vec![],
             date_sent: Some("2024-01-01T00:00Z".into()),
             date_received: Some("2024-01-01T00:00Z".into()),
-            mailbox: "INBOX".into(),
             body: Some("text".into()),
-            body_html: None,
             attachments: vec![],
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -721,9 +597,7 @@ mod tests {
             cc: vec![],
             date_sent: Some("2024-01-01T00:00Z".into()),
             date_received: Some("2024-01-01T00:00Z".into()),
-            mailbox: "INBOX".into(),
             body: Some("text".into()),
-            body_html: None,
             attachments: vec![],
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -744,9 +618,7 @@ mod tests {
             cc: vec![],
             date_sent: Some("2024-01-01T00:00Z".into()),
             date_received: Some("2024-01-01T00:00Z".into()),
-            mailbox: "INBOX".into(),
             body: Some("text".into()),
-            body_html: None,
             attachments: vec![],
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -771,9 +643,7 @@ mod tests {
             cc: vec!["c@c.com".into()],
             date_sent: Some("2024-01-01T00:00Z".into()),
             date_received: Some("2024-01-01T00:00Z".into()),
-            mailbox: "INBOX".into(),
             body: Some("text".into()),
-            body_html: None,
             attachments: vec![],
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -784,29 +654,6 @@ mod tests {
         assert!(
             json.contains("\"cc\""),
             "nonempty cc should be present: {json}"
-        );
-    }
-
-    #[test]
-    fn body_html_none_is_omitted() {
-        let result = GetMessageResult {
-            id: "1".into(),
-            message_id_header: None,
-            subject: "test".into(),
-            from: "a@b.com".into(),
-            to: vec![],
-            cc: vec![],
-            date_sent: Some("2024-01-01T00:00Z".into()),
-            date_received: Some("2024-01-01T00:00Z".into()),
-            mailbox: "INBOX".into(),
-            body: Some("text".into()),
-            body_html: None,
-            attachments: vec![],
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(
-            !json.contains("body_html"),
-            "None body_html should be omitted: {json}"
         );
     }
 }

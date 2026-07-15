@@ -3,7 +3,7 @@
 use crate::config::MailConfig;
 use crate::error::MailMcpError;
 use crate::server::tools::{
-    BodyFormat, GetAttachmentParams, GetMessageParams, ListAccountsParams, SearchMessagesParams,
+    GetAttachmentParams, GetMessageParams, ListAccountsParams, SearchMessagesParams,
     list_mailboxes as server_list_mailboxes,
 };
 use crate::server::tools::{
@@ -70,21 +70,10 @@ pub fn search_messages(config: &MailConfig, args: super::SearchArgs) -> Result<(
 
 /// Execute get_message command.
 pub fn get_message(config: &MailConfig, args: super::GetMessageArgs) -> Result<(), MailMcpError> {
-    let body_format = match args.body_format.to_lowercase().as_str() {
-        "text" => BodyFormat::Text,
-        "html" => BodyFormat::Html,
-        "both" => BodyFormat::Both,
-        other => {
-            return Err(MailMcpError::Validation(format!(
-                "Invalid body_format: {other:?}. Expected \"text\", \"html\", or \"both\"."
-            )));
-        }
-    };
     let params = GetMessageParams {
         message_id: args.message_id,
         include_body: args.include_body,
         include_attachments_summary: args.include_attachments_summary,
-        body_format,
         include_recipients: args.include_recipients,
     };
     let result = server_get_message(config, params)?;
@@ -163,19 +152,5 @@ mod cli_validation_tests {
         };
         let err = search_messages(&config, args).unwrap_err();
         assert!(err.to_string().contains("limit must be between 1 and 100"));
-    }
-
-    #[test]
-    fn get_message_rejects_invalid_body_format() {
-        let (_temp, config) = dummy_config();
-        let args = super::super::GetMessageArgs {
-            message_id: "1".to_string(),
-            include_body: true,
-            include_attachments_summary: true,
-            body_format: "json".to_string(),
-            include_recipients: false,
-        };
-        let err = get_message(&config, args).unwrap_err();
-        assert!(err.to_string().contains("Invalid body_format"));
     }
 }
