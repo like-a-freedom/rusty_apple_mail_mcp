@@ -78,9 +78,6 @@ impl GetAttachmentResponse {
 pub struct GetAttachmentResult {
     pub id: String,
     pub filename: String,
-    pub mime_type: String,
-    pub size_bytes: u64,
-    pub is_inline: bool,
     pub content_format: ContentFormat,
     pub content: Option<String>,
     pub extraction_method: Option<String>,
@@ -184,9 +181,6 @@ pub fn get_attachment_content_with_conn(
             .filename
             .clone()
             .unwrap_or_else(|| "unnamed".to_string()),
-        mime_type: raw_attachment.mime_type.clone(),
-        size_bytes: raw_attachment.size_bytes,
-        is_inline: raw_attachment.is_inline,
     };
 
     let Some(content) = raw_attachment.content.as_deref() else {
@@ -198,9 +192,6 @@ pub fn get_attachment_content_with_conn(
     let base_result = GetAttachmentResult {
         id: meta.id.clone(),
         filename: meta.filename.clone(),
-        mime_type: meta.mime_type.clone(),
-        size_bytes: meta.size_bytes,
-        is_inline: meta.is_inline,
         content_format: ContentFormat::NotAvailable,
         content: None,
         extraction_method: None,
@@ -498,7 +489,6 @@ mod tests {
         assert!(response.attachment.is_some());
         let attachment = response.attachment.unwrap();
         assert_eq!(attachment.filename, "notes.txt");
-        assert_eq!(attachment.mime_type, "text/plain");
         assert_eq!(attachment.content_format, ContentFormat::ExtractedText);
         assert_eq!(attachment.content.as_deref(), Some("Attachment content"));
         assert_eq!(attachment.extraction_method.as_deref(), Some("direct_utf8"));
@@ -551,7 +541,6 @@ mod tests {
         assert!(response.attachment.is_some());
         let attachment = response.attachment.unwrap();
         assert_eq!(attachment.filename, "image.png");
-        assert_eq!(attachment.mime_type, "image/png");
         assert_eq!(attachment.content_format, ContentFormat::NotAvailable);
         assert!(attachment.content.is_none());
         assert!(attachment.extraction_method.is_some());
@@ -620,10 +609,6 @@ mod tests {
 
         assert_eq!(response.status, None);
         let attachment = response.attachment.expect("attachment result");
-        assert_eq!(
-            attachment.mime_type,
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        );
         assert_eq!(attachment.content_format, ContentFormat::ExtractedText);
         assert_eq!(
             attachment.extraction_method.as_deref(),

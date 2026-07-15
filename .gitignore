@@ -6,6 +6,9 @@ cargo_install.sh
 
 dev/
 docs/
+.opencode/
+.commandcode/
+.scratch/
 
 **/*.rs.bk
 **/Cargo.lock

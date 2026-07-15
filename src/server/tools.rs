@@ -23,9 +23,7 @@ pub use get_attachment::{
     GetAttachmentParams, GetAttachmentResponse, get_attachment_content,
     get_attachment_content_with_conn,
 };
-pub use get_message::{
-    BodyFormat, GetMessageParams, GetMessageResponse, get_message, get_message_with_conn,
-};
+pub use get_message::{GetMessageParams, GetMessageResponse, get_message, get_message_with_conn};
 pub use list_accounts::{
     ListAccountsParams, ListAccountsResponse, list_accounts, list_accounts_with_conn,
 };
