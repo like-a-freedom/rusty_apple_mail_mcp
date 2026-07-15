@@ -11,7 +11,9 @@ pub mod xlsx;
 
 pub use cache::{CacheKey, MailboxIndex};
 pub use docx::{DocxError, docx_to_markdown};
-pub use extractor::{ExtractionResult, extract_text, html_to_plain_text};
+pub use extractor::{
+    ExtractionResult, extract_text, html_to_markdown, html_to_plain_text, strip_quoted_replies,
+};
 pub use locator::{
     locate_emlx, locate_emlx_quick, locate_emlx_quick_with_hints, locate_emlx_with_hints,
 };

@@ -314,9 +314,6 @@ mod tests {
         let attachments = vec![AttachmentMeta {
             id: "42:0".to_string(),
             filename: "document.pdf".to_string(),
-            mime_type: "application/pdf".to_string(),
-            size_bytes: 1024,
-            is_inline: false,
         }];
 
         let full = MessageFull::from_row_with_recipients(&row, &[], COREDATA_EPOCH_OFFSET)
@@ -445,9 +442,6 @@ mod tests {
         let attachment = AttachmentMeta {
             id: "42:0".to_string(),
             filename: "test.pdf".to_string(),
-            mime_type: "application/pdf".to_string(),
-            size_bytes: 1024,
-            is_inline: false,
         };
 
         let full = MessageFull::from_row_with_recipients(&row, &[], 0)
