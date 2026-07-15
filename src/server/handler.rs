@@ -11,8 +11,8 @@ use crate::server::tools::{
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
-        ServerInfo, Tool, ToolAnnotations,
+        CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams, ServerInfo,
+        Tool, ToolAnnotations,
     },
     service::{RequestContext, RoleServer},
 };
@@ -116,7 +116,13 @@ impl MailMcpServer {
         let params: TParams = serde_json::from_value(Value::Object(arguments))
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         let response = tool_fn(self.config.as_ref(), params)?;
-        Ok(CallToolResult::success(vec![Content::json(response)?]))
+        let value = serde_json::to_value(response).map_err(|e| {
+            McpError::internal_error(
+                "failed to serialize response",
+                Some(json!({ "reason": e.to_string() })),
+            )
+        })?;
+        Ok(CallToolResult::structured(value))
     }
 
     /// List all available tools.
