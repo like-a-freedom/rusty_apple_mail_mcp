@@ -3,6 +3,7 @@
 pub mod attachment_store;
 pub mod cache;
 pub mod docx;
+pub mod extract;
 pub mod extractor;
 pub mod filesystem_attachment_store;
 pub mod locator;
@@ -24,10 +25,9 @@ pub use cache::{
     mailbox_index_lookup_by_header, mailbox_index_lookup_by_stem, path_cache_get,
     path_cache_insert,
 };
-pub use docx::{DocxError, docx_to_markdown};
-pub use extractor::{
-    ExtractionResult, extract_text, html_to_markdown, html_to_plain_text, strip_quoted_replies,
-};
+pub use docx::docx_to_markdown;
+pub use extract::{ExtractionError, extract_text};
+pub use extractor::{html_to_markdown, html_to_plain_text, strip_quoted_replies};
 pub use filesystem_attachment_store::FilesystemAttachmentStore;
 pub use locator::{
     locate_emlx, locate_emlx_quick, locate_emlx_quick_with_hints, locate_emlx_with_hints,
@@ -36,6 +36,6 @@ pub use parser::{
     ParsedEmail, RawAttachment, parse_emlx, parse_emlx_without_attachment_content,
     raw_attachments_to_meta,
 };
-pub use pdf::{PdfError, pdf_to_text};
-pub use pptx::{PptxError, pptx_to_text};
-pub use xlsx::{XlsxError, xlsx_to_csv};
+pub use pdf::pdf_to_text;
+pub use pptx::pptx_to_text;
+pub use xlsx::xlsx_to_csv;

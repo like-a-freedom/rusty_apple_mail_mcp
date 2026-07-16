@@ -5,24 +5,8 @@
 //! and concatenates them with slide separators.
 
 use std::io::{Cursor, Read};
-use thiserror::Error;
 
-/// Errors that can occur during PPTX processing.
-#[derive(Debug, Error)]
-pub enum PptxError {
-    #[error("Not a valid ZIP archive")]
-    InvalidZip,
-    #[error("Missing ppt/presentation.xml")]
-    MissingPresentation,
-    #[error("Missing slide file: {0}")]
-    MissingSlide(String),
-    #[error("XML parse error: {0}")]
-    XmlParse(String),
-    #[error("Empty presentation")]
-    EmptyDocument,
-    #[error("UTF-8 decoding error")]
-    Utf8Error,
-}
+use crate::mail::extract::ExtractionError;
 
 /// Convert PPTX bytes to plain text string.
 ///
@@ -32,7 +16,7 @@ pub enum PptxError {
 ///
 /// # Returns
 ///
-/// Plain text string on success, `PptxError` on failure.
+/// Plain text string on success, `ExtractionError` on failure.
 ///
 /// # Example
 ///
@@ -45,18 +29,19 @@ pub enum PptxError {
 ///
 /// # Errors
 ///
-/// Returns [`PptxError`] if the PPTX cannot be parsed or has no slides.
-pub fn pptx_to_text(bytes: &[u8]) -> Result<String, PptxError> {
+/// Returns [`ExtractionError`] if the PPTX cannot be parsed or has no slides.
+pub fn pptx_to_text(bytes: &[u8]) -> Result<String, ExtractionError> {
     // Unzip the archive
     let cursor = Cursor::new(bytes);
-    let mut archive = zip::read::ZipArchive::new(cursor).map_err(|_| PptxError::InvalidZip)?;
+    let mut archive =
+        zip::read::ZipArchive::new(cursor).map_err(|_| ExtractionError::InvalidZip)?;
 
     // Extract presentation.xml to get slide order
     let presentation_xml = read_file_from_archive(&mut archive, "ppt/presentation.xml")?;
     let slide_paths = parse_presentation(&presentation_xml)?;
 
     if slide_paths.is_empty() {
-        return Err(PptxError::EmptyDocument);
+        return Err(ExtractionError::EmptyDocument);
     }
 
     // Extract text from each slide
@@ -72,7 +57,7 @@ pub fn pptx_to_text(bytes: &[u8]) -> Result<String, PptxError> {
     }
 
     if result.trim().is_empty() {
-        return Err(PptxError::EmptyDocument);
+        return Err(ExtractionError::EmptyDocument);
     }
 
     Ok(result.trim().to_string())
@@ -82,20 +67,20 @@ pub fn pptx_to_text(bytes: &[u8]) -> Result<String, PptxError> {
 fn read_file_from_archive(
     archive: &mut zip::read::ZipArchive<Cursor<&[u8]>>,
     path: &str,
-) -> Result<String, PptxError> {
+) -> Result<String, ExtractionError> {
     let mut content = String::new();
     {
-        let mut file = archive
-            .by_name(path)
-            .map_err(|_| PptxError::MissingSlide(path.to_string()))?;
+        let mut file = archive.by_name(path).map_err(|_| {
+            ExtractionError::InvalidFormat(format!("missing file in archive: {path}"))
+        })?;
         file.read_to_string(&mut content)
-            .map_err(|_| PptxError::Utf8Error)?;
+            .map_err(|_| ExtractionError::Utf8Error)?;
     }
     Ok(content)
 }
 
 /// Parse presentation.xml to get slide paths in order.
-fn parse_presentation(xml: &str) -> Result<Vec<String>, PptxError> {
+fn parse_presentation(xml: &str) -> Result<Vec<String>, ExtractionError> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
@@ -120,7 +105,7 @@ fn parse_presentation(xml: &str) -> Result<Vec<String>, PptxError> {
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                return Err(PptxError::XmlParse(format!(
+                return Err(ExtractionError::XmlParse(format!(
                     "Presentation parse error: {e}"
                 )));
             }
@@ -140,7 +125,7 @@ fn parse_presentation(xml: &str) -> Result<Vec<String>, PptxError> {
 }
 
 /// Extract text content from a slide XML.
-fn extract_slide_text(xml: &str) -> Result<String, PptxError> {
+fn extract_slide_text(xml: &str) -> Result<String, ExtractionError> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
@@ -175,7 +160,7 @@ fn extract_slide_text(xml: &str) -> Result<String, PptxError> {
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                return Err(PptxError::XmlParse(format!("Slide parse error: {e}")));
+                return Err(ExtractionError::XmlParse(format!("Slide parse error: {e}")));
             }
             _ => {}
         }
@@ -296,7 +281,7 @@ mod tests {
     #[test]
     fn test_pptx_invalid_zip() {
         let result = pptx_to_text(b"not a zip file");
-        assert!(matches!(result, Err(PptxError::InvalidZip)));
+        assert!(matches!(result, Err(ExtractionError::InvalidZip)));
     }
 
     #[test]
@@ -313,10 +298,7 @@ mod tests {
         }
 
         let result = pptx_to_text(&buf.into_inner());
-        assert!(matches!(
-            result,
-            Err(PptxError::MissingPresentation) | Err(PptxError::MissingSlide(_))
-        ));
+        assert!(matches!(result, Err(ExtractionError::InvalidFormat(_))));
     }
 
     #[test]
@@ -334,7 +316,7 @@ mod tests {
         }
 
         let result = pptx_to_text(&buf.into_inner());
-        assert!(matches!(result, Err(PptxError::XmlParse(_))));
+        assert!(matches!(result, Err(ExtractionError::XmlParse(_))));
     }
 
     #[test]
@@ -374,7 +356,7 @@ mod tests {
         let result = pptx_to_text(&buf.into_inner());
         assert!(
             matches!(&result, Ok(text) if text.contains("Slide 1:"))
-                || matches!(result, Err(PptxError::EmptyDocument)),
+                || matches!(result, Err(ExtractionError::EmptyDocument)),
             "expected Ok with slide content or EmptyDocument, got: {:?}",
             result
         );
@@ -402,6 +384,6 @@ mod tests {
 
         let result = pptx_to_text(&buf.into_inner());
         // Should fail because slide1.xml is missing
-        assert!(matches!(result, Err(PptxError::MissingSlide(_))));
+        assert!(matches!(result, Err(ExtractionError::InvalidFormat(_))));
     }
 }
