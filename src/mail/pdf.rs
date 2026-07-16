@@ -3,18 +3,7 @@
 //! Extracts text from PDF files for LLM consumption.
 //! Note: OCR is NOT supported. Only text layer extraction.
 
-use thiserror::Error;
-
-/// Errors that can occur during PDF processing.
-#[derive(Debug, Error)]
-pub enum PdfError {
-    #[error("Failed to parse PDF: {0}")]
-    PdfParse(String),
-    #[error("PDF contains no extractable text (possibly scanned)")]
-    NoTextLayer,
-    #[error("PDF is empty")]
-    EmptyDocument,
-}
+use crate::mail::extract::ExtractionError;
 
 /// Extract text from PDF bytes.
 ///
@@ -24,7 +13,7 @@ pub enum PdfError {
 ///
 /// # Returns
 ///
-/// Plain text string on success, `PdfError` on failure.
+/// Plain text string on success, `ExtractionError` on failure.
 ///
 /// # Example
 ///
@@ -37,19 +26,19 @@ pub enum PdfError {
 ///
 /// # Errors
 ///
-/// Returns [`PdfError`] if the PDF cannot be parsed or has no text layer.
-pub fn pdf_to_text(bytes: &[u8]) -> Result<String, PdfError> {
+/// Returns [`ExtractionError`] if the PDF cannot be parsed or has no text layer.
+pub fn pdf_to_text(bytes: &[u8]) -> Result<String, ExtractionError> {
     use lopdf::Document;
 
     // Load PDF document
     let doc = Document::load_mem(bytes)
-        .map_err(|e| PdfError::PdfParse(format!("Failed to load PDF: {e}")))?;
+        .map_err(|e| ExtractionError::Other(format!("Failed to load PDF: {e}")))?;
 
     // Get page numbers
     let pages = doc.get_pages();
 
     if pages.is_empty() {
-        return Err(PdfError::EmptyDocument);
+        return Err(ExtractionError::EmptyDocument);
     }
 
     // Extract text from all pages using lopdf's built-in method
@@ -57,10 +46,10 @@ pub fn pdf_to_text(bytes: &[u8]) -> Result<String, PdfError> {
 
     let text = doc
         .extract_text(&page_numbers)
-        .map_err(|e| PdfError::PdfParse(format!("Failed to extract text: {e}")))?;
+        .map_err(|e| ExtractionError::Other(format!("Failed to extract text: {e}")))?;
 
     if text.trim().is_empty() {
-        return Err(PdfError::NoTextLayer);
+        return Err(ExtractionError::NoTextLayer);
     }
 
     Ok(text.trim().to_string())
@@ -82,9 +71,9 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(PdfError::PdfParse(_))
-                    | Err(PdfError::EmptyDocument)
-                    | Err(PdfError::NoTextLayer)
+                Err(ExtractionError::Other(_))
+                    | Err(ExtractionError::EmptyDocument)
+                    | Err(ExtractionError::NoTextLayer)
             ),
             "expected PDF parse/empty/no-text error, got: {:?}",
             result
@@ -94,13 +83,13 @@ mod tests {
     #[test]
     fn test_pdf_empty_returns_error() {
         let result = pdf_to_text(b"");
-        assert!(matches!(result, Err(PdfError::PdfParse(_))));
+        assert!(matches!(result, Err(ExtractionError::Other(_))));
     }
 
     #[test]
     fn test_pdf_invalid_returns_error() {
         let result = pdf_to_text(b"not a pdf");
-        assert!(matches!(result, Err(PdfError::PdfParse(_))));
+        assert!(matches!(result, Err(ExtractionError::Other(_))));
     }
 
     #[test]
@@ -140,9 +129,9 @@ startxref
             matches!(&result, Ok(text) if text.is_empty())
                 || matches!(
                     result,
-                    Err(PdfError::NoTextLayer)
-                        | Err(PdfError::PdfParse(_))
-                        | Err(PdfError::EmptyDocument)
+                    Err(ExtractionError::NoTextLayer)
+                        | Err(ExtractionError::Other(_))
+                        | Err(ExtractionError::EmptyDocument)
                 ),
             "expected empty/error for PDF without text, got: {:?}",
             result
@@ -182,9 +171,9 @@ startxref
             matches!(
                 result,
                 Ok(_)
-                    | Err(PdfError::NoTextLayer)
-                    | Err(PdfError::PdfParse(_))
-                    | Err(PdfError::EmptyDocument)
+                    | Err(ExtractionError::NoTextLayer)
+                    | Err(ExtractionError::Other(_))
+                    | Err(ExtractionError::EmptyDocument)
             ),
             "expected Ok or PDF error, got: {:?}",
             result
@@ -196,7 +185,7 @@ startxref
         // PDF header truncated - should fail to parse
         let pdf = b"%PDF-1";
         let result = pdf_to_text(pdf);
-        assert!(matches!(result, Err(PdfError::PdfParse(_))));
+        assert!(matches!(result, Err(ExtractionError::Other(_))));
     }
 
     #[test]
@@ -220,9 +209,9 @@ startxref
             matches!(&result, Ok(text) if text.is_empty())
                 || matches!(
                     result,
-                    Err(PdfError::PdfParse(_))
-                        | Err(PdfError::NoTextLayer)
-                        | Err(PdfError::EmptyDocument)
+                    Err(ExtractionError::Other(_))
+                        | Err(ExtractionError::NoTextLayer)
+                        | Err(ExtractionError::EmptyDocument)
                 ),
             "expected empty text or PDF error, got: {:?}",
             result
@@ -274,9 +263,9 @@ startxref
             matches!(&result, Ok(text) if text.is_empty())
                 || matches!(
                     result,
-                    Err(PdfError::NoTextLayer)
-                        | Err(PdfError::EmptyDocument)
-                        | Err(PdfError::PdfParse(_))
+                    Err(ExtractionError::NoTextLayer)
+                        | Err(ExtractionError::EmptyDocument)
+                        | Err(ExtractionError::Other(_))
                 ),
             "expected empty text or PDF error from multi-page PDF, got: {:?}",
             result
