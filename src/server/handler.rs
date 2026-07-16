@@ -1,6 +1,6 @@
 //! MCP Server handler implementation with typed tool schemas and routing helpers.
 
-use crate::config::MailConfig;
+use crate::config::{MailConfig, validate_config};
 use crate::db::{MailRepository, SqliteMailRepository};
 use crate::error::MailMcpError;
 use crate::mail::{AttachmentStore, FilesystemAttachmentStore};
@@ -64,7 +64,7 @@ impl MailMcpServer {
                 db_path.display()
             );
         }
-        config.validate()?;
+        validate_config(&config)?;
         let repo = Arc::new(SqliteMailRepository::new(&db_path)?);
         let attachment_store = Arc::new(FilesystemAttachmentStore::new(&config.mail_directory));
         Ok(Self {
@@ -378,13 +378,8 @@ mod tests {
         .expect("create schema");
         drop(conn);
 
-        let config = MailConfig::from_parts_with_accounts(
-            mail_directory,
-            mail_version,
-            None,
-            HashMap::new(),
-        )
-        .expect("config");
+        let config =
+            MailConfig::new(mail_directory, mail_version, None, HashMap::new()).expect("config");
         (temp_dir, config)
     }
 
@@ -616,7 +611,7 @@ mod tests {
     #[test]
     fn server_new_with_invalid_config() {
         // Create invalid config (empty mail version)
-        let config = MailConfig::from_parts("/nonexistent".into(), "".into());
+        let config = MailConfig::new("/nonexistent".into(), "".into(), None, HashMap::new());
         assert!(config.is_err());
     }
 

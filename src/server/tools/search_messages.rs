@@ -597,13 +597,8 @@ mod tests {
         let db_dir = mail_directory.join("V10").join("MailData");
         std::fs::create_dir_all(&db_dir).unwrap();
         std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").unwrap();
-        let config = MailConfig::from_parts_with_accounts(
-            mail_directory,
-            "V10".to_string(),
-            None,
-            HashMap::new(),
-        )
-        .unwrap();
+        let config =
+            MailConfig::new(mail_directory, "V10".to_string(), None, HashMap::new()).unwrap();
         (temp_dir, config)
     }
 

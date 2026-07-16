@@ -8,7 +8,7 @@ use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
 use crate::cli::{Cli, Command};
-use crate::config::{MailConfig, MailConfigOverrides};
+use crate::config::{MailConfig, MailConfigBuilder, MailConfigOverrides};
 use crate::error::MailMcpError;
 use crate::server::MailMcpServer;
 
@@ -70,7 +70,7 @@ pub async fn run() -> Result<()> {
 }
 
 fn build_config(cli: &Cli) -> Result<MailConfig, MailMcpError> {
-    MailConfig::from_overrides(MailConfigOverrides {
+    MailConfigBuilder::from_overrides(MailConfigOverrides {
         mail_directory: cli.mail_directory.clone(),
         mail_version: cli.mail_version.clone(),
         account: cli.account.clone(),
