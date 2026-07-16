@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn get_message_with_conn_maps_apple_mail_recipient_types_zero_and_one() {
-        let (temp_dir, repo) = make_test_repo();
+        let (temp_dir, _repo) = make_test_repo();
         // Re-open connection to add more test data
         let db_path = temp_dir.path().join("test.db");
         {
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn get_message_with_conn_success_with_emlx() {
-        let (temp_dir, repo) = make_test_repo();
+        let (_temp_dir, repo) = make_test_repo();
         let temp_dir2 = TempDir::new().unwrap();
         let config = make_test_config(&temp_dir2, None);
 

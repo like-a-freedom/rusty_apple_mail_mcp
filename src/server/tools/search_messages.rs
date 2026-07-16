@@ -331,61 +331,19 @@ fn load_search_metadata(
     repo: &dyn MailRepository,
     message_ids: &[i64],
 ) -> Result<std::collections::HashMap<i64, SearchMetadata>, MailMcpError> {
-    if message_ids.is_empty() {
-        return Ok(std::collections::HashMap::new());
-    }
-
-    // Downcast to SqliteMailRepository for the metadata query
-    if let Some(sqlite_repo) =
-        MailRepository::as_any(repo).downcast_ref::<crate::db::SqliteMailRepository>()
-    {
-        let conn = sqlite_repo.conn();
-        let placeholders = std::iter::repeat_n("?", message_ids.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            r"
-            SELECT
-                m.ROWID,
-                sm.summary,
-                COUNT(att.ROWID)
-            FROM messages m
-            LEFT JOIN summaries sm ON sm.ROWID = m.summary
-            LEFT JOIN attachments att ON att.message = m.ROWID
-            WHERE m.ROWID IN ({placeholders})
-            GROUP BY m.ROWID, sm.summary
-            "
-        );
-
-        let params: Vec<&dyn rusqlite::ToSql> = message_ids
-            .iter()
-            .map(|message_id| message_id as &dyn rusqlite::ToSql)
-            .collect();
-
-        let conn_guard = conn.lock().unwrap();
-        let mut stmt = conn_guard.prepare(&sql)?;
-        let rows = stmt.query_map(params.as_slice(), |row| {
-            let attachment_count: i64 = row.get(2)?;
-            Ok((
-                row.get::<_, i64>(0)?,
+    let metadata_map = repo.get_message_metadata(message_ids)?;
+    Ok(metadata_map
+        .into_iter()
+        .map(|(id, meta)| {
+            (
+                id,
                 SearchMetadata {
-                    summary: row.get(1)?,
-                    attachment_count: u32::try_from(attachment_count.max(0)).unwrap_or(u32::MAX),
+                    summary: meta.summary,
+                    attachment_count: meta.attachment_count,
                 },
-            ))
-        })?;
-
-        let mut metadata = std::collections::HashMap::with_capacity(message_ids.len());
-        for row in rows {
-            let (message_id, entry) = row?;
-            metadata.insert(message_id, entry);
-        }
-
-        Ok(metadata)
-    } else {
-        // For non-SQLite repos (e.g., test fakes), return empty metadata
-        Ok(std::collections::HashMap::new())
-    }
+            )
+        })
+        .collect())
 }
 
 fn reject_disallowed_account_filter(
@@ -551,16 +509,13 @@ pub async fn search_messages_with_repo(
 }
 
 /// Public async tool function for the MCP handler.
-/// Creates repository and attachment store internally, then delegates to the implementation.
+/// Uses the provided repository and attachment store from the server context.
 pub async fn search_messages_async(
+    repo: Arc<dyn MailRepository>,
+    store: Arc<dyn crate::mail::AttachmentStore>,
     config: &MailConfig,
     params: SearchMessagesParams,
 ) -> Result<SearchMessagesResponse, MailMcpError> {
-    let db_path = config.envelope_db_path();
-    let repo = Arc::new(crate::db::SqliteMailRepository::new(&db_path)?);
-    let store = Arc::new(crate::mail::FilesystemAttachmentStore::new(
-        &config.mail_directory,
-    ));
     search_messages_with_repo(config, repo, store, params).await
 }
 
@@ -659,7 +614,7 @@ mod tests {
     #[tokio::test]
     async fn search_finds_matching_messages() {
         let (_temp, config) = make_test_config();
-        let (mut repo, repo_arc) = make_fake_repo();
+        let (repo, repo_arc) = make_fake_repo();
 
         let msg = MessageRow {
             rowid: 42,
@@ -698,7 +653,7 @@ mod tests {
     #[tokio::test]
     async fn search_by_sender_works() {
         let (_temp, config) = make_test_config();
-        let (mut repo, repo_arc) = make_fake_repo();
+        let (repo, repo_arc) = make_fake_repo();
 
         let msg = MessageRow {
             rowid: 1,

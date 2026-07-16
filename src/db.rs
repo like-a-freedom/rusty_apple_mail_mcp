@@ -18,5 +18,5 @@ pub use messages::{
 };
 #[cfg(test)]
 pub use repository::FakeMailRepository;
-pub use repository::{MailRepository, SearchParams};
+pub use repository::{MailRepository, MessageMetadata, SearchParams};
 pub use sqlite_repo::SqliteMailRepository;

@@ -18,16 +18,15 @@
 //! For most use cases, use the [`CacheRegistry`] which provides a unified interface:
 //!
 //! ```rust
-//! use crate::mail::cache::{CacheRegistry, CacheKey};
+//! use std::path::PathBuf;
+//! use rusty_apple_mail_mcp::mail::cache::{CacheRegistry, CacheKey};
 //!
 //! let registry = CacheRegistry::new();
+//! let path = PathBuf::from("/path/to/message.emlx");
+//! registry.insert_path(CacheKey::new("/Library/Mail/V10", 12345), path.clone());
 //!
-//! // Store a path
 //! let key = CacheKey::new("/Library/Mail/V10", 12345);
-//! registry.insert_path(key, PathBuf::from("/path/to/message.emlx"));
-//!
-//! // Retrieve a path
-//! if let Some(path) = registry.get_valid_path(&key) {
+//! if let Some(_found) = registry.get_valid_path(&key) {
 //!     // Use the path
 //! }
 //! ```

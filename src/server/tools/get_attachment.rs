@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn get_attachment_content_with_conn_attachment_not_found() {
-        let (temp_dir, repo) = make_test_repo();
+        let (_temp_dir, repo) = make_test_repo();
         let temp_dir2 = TempDir::new().unwrap();
         let config = make_test_config(&temp_dir2, None);
         let params = GetAttachmentParams {
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn get_attachment_content_with_conn_success_text_attachment() {
-        let (temp_dir, repo) = make_test_repo();
+        let (_temp_dir, repo) = make_test_repo();
         let temp_dir2 = TempDir::new().unwrap();
         let config = make_test_config(&temp_dir2, None);
         let params = GetAttachmentParams {
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn get_attachment_content_with_conn_success_binary_attachment() {
-        let (temp_dir, repo) = make_test_repo();
+        let (_temp_dir, repo) = make_test_repo();
         let temp_dir2 = TempDir::new().unwrap();
         let config = make_test_config(&temp_dir2, None);
         let params = GetAttachmentParams {
@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn get_attachment_content_with_conn_falls_back_to_external_apple_mail_attachment() {
-        let (temp_dir, repo) = make_test_repo();
+        let (temp_dir, _repo) = make_test_repo();
         // Add attachment to the database via direct connection
         let db_path = temp_dir.path().join("test.db");
         {
