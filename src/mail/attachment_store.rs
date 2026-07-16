@@ -62,7 +62,6 @@ impl AttachmentStore for FakeAttachmentStore {
 mod tests {
     use super::*;
     use crate::AttachmentMeta;
-    use tempfile::TempDir;
 
     #[test]
     fn fake_store_works() {
