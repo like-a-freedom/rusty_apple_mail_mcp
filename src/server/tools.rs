@@ -29,5 +29,5 @@ pub use list_accounts::{
 };
 pub use list_mailboxes::{ListMailboxesResponse, list_mailboxes, list_mailboxes_with_conn};
 pub use search_messages::{
-    SearchMessagesParams, SearchMessagesResponse, search_messages, search_messages_with_conn,
+    SearchMessagesParams, SearchMessagesResponse, search_messages, search_messages_async,
 };

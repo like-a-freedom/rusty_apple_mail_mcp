@@ -15,11 +15,7 @@ use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
-use crate::mail::cache::{
-    CacheKey, MailboxIndex, header_cache_get, header_cache_insert, mailbox_index_cache_contains,
-    mailbox_index_cache_get_mut, mailbox_index_cache_insert, mailbox_index_lookup_by_header,
-    mailbox_index_lookup_by_stem, path_cache_get, path_cache_insert,
-};
+use crate::mail::cache::{CacheKey, MailboxIndex, global_registry_read, global_registry_write};
 
 /// Locate the .emlx file for a given message.
 ///
@@ -65,7 +61,7 @@ pub fn locate_emlx_with_hints(
     };
 
     // Check cache first
-    if let Some(cached) = path_cache_get(&cache_key) {
+    if let Some(cached) = global_registry_read().get_valid_path(&cache_key) {
         return Some(cached);
     }
 
@@ -84,7 +80,7 @@ pub fn locate_emlx_with_hints(
         &[message_rowid.to_string()],
         false,
     ) {
-        path_cache_insert(cache_key.clone(), path.clone());
+        global_registry_write().insert_path(cache_key.clone(), path.clone());
         return Some(path);
     }
 
@@ -93,21 +89,21 @@ pub fn locate_emlx_with_hints(
     if let Some(path) = find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, false)
         && path_matches_message_id(&path, message_id_header)
     {
-        path_cache_insert(cache_key.clone(), path.clone());
+        global_registry_write().insert_path(cache_key.clone(), path.clone());
         return Some(path);
     }
 
     if let Some(path) = find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, true)
         && path_matches_message_id(&path, message_id_header)
     {
-        path_cache_insert(cache_key.clone(), path.clone());
+        global_registry_write().insert_path(cache_key.clone(), path.clone());
         return Some(path);
     }
 
     if let Some(header) = message_id_header {
         for mailbox_dir in &mailbox_dirs {
             if let Some(path) = lookup_mailbox_header(mailbox_dir, header) {
-                path_cache_insert(cache_key.clone(), path.clone());
+                global_registry_write().insert_path(cache_key.clone(), path.clone());
                 return Some(path);
             }
         }
@@ -115,7 +111,7 @@ pub fn locate_emlx_with_hints(
 
     for mailbox_dir in &mailbox_dirs {
         if let Some(path) = lookup_mailbox_index(mailbox_dir, &candidate_ids, message_id_header) {
-            path_cache_insert(cache_key.clone(), path.clone());
+            global_registry_write().insert_path(cache_key.clone(), path.clone());
             return Some(path);
         }
     }
@@ -162,7 +158,7 @@ pub fn locate_emlx_quick_with_hints(
         message_rowid,
     };
 
-    if let Some(cached) = path_cache_get(&cache_key) {
+    if let Some(cached) = global_registry_read().get_valid_path(&cache_key) {
         return Some(cached);
     }
 
@@ -179,14 +175,14 @@ pub fn locate_emlx_quick_with_hints(
     if let Some(header) = message_id_header {
         for mailbox_dir in &mailbox_dirs {
             if let Some(path) = lookup_mailbox_header_cached(mailbox_dir, header) {
-                path_cache_insert(cache_key.clone(), path.clone());
+                global_registry_write().insert_path(cache_key.clone(), path.clone());
                 return Some(path);
             }
         }
     }
 
     if let Some(path) = find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, false) {
-        path_cache_insert(cache_key.clone(), path.clone());
+        global_registry_write().insert_path(cache_key.clone(), path.clone());
         return Some(path);
     }
 
@@ -194,7 +190,7 @@ pub fn locate_emlx_quick_with_hints(
         if let Some(path) =
             lookup_mailbox_index_cached(mailbox_dir, &candidate_ids, message_id_header)
         {
-            path_cache_insert(cache_key.clone(), path.clone());
+            global_registry_write().insert_path(cache_key.clone(), path.clone());
             return Some(path);
         }
     }
@@ -421,44 +417,52 @@ fn lookup_mailbox_index(
         return Some(path);
     }
 
-    if mailbox_index_cache_contains(&mailbox_dir.to_path_buf()) {
-        let mut index = mailbox_index_cache_get_mut(&mailbox_dir.to_path_buf())?;
-        if let Some(header) = message_id_header {
-            ensure_mailbox_headers(&mut index);
-            if let Some(path) = index.by_header.get(header)
-                && path.exists()
-            {
-                return Some(path.clone());
+    let mailbox_path = mailbox_dir.to_path_buf();
+    let mut index = {
+        let registry = global_registry_read();
+        if registry.contains_mailbox_index(&mailbox_path) {
+            registry.get_mailbox_index(&mailbox_path)?
+        } else {
+            drop(registry);
+            let mut new_index = build_mailbox_index(mailbox_dir)?;
+            if message_id_header.is_some() {
+                ensure_mailbox_headers(&mut new_index);
             }
+            let matched = if let Some(header) = message_id_header {
+                new_index.by_header.get(header).cloned()
+            } else {
+                None
+            }
+            .or_else(|| {
+                candidate_ids
+                    .iter()
+                    .find_map(|candidate_id| new_index.by_stem.get(candidate_id).cloned())
+            });
+            global_registry_write().insert_mailbox_index(mailbox_path, new_index);
+            return matched;
         }
-        if let Some(path) = candidate_ids
-            .iter()
-            .find_map(|candidate_id| index.by_stem.get(candidate_id))
-            && path.exists()
-        {
-            return Some(path.clone());
-        }
-        return None;
-    }
+    };
 
-    let mut index = build_mailbox_index(mailbox_dir)?;
-    if message_id_header.is_some() {
+    if let Some(header) = message_id_header {
         ensure_mailbox_headers(&mut index);
+        if let Some(found) = index.by_header.get(header)
+            && found.exists()
+        {
+            let result = found.clone();
+            global_registry_write().insert_mailbox_index(mailbox_path, index);
+            return Some(result);
+        }
     }
-
-    let matched = if let Some(header) = message_id_header {
-        index.by_header.get(header).cloned()
-    } else {
-        None
+    if let Some(found) = candidate_ids
+        .iter()
+        .find_map(|candidate_id| index.by_stem.get(candidate_id).cloned())
+        .filter(|p| p.exists())
+    {
+        global_registry_write().insert_mailbox_index(mailbox_path, index);
+        return Some(found);
     }
-    .or_else(|| {
-        candidate_ids
-            .iter()
-            .find_map(|candidate_id| index.by_stem.get(candidate_id).cloned())
-    });
-
-    mailbox_index_cache_insert(mailbox_dir.to_path_buf(), index);
-    matched
+    global_registry_write().insert_mailbox_index(mailbox_path, index);
+    None
 }
 
 fn lookup_mailbox_index_cached(
@@ -466,13 +470,15 @@ fn lookup_mailbox_index_cached(
     candidate_ids: &[String],
     message_id_header: Option<&str>,
 ) -> Option<PathBuf> {
+    let registry = global_registry_read();
+    let mailbox_path = mailbox_dir.to_path_buf();
     if let Some(header) = message_id_header
-        && let Some(path) = mailbox_index_lookup_by_header(&mailbox_dir.to_path_buf(), header)
+        && let Some(path) = registry.lookup_mailbox_by_header(&mailbox_path, header)
     {
         return Some(path);
     }
     for candidate_id in candidate_ids {
-        if let Some(path) = mailbox_index_lookup_by_stem(&mailbox_dir.to_path_buf(), candidate_id) {
+        if let Some(path) = registry.lookup_mailbox_by_stem(&mailbox_path, candidate_id) {
             return Some(path);
         }
     }
@@ -484,26 +490,35 @@ fn lookup_mailbox_header(mailbox_dir: &Path, message_id_header: &str) -> Option<
         return Some(path);
     }
 
-    if mailbox_index_cache_contains(&mailbox_dir.to_path_buf()) {
-        let mut index = mailbox_index_cache_get_mut(&mailbox_dir.to_path_buf())?;
-        ensure_mailbox_headers(&mut index);
-        if let Some(path) = index.by_header.get(message_id_header)
-            && path.exists()
-        {
-            return Some(path.clone());
+    let mailbox_path = mailbox_dir.to_path_buf();
+    let mut index = {
+        let registry = global_registry_read();
+        if registry.contains_mailbox_index(&mailbox_path) {
+            registry.get_mailbox_index(&mailbox_path)?
+        } else {
+            drop(registry);
+            let mut new_index = build_mailbox_index(mailbox_dir)?;
+            ensure_mailbox_headers(&mut new_index);
+            let matched = new_index.by_header.get(message_id_header).cloned();
+            global_registry_write().insert_mailbox_index(mailbox_path, new_index);
+            return matched;
         }
-        return None;
-    }
+    };
 
-    let mut index = build_mailbox_index(mailbox_dir)?;
     ensure_mailbox_headers(&mut index);
-    let matched = index.by_header.get(message_id_header).cloned();
-    mailbox_index_cache_insert(mailbox_dir.to_path_buf(), index);
-    matched
+    if let Some(found) = index.by_header.get(message_id_header)
+        && found.exists()
+    {
+        let result = found.clone();
+        global_registry_write().insert_mailbox_index(mailbox_path, index);
+        return Some(result);
+    }
+    global_registry_write().insert_mailbox_index(mailbox_path, index);
+    None
 }
 
 fn lookup_mailbox_header_cached(mailbox_dir: &Path, message_id_header: &str) -> Option<PathBuf> {
-    mailbox_index_lookup_by_header(&mailbox_dir.to_path_buf(), message_id_header)
+    global_registry_read().lookup_mailbox_by_header(mailbox_dir, message_id_header)
 }
 
 fn build_mailbox_index(mailbox_dir: &Path) -> Option<MailboxIndex> {
@@ -558,11 +573,15 @@ fn ensure_mailbox_headers(index: &mut MailboxIndex) {
 }
 
 fn extract_message_id_header(path: &Path) -> Option<String> {
-    if let Some(cached) = header_cache_get(&path.to_path_buf()) {
+    if let Some(cached) = global_registry_read().get_header(&path.to_path_buf()) {
         return cached;
     }
     let header = extract_message_id_header_uncached(path);
-    header_cache_insert(path.to_path_buf(), header.clone());
+    if let Some(ref h) = header {
+        global_registry_write().cache_with_header(path.to_path_buf(), h.clone());
+    } else {
+        global_registry_write().cache_headerless(path.to_path_buf());
+    }
     header
 }
 
@@ -1011,7 +1030,7 @@ mod tests {
         .unwrap();
 
         let index = build_mailbox_index(&mailbox_dir).expect("mailbox index");
-        crate::mail::cache::mailbox_index_cache_insert_raw(mailbox_dir.clone(), index);
+        global_registry_write().insert_mailbox_index(mailbox_dir.clone(), index);
 
         assert_eq!(
             lookup_mailbox_header_cached(&mailbox_dir, "<lazy-cache@example.com>"),
@@ -1024,7 +1043,8 @@ mod tests {
             Some(emlx_path.clone())
         );
 
-        let cached = crate::mail::cache::mailbox_index_cache_get_raw(&mailbox_dir)
+        let cached = global_registry_read()
+            .get_mailbox_index(&mailbox_dir)
             .expect("cached mailbox index");
         assert_eq!(
             cached.by_header.get("<lazy-cache@example.com>"),
