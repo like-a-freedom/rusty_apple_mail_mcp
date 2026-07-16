@@ -137,7 +137,7 @@ impl MailboxIndexCacheImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     fn index_with_entry(path: PathBuf, header: &str, stem: &str) -> MailboxIndex {
         let mut index = MailboxIndex::new();

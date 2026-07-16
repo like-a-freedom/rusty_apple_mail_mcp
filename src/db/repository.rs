@@ -4,6 +4,7 @@ use crate::db::accounts::AccountRow;
 use crate::db::messages::MessageRow;
 use crate::error::MailMcpError;
 use std::any::Any;
+use std::collections::HashMap;
 
 /// Search parameters for message queries.
 #[derive(Debug, Clone, Default)]
@@ -18,6 +19,13 @@ pub struct SearchParams {
     pub mailbox: Option<String>,
     pub limit: u32,
     pub offset: u32,
+}
+
+/// Summary and attachment count metadata for search results.
+#[derive(Debug, Clone, Default)]
+pub struct MessageMetadata {
+    pub summary: Option<String>,
+    pub attachment_count: u32,
 }
 
 /// Repository trait for Apple Mail data access.
@@ -45,6 +53,12 @@ pub trait MailRepository: Send + Sync {
 
     /// Check if an email address exists in the address index.
     fn address_exists(&self, address: &str) -> Result<bool, MailMcpError>;
+
+    /// Get summary and attachment count metadata for a batch of message IDs.
+    fn get_message_metadata(
+        &self,
+        message_ids: &[i64],
+    ) -> Result<HashMap<i64, MessageMetadata>, MailMcpError>;
 
     /// Detect the timestamp epoch offset used by the database.
     fn detect_epoch_offset(&self) -> Result<i64, MailMcpError>;
@@ -158,6 +172,26 @@ impl MailRepository for FakeMailRepository {
         Ok(messages
             .values()
             .any(|m| m.sender.as_deref() == Some(address)))
+    }
+
+    fn get_message_metadata(
+        &self,
+        message_ids: &[i64],
+    ) -> Result<HashMap<i64, MessageMetadata>, MailMcpError> {
+        let messages = self.messages.lock().unwrap();
+        let mut metadata = HashMap::new();
+        for id in message_ids {
+            if messages.contains_key(id) {
+                metadata.insert(
+                    *id,
+                    MessageMetadata {
+                        summary: None,
+                        attachment_count: 0,
+                    },
+                );
+            }
+        }
+        Ok(metadata)
     }
 
     fn as_any(&self) -> &dyn Any {
