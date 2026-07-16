@@ -5,22 +5,8 @@
 //! and converts it to Markdown, preserving headings, lists, tables, and basic formatting.
 
 use std::io::{Cursor, Read};
-use thiserror::Error;
 
-/// Errors that can occur during DOCX processing.
-#[derive(Debug, Error)]
-pub enum DocxError {
-    #[error("Not a valid ZIP archive")]
-    InvalidZip,
-    #[error("Missing word/document.xml")]
-    MissingDocumentXml,
-    #[error("XML parse error: {0}")]
-    XmlParse(String),
-    #[error("Empty document")]
-    EmptyDocument,
-    #[error("UTF-8 decoding error")]
-    Utf8Error,
-}
+use crate::mail::extract::ExtractionError;
 
 /// Convert DOCX bytes to Markdown string.
 ///
@@ -30,7 +16,7 @@ pub enum DocxError {
 ///
 /// # Returns
 ///
-/// Markdown string on success, `DocxError` on failure.
+/// Markdown string on success, `ExtractionError` on failure.
 ///
 /// # Example
 ///
@@ -43,27 +29,28 @@ pub enum DocxError {
 ///
 /// # Errors
 ///
-/// Returns [`DocxError`] if the DOCX cannot be parsed or is empty.
-pub fn docx_to_markdown(bytes: &[u8]) -> Result<String, DocxError> {
+/// Returns [`ExtractionError`] if the DOCX cannot be parsed or is empty.
+pub fn docx_to_markdown(bytes: &[u8]) -> Result<String, ExtractionError> {
     // Unzip the archive
     let cursor = Cursor::new(bytes);
-    let mut archive = zip::read::ZipArchive::new(cursor).map_err(|_| DocxError::InvalidZip)?;
+    let mut archive =
+        zip::read::ZipArchive::new(cursor).map_err(|_| ExtractionError::InvalidZip)?;
 
     // Extract document.xml
     let mut document_xml = String::new();
     {
         let mut file = archive
             .by_name("word/document.xml")
-            .map_err(|_| DocxError::MissingDocumentXml)?;
+            .map_err(|_| ExtractionError::InvalidFormat("missing word/document.xml".into()))?;
         file.read_to_string(&mut document_xml)
-            .map_err(|_| DocxError::Utf8Error)?;
+            .map_err(|_| ExtractionError::Utf8Error)?;
     }
 
     // Parse and convert
     let markdown = parse_docx_xml(&document_xml)?;
 
     if markdown.trim().is_empty() {
-        return Err(DocxError::EmptyDocument);
+        return Err(ExtractionError::EmptyDocument);
     }
 
     Ok(markdown)
@@ -71,7 +58,7 @@ pub fn docx_to_markdown(bytes: &[u8]) -> Result<String, DocxError> {
 
 /// Parse DOCX XML and convert to Markdown.
 #[allow(clippy::too_many_lines)]
-fn parse_docx_xml(xml: &str) -> Result<String, DocxError> {
+fn parse_docx_xml(xml: &str) -> Result<String, ExtractionError> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
@@ -220,7 +207,7 @@ fn parse_docx_xml(xml: &str) -> Result<String, DocxError> {
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                return Err(DocxError::XmlParse(format!("XML parse error: {e}")));
+                return Err(ExtractionError::XmlParse(format!("XML parse error: {e}")));
             }
             _ => {}
         }
@@ -410,7 +397,7 @@ mod tests {
     #[test]
     fn test_docx_invalid_zip() {
         let result = docx_to_markdown(b"not a zip file");
-        assert!(matches!(result, Err(DocxError::InvalidZip)));
+        assert!(matches!(result, Err(ExtractionError::InvalidZip)));
     }
 
     #[test]
@@ -427,7 +414,7 @@ mod tests {
         }
 
         let result = docx_to_markdown(&buf.into_inner());
-        assert!(matches!(result, Err(DocxError::MissingDocumentXml)));
+        assert!(matches!(result, Err(ExtractionError::InvalidFormat(_))));
     }
 
     #[test]
@@ -451,7 +438,7 @@ mod tests {
         }
 
         let result = docx_to_markdown(&buf.into_inner());
-        assert!(matches!(result, Err(DocxError::EmptyDocument)));
+        assert!(matches!(result, Err(ExtractionError::EmptyDocument)));
     }
 
     #[test]
@@ -612,7 +599,7 @@ mod tests {
         }
 
         let result = docx_to_markdown(&buf.into_inner());
-        assert!(matches!(result, Err(DocxError::XmlParse(_))));
+        assert!(matches!(result, Err(ExtractionError::XmlParse(_))));
     }
 
     #[test]

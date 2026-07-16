@@ -5,24 +5,8 @@
 //! and converts it to CSV, handling shared strings and various cell types.
 
 use std::io::{Cursor, Read};
-use thiserror::Error;
 
-/// Errors that can occur during XLSX processing.
-#[derive(Debug, Error)]
-pub enum XlsxError {
-    #[error("Not a valid ZIP archive")]
-    InvalidZip,
-    #[error("Missing worksheet: {0}")]
-    MissingWorksheet(String),
-    #[error("XML parse error: {0}")]
-    XmlParse(String),
-    #[error("Shared strings error: {0}")]
-    SharedStrings(String),
-    #[error("UTF-8 decoding error")]
-    Utf8Error,
-    #[error("Empty worksheet")]
-    EmptyWorksheet,
-}
+use crate::mail::extract::ExtractionError;
 
 /// Convert XLSX bytes to CSV string.
 ///
@@ -32,7 +16,7 @@ pub enum XlsxError {
 ///
 /// # Returns
 ///
-/// CSV string on success, `XlsxError` on failure.
+/// CSV string on success, `ExtractionError` on failure.
 ///
 /// # Example
 ///
@@ -45,11 +29,12 @@ pub enum XlsxError {
 ///
 /// # Errors
 ///
-/// Returns [`XlsxError`] if the XLSX cannot be parsed or has no worksheets.
-pub fn xlsx_to_csv(bytes: &[u8]) -> Result<String, XlsxError> {
+/// Returns [`ExtractionError`] if the XLSX cannot be parsed or has no worksheets.
+pub fn xlsx_to_csv(bytes: &[u8]) -> Result<String, ExtractionError> {
     // Unzip the archive
     let cursor = Cursor::new(bytes);
-    let mut archive = zip::read::ZipArchive::new(cursor).map_err(|_| XlsxError::InvalidZip)?;
+    let mut archive =
+        zip::read::ZipArchive::new(cursor).map_err(|_| ExtractionError::InvalidZip)?;
 
     // Read shared strings (if exists)
     let shared_strings = read_shared_strings(&mut archive)?;
@@ -58,7 +43,7 @@ pub fn xlsx_to_csv(bytes: &[u8]) -> Result<String, XlsxError> {
     let csv = read_worksheet(&mut archive, "xl/worksheets/sheet1.xml", &shared_strings)?;
 
     if csv.trim().is_empty() {
-        return Err(XlsxError::EmptyWorksheet);
+        return Err(ExtractionError::EmptyDocument);
     }
 
     Ok(csv)
@@ -67,7 +52,7 @@ pub fn xlsx_to_csv(bytes: &[u8]) -> Result<String, XlsxError> {
 /// Read shared strings from xl/sharedStrings.xml.
 fn read_shared_strings(
     archive: &mut zip::read::ZipArchive<Cursor<&[u8]>>,
-) -> Result<Vec<String>, XlsxError> {
+) -> Result<Vec<String>, ExtractionError> {
     // Check if sharedStrings.xml exists
     if archive.by_name("xl/sharedStrings.xml").is_err() {
         return Ok(Vec::new());
@@ -76,17 +61,17 @@ fn read_shared_strings(
     let mut content = String::new();
     {
         let mut file = archive.by_name("xl/sharedStrings.xml").map_err(|e| {
-            XlsxError::SharedStrings(format!("Failed to open sharedStrings.xml: {e}"))
+            ExtractionError::Other(format!("Failed to open sharedStrings.xml: {e}"))
         })?;
         file.read_to_string(&mut content)
-            .map_err(|_| XlsxError::Utf8Error)?;
+            .map_err(|_| ExtractionError::Utf8Error)?;
     }
 
     parse_shared_strings(&content)
 }
 
 /// Parse shared strings XML.
-fn parse_shared_strings(xml: &str) -> Result<Vec<String>, XlsxError> {
+fn parse_shared_strings(xml: &str) -> Result<Vec<String>, ExtractionError> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
@@ -139,7 +124,7 @@ fn parse_shared_strings(xml: &str) -> Result<Vec<String>, XlsxError> {
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                return Err(XlsxError::XmlParse(format!(
+                return Err(ExtractionError::XmlParse(format!(
                     "Shared strings parse error: {e}"
                 )));
             }
@@ -155,21 +140,21 @@ fn read_worksheet(
     archive: &mut zip::read::ZipArchive<Cursor<&[u8]>>,
     sheet_path: &str,
     shared_strings: &[String],
-) -> Result<String, XlsxError> {
+) -> Result<String, ExtractionError> {
     let mut content = String::new();
     {
-        let mut file = archive
-            .by_name(sheet_path)
-            .map_err(|_| XlsxError::MissingWorksheet(sheet_path.to_string()))?;
+        let mut file = archive.by_name(sheet_path).map_err(|_| {
+            ExtractionError::InvalidFormat(format!("missing worksheet: {sheet_path}"))
+        })?;
         file.read_to_string(&mut content)
-            .map_err(|_| XlsxError::Utf8Error)?;
+            .map_err(|_| ExtractionError::Utf8Error)?;
     }
 
     parse_worksheet_to_csv(&content, shared_strings)
 }
 
 /// Parse worksheet XML and convert to CSV.
-fn parse_worksheet_to_csv(xml: &str, shared_strings: &[String]) -> Result<String, XlsxError> {
+fn parse_worksheet_to_csv(xml: &str, shared_strings: &[String]) -> Result<String, ExtractionError> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
@@ -250,7 +235,9 @@ fn parse_worksheet_to_csv(xml: &str, shared_strings: &[String]) -> Result<String
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                return Err(XlsxError::XmlParse(format!("Worksheet parse error: {e}")));
+                return Err(ExtractionError::XmlParse(format!(
+                    "Worksheet parse error: {e}"
+                )));
             }
             _ => {}
         }
@@ -415,7 +402,7 @@ mod tests {
     #[test]
     fn test_xlsx_invalid_zip() {
         let result = xlsx_to_csv(b"not a zip file");
-        assert!(matches!(result, Err(XlsxError::InvalidZip)));
+        assert!(matches!(result, Err(ExtractionError::InvalidZip)));
     }
 
     #[test]
@@ -432,7 +419,7 @@ mod tests {
         }
 
         let result = xlsx_to_csv(&buf.into_inner());
-        assert!(matches!(result, Err(XlsxError::MissingWorksheet(_))));
+        assert!(matches!(result, Err(ExtractionError::InvalidFormat(_))));
     }
 
     #[test]
@@ -544,7 +531,7 @@ mod tests {
         }
 
         let result = xlsx_to_csv(&buf.into_inner());
-        assert!(matches!(result, Err(XlsxError::EmptyWorksheet)));
+        assert!(matches!(result, Err(ExtractionError::EmptyDocument)));
     }
 
     #[test]
@@ -562,7 +549,7 @@ mod tests {
         }
 
         let result = xlsx_to_csv(&buf.into_inner());
-        assert!(matches!(result, Err(XlsxError::XmlParse(_))));
+        assert!(matches!(result, Err(ExtractionError::XmlParse(_))));
     }
 
     #[test]
