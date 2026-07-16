@@ -185,7 +185,13 @@ impl MailMcpServer {
             "search_messages" => {
                 let params: SearchMessagesParams = serde_json::from_value(Value::Object(arguments))
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let response = tool_search_messages(self.config.as_ref(), params).await?;
+                let response = tool_search_messages(
+                    self.repo.clone(),
+                    self.attachment_store.clone(),
+                    self.config.as_ref(),
+                    params,
+                )
+                .await?;
                 let value = serde_json::to_value(response).map_err(|e| {
                     McpError::internal_error(
                         "failed to serialize response",

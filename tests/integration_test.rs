@@ -56,7 +56,7 @@ fn list_accounts_returns_distinct_accounts() {
 fn list_accounts_hides_disallowed_accounts() {
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
     let db_path = config.envelope_db_path();
-    let conn = make_test_db(&db_path);
+    let _conn = make_test_db(&db_path);
 
     let (repo, store) = open_repo_store(&config);
     let response = list_accounts(&repo, &store, &config, ListAccountsParams::default()).unwrap();
@@ -174,7 +174,7 @@ fn search_by_account_returns_only_matching_messages() {
 fn search_messages_defaults_to_allowed_accounts_only() {
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
     let db_path = config.envelope_db_path();
-    let conn = make_test_db(&db_path);
+    let _conn = make_test_db(&db_path);
 
     let response = search_messages(
         &config,
@@ -202,7 +202,7 @@ fn search_messages_defaults_to_allowed_accounts_only() {
 fn search_messages_rejects_disallowed_explicit_account_filter() {
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
     let db_path = config.envelope_db_path();
-    let conn = make_test_db(&db_path);
+    let _conn = make_test_db(&db_path);
 
     let err = search_messages(
         &config,
@@ -327,7 +327,7 @@ fn search_messages_prefers_database_summary_and_attachment_metadata() {
 fn search_messages_falls_back_to_emlx_preview_when_database_summary_is_missing() {
     let (_temp_dir, config) = make_test_config();
     let db_path = config.envelope_db_path();
-    let conn = make_test_db(&db_path);
+    let _conn = make_test_db(&db_path);
     seed_emlx_in_account(
         &config,
         "account-b",
@@ -455,7 +455,7 @@ fn search_with_no_filters_returns_validation_error() {
 fn get_message_returns_body_and_attachment_summary() {
     let (_temp_dir, config) = make_test_config();
     let db_path = config.envelope_db_path();
-    let conn = make_test_db(&db_path);
+    let _conn = make_test_db(&db_path);
     seed_emlx_in_account(
         &config,
         "account-a",
@@ -508,7 +508,7 @@ fn get_message_returns_body_and_attachment_summary() {
 fn get_attachment_content_returns_text_for_text_attachment() {
     let (_temp_dir, config) = make_test_config();
     let db_path = config.envelope_db_path();
-    let conn = make_test_db(&db_path);
+    let _conn = make_test_db(&db_path);
     seed_emlx_in_account(
         &config,
         "account-a",
@@ -566,7 +566,7 @@ fn list_mailboxes_returns_all_mailboxes() {
 fn list_mailboxes_hides_disallowed_accounts() {
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
     let db_path = config.envelope_db_path();
-    let conn = make_test_db(&db_path);
+    let _conn = make_test_db(&db_path);
 
     let (repo, _store) = open_repo_store(&config);
     let response = list_mailboxes(&repo, &config).unwrap();
@@ -583,7 +583,7 @@ fn list_mailboxes_hides_disallowed_accounts() {
 fn get_message_blocks_disallowed_accounts() {
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
     let db_path = config.envelope_db_path();
-    let conn = make_test_db(&db_path);
+    let _conn = make_test_db(&db_path);
 
     let (repo, store) = open_repo_store(&config);
     let err = get_message(
@@ -608,7 +608,7 @@ fn get_message_blocks_disallowed_accounts() {
 fn get_attachment_blocks_disallowed_accounts() {
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
     let db_path = config.envelope_db_path();
-    let conn = make_test_db(&db_path);
+    let _conn = make_test_db(&db_path);
     seed_emlx_in_account(
         &config,
         "account-a",
@@ -824,7 +824,7 @@ fn get_message_prefers_message_id_match_over_wrong_numeric_hint() {
 fn get_message_uses_cache_for_repeated_calls() {
     let (_temp_dir, config) = make_test_config();
     let db_path = config.envelope_db_path();
-    let conn = make_test_db(&db_path);
+    let _conn = make_test_db(&db_path);
     seed_emlx_in_account(
         &config,
         "account-a",
