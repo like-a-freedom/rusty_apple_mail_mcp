@@ -7,77 +7,83 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-/// Create an in-memory test database with a minimal schema and seed data.
-pub fn make_test_db() -> Connection {
-    let conn = Connection::open_in_memory().expect("in-memory sqlite");
-    conn.execute_batch(
-        r#"
-        CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
-        CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
-        CREATE TABLE sender_addresses (sender INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
-        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
-        CREATE TABLE messages (
-            ROWID INTEGER PRIMARY KEY,
-            subject INTEGER REFERENCES subjects,
-            sender INTEGER REFERENCES sender_addresses,
-            mailbox INTEGER REFERENCES mailboxes,
-            summary INTEGER REFERENCES summaries,
-            date_sent INTEGER,
-            date_received INTEGER,
-            message_id TEXT,
-            global_message_id INTEGER
-        );
-        CREATE TABLE summaries (
-            ROWID INTEGER PRIMARY KEY,
-            summary TEXT
-        );
-        CREATE TABLE attachments (
-            ROWID INTEGER PRIMARY KEY,
-            message INTEGER REFERENCES messages,
-            attachment_id TEXT,
-            name TEXT
-        );
-        CREATE TABLE message_global_data (
-            ROWID INTEGER PRIMARY KEY,
-            message_id INTEGER,
-            message_id_header TEXT
-        );
-        CREATE TABLE recipients (
-            message INTEGER REFERENCES messages,
-            address INTEGER REFERENCES addresses,
-            type INTEGER
-        );
+/// Create a test database at a given path with a minimal schema and seed data.
+/// If the database already exists, it just returns a connection to it.
+pub fn make_test_db(db_path: &std::path::Path) -> Connection {
+    let exists = db_path.exists();
+    let conn = Connection::open(db_path).expect("sqlite db");
 
-        -- Seed data
-        INSERT INTO subjects VALUES (1, 'Q3 Review'), (2, 'Budget Planning');
-        INSERT INTO addresses VALUES (1, 'alice@example.com'), (2, 'bob@example.com');
-        INSERT INTO sender_addresses VALUES (1, 1);
-        INSERT INTO mailboxes VALUES
-            (1, 'imap://account-a/INBOX'),
-            (2, 'ews://account-b/Inbox');
-        
-        -- Use CoreData epoch: 2024-09-15 = Unix timestamp - 978307200
-        INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
-        INSERT INTO message_global_data VALUES (20, 222, '<msg2@mail>');
-        INSERT INTO summaries VALUES (1, 'DB-backed preview for Q3 review');
-        INSERT INTO messages VALUES (1, 1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>', 10);
-        INSERT INTO messages VALUES (2, 2, 1, 2, NULL, 766627200, 766627200, '<msg2@mail>', 20);
-        
-        INSERT INTO recipients VALUES (1, 2, 1), (2, 2, 1);
-        "#,
-    )
-    .expect("seed test schema");
+    if !exists {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+            CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
+            CREATE TABLE sender_addresses (sender INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (
+                ROWID INTEGER PRIMARY KEY,
+                subject INTEGER REFERENCES subjects,
+                sender INTEGER REFERENCES sender_addresses,
+                mailbox INTEGER REFERENCES mailboxes,
+                summary INTEGER REFERENCES summaries,
+                date_sent INTEGER,
+                date_received INTEGER,
+                message_id TEXT,
+                global_message_id INTEGER
+            );
+            CREATE TABLE summaries (
+                ROWID INTEGER PRIMARY KEY,
+                summary TEXT
+            );
+            CREATE TABLE attachments (
+                ROWID INTEGER PRIMARY KEY,
+                message INTEGER REFERENCES messages,
+                attachment_id TEXT,
+                name TEXT
+            );
+            CREATE TABLE message_global_data (
+                ROWID INTEGER PRIMARY KEY,
+                message_id INTEGER,
+                message_id_header TEXT
+            );
+            CREATE TABLE recipients (
+                message INTEGER REFERENCES messages,
+                address INTEGER REFERENCES addresses,
+                type INTEGER
+            );
+
+            -- Seed data
+            INSERT INTO subjects VALUES (1, 'Q3 Review'), (2, 'Budget Planning');
+            INSERT INTO addresses VALUES (1, 'alice@example.com'), (2, 'bob@example.com');
+            INSERT INTO sender_addresses VALUES (1, 1);
+            INSERT INTO mailboxes VALUES
+                (1, 'imap://account-a/INBOX'),
+                (2, 'ews://account-b/Inbox');
+
+            INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
+            INSERT INTO message_global_data VALUES (20, 222, '<msg2@mail>');
+            INSERT INTO summaries VALUES (1, 'DB-backed preview for Q3 review');
+            INSERT INTO messages VALUES (1, 1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>', 10);
+            INSERT INTO messages VALUES (2, 2, 1, 2, NULL, 766627200, 766627200, '<msg2@mail>', 20);
+
+            INSERT INTO recipients VALUES (1, 2, 1), (2, 2, 1);
+            "#,
+        )
+        .expect("seed test schema");
+    }
     conn
 }
 
 /// Build a temporary Apple Mail-like directory and a matching config for tests.
+/// Creates a proper SQLite database at the Envelope Index path.
 pub fn make_test_config() -> (TempDir, MailConfig) {
     let temp_dir = TempDir::new().expect("temp dir");
     let mail_directory = temp_dir.path().to_path_buf();
     let mail_version = "V10".to_string();
     let db_dir = mail_directory.join(&mail_version).join("MailData");
     std::fs::create_dir_all(&db_dir).expect("mail data dir");
-    std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
+    let db_path = db_dir.join("Envelope Index");
+    let _conn = make_test_db(&db_path);
 
     let config = MailConfig::from_parts_with_accounts(
         mail_directory,
@@ -96,7 +102,8 @@ pub fn make_restricted_test_config(allowed_account_id: &str) -> (TempDir, MailCo
     let mail_version = "V10".to_string();
     let db_dir = mail_directory.join(&mail_version).join("MailData");
     std::fs::create_dir_all(&db_dir).expect("mail data dir");
-    std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
+    let db_path = db_dir.join("Envelope Index");
+    let _conn = make_test_db(&db_path);
 
     let config = MailConfig::from_parts_with_accounts(
         mail_directory,

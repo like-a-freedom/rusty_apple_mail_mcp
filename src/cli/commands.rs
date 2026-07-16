@@ -1,7 +1,9 @@
 //! CLI command implementations.
 
 use crate::config::MailConfig;
+use crate::db::SqliteMailRepository;
 use crate::error::MailMcpError;
+use crate::mail::FilesystemAttachmentStore;
 use crate::server::tools::{
     GetAttachmentParams, GetMessageParams, ListAccountsParams, SearchMessagesParams,
     list_mailboxes as server_list_mailboxes,
@@ -11,17 +13,28 @@ use crate::server::tools::{
     list_accounts as server_list_accounts, search_messages as server_search_messages,
 };
 
+fn open_repo_store(
+    config: &MailConfig,
+) -> Result<(SqliteMailRepository, FilesystemAttachmentStore), MailMcpError> {
+    let db_path = config.envelope_db_path();
+    let repo = SqliteMailRepository::new(&db_path)?;
+    let store = FilesystemAttachmentStore::new(&config.mail_directory);
+    Ok((repo, store))
+}
+
 /// Execute list_accounts command.
 pub fn list_accounts(config: &MailConfig, include_mailboxes: bool) -> Result<(), MailMcpError> {
     let params = ListAccountsParams { include_mailboxes };
-    let result = server_list_accounts(config, params)?;
+    let (repo, store) = open_repo_store(config)?;
+    let result = server_list_accounts(&repo, &store, config, params)?;
     serde_json::to_writer_pretty(std::io::stdout(), &result)?;
     Ok(())
 }
 
 /// Execute list_mailboxes command.
 pub fn list_mailboxes(config: &MailConfig) -> Result<(), MailMcpError> {
-    let result = server_list_mailboxes(config)?;
+    let (repo, _store) = open_repo_store(config)?;
+    let result = server_list_mailboxes(&repo, config)?;
     serde_json::to_writer_pretty(std::io::stdout(), &result)?;
     Ok(())
 }
@@ -76,7 +89,8 @@ pub fn get_message(config: &MailConfig, args: super::GetMessageArgs) -> Result<(
         include_attachments_summary: args.include_attachments_summary,
         include_recipients: args.include_recipients,
     };
-    let result = server_get_message(config, params)?;
+    let (repo, store) = open_repo_store(config)?;
+    let result = server_get_message(&repo, &store, config, params)?;
     serde_json::to_writer_pretty(std::io::stdout(), &result)?;
     Ok(())
 }
@@ -90,7 +104,8 @@ pub fn get_attachment(
         attachment_id: args.attachment_id,
         message_id: args.message_id,
     };
-    let result = server_get_attachment(config, params)?;
+    let (repo, store) = open_repo_store(config)?;
+    let result = server_get_attachment(&repo, &store, config, params)?;
     serde_json::to_writer_pretty(std::io::stdout(), &result)?;
     Ok(())
 }

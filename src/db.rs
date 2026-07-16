@@ -5,6 +5,8 @@ mod connection;
 mod epoch;
 mod mailboxes;
 mod messages;
+mod repository;
+mod sqlite_repo;
 
 pub use accounts::{AccountRow, list_accounts, mailbox_account_id};
 pub use connection::open_readonly;
@@ -14,3 +16,7 @@ pub use mailboxes::{count_messages_in_mailbox, list_mailboxes};
 pub use messages::{
     MessageRow, address_exists, get_message_by_id, get_recipients, search_messages, tokenize,
 };
+#[cfg(test)]
+pub use repository::FakeMailRepository;
+pub use repository::{MailRepository, SearchParams};
+pub use sqlite_repo::SqliteMailRepository;

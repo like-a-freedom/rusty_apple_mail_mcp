@@ -2,10 +2,9 @@
 
 use std::path::PathBuf;
 
-use rusqlite::Connection;
-
 use crate::config::MailConfig;
-use crate::db::{MessageRow, get_message_by_id};
+use crate::db::MailRepository;
+use crate::db::MessageRow;
 use crate::error::MailMcpError;
 use crate::mail::locate_emlx_with_hints;
 
@@ -23,10 +22,10 @@ pub(crate) enum AccessibleMessage {
 /// Returns an error if the database cannot be accessed.
 pub(crate) fn load_accessible_message(
     config: &MailConfig,
-    conn: &Connection,
+    repo: &dyn MailRepository,
     message_id: i64,
 ) -> Result<AccessibleMessage, MailMcpError> {
-    let Some(row) = get_message_by_id(conn, message_id)? else {
+    let Some(row) = repo.get_message(message_id)? else {
         return Ok(AccessibleMessage::NotFound);
     };
 
