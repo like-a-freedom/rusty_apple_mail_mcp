@@ -2,12 +2,23 @@
 
 mod support;
 
+use rusty_apple_mail_mcp::db::SqliteMailRepository;
 use rusty_apple_mail_mcp::error::MailMcpError;
+use rusty_apple_mail_mcp::mail::FilesystemAttachmentStore;
 use rusty_apple_mail_mcp::server::{MailMcpServer, tools::*};
 use support::{
     make_restricted_test_config, make_test_config, make_test_db, seed_emlx_in_account,
     seed_emlx_in_nested_mailbox,
 };
+
+fn open_repo_store(
+    config: &rusty_apple_mail_mcp::MailConfig,
+) -> (SqliteMailRepository, FilesystemAttachmentStore) {
+    let db_path = config.envelope_db_path();
+    let repo = SqliteMailRepository::new(&db_path).unwrap();
+    let store = FilesystemAttachmentStore::new(&config.mail_directory);
+    (repo, store)
+}
 
 #[test]
 fn tool_definitions_are_all_read_only() {
@@ -23,9 +34,9 @@ fn tool_definitions_are_all_read_only() {
 
 #[test]
 fn list_accounts_returns_distinct_accounts() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
-    let response = list_accounts_with_conn(&config, &conn, ListAccountsParams::default()).unwrap();
+    let (repo, store) = open_repo_store(&config);
+    let response = list_accounts(&repo, &store, &config, ListAccountsParams::default()).unwrap();
 
     assert_eq!(response.status, None);
     assert_eq!(response.total_count, Some(2));
@@ -43,10 +54,12 @@ fn list_accounts_returns_distinct_accounts() {
 
 #[test]
 fn list_accounts_hides_disallowed_accounts() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
 
-    let response = list_accounts_with_conn(&config, &conn, ListAccountsParams::default()).unwrap();
+    let (repo, store) = open_repo_store(&config);
+    let response = list_accounts(&repo, &store, &config, ListAccountsParams::default()).unwrap();
 
     assert_eq!(response.status, None);
     assert_eq!(response.total_count, Some(1));
@@ -55,12 +68,10 @@ fn list_accounts_hides_disallowed_accounts() {
 
 #[test]
 fn search_by_subject_returns_matching_messages() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
 
-    let response = search_messages_with_conn(
+    let response = search_messages(
         &config,
-        &conn,
         SearchMessagesParams {
             subject_query: Some("Q3".to_string()),
             date_from: None,
@@ -86,44 +97,17 @@ fn search_by_subject_falls_back_to_full_string_when_token_search_returns_nothing
     use rusty_apple_mail_mcp::db::tokenize;
     let (_temp_dir, config) = make_test_config();
 
-    let conn2 = rusqlite::Connection::open_in_memory().expect("in-memory db");
-    conn2.execute_batch(
-        r#"
-        CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
-        CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
-        CREATE TABLE sender_addresses (sender INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
-        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
-        CREATE TABLE messages (
-            ROWID INTEGER PRIMARY KEY,
-            subject INTEGER REFERENCES subjects,
-            sender INTEGER REFERENCES sender_addresses,
-            mailbox INTEGER REFERENCES mailboxes,
-            summary INTEGER REFERENCES summaries,
-            date_sent INTEGER,
-            date_received INTEGER,
-            message_id TEXT,
-            global_message_id INTEGER
-        );
-        CREATE TABLE summaries (ROWID INTEGER PRIMARY KEY, summary TEXT);
-        CREATE TABLE attachments (ROWID INTEGER PRIMARY KEY, message INTEGER REFERENCES messages, attachment_id TEXT, name TEXT);
-        CREATE TABLE message_global_data (ROWID INTEGER PRIMARY KEY, message_id INTEGER, message_id_header TEXT);
-        CREATE TABLE recipients (message INTEGER REFERENCES messages, address INTEGER REFERENCES addresses, type INTEGER);
-
-        INSERT INTO subjects VALUES (1, 'Q3 Review'), (2, 'Budget Planning');
+    let db_path = config.envelope_db_path();
+    let conn = rusqlite::Connection::open(&db_path).expect("open config db");
+    conn.execute_batch(
+        "
         INSERT INTO subjects VALUES (3, 'VeryLongUniqueSubjectXYZ123456789');
-        INSERT INTO addresses VALUES (1, 'alice@example.com'), (2, 'bob@example.com');
-        INSERT INTO sender_addresses VALUES (1, 1);
-        INSERT INTO mailboxes VALUES (1, 'imap://account-a/INBOX'), (2, 'ews://account-b/Inbox');
-        INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
-        INSERT INTO message_global_data VALUES (20, 222, '<msg2@mail>');
         INSERT INTO message_global_data VALUES (30, 333, '<msg3@mail>');
-        INSERT INTO summaries VALUES (1, 'DB-backed preview for Q3 review');
-        INSERT INTO messages VALUES (1, 1, 1, 1, 1, 748051200, 748051200, '<msg1@mail>', 10);
-        INSERT INTO messages VALUES (2, 2, 1, 2, NULL, 766627200, 766627200, '<msg2@mail>', 20);
         INSERT INTO messages VALUES (3, 3, 1, 1, NULL, 750000000, 750000000, '<msg3@mail>', 30);
-        INSERT INTO recipients VALUES (1, 2, 1), (2, 2, 1);
-        "#,
-    ).unwrap();
+        ",
+    )
+    .unwrap();
+    drop(conn);
 
     let tokens = tokenize("VeryLongUniqueSubjectXYZ123456789");
     assert!(
@@ -131,9 +115,8 @@ fn search_by_subject_falls_back_to_full_string_when_token_search_returns_nothing
         "There should be tokens for fallback test"
     );
 
-    let response = search_messages_with_conn(
+    let response = search_messages(
         &config,
-        &conn2,
         SearchMessagesParams {
             subject_query: Some("VeryLongUniqueSubjectXYZ123456789".to_string()),
             date_from: None,
@@ -162,12 +145,10 @@ fn search_by_subject_falls_back_to_full_string_when_token_search_returns_nothing
 
 #[test]
 fn search_by_account_returns_only_matching_messages() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
 
-    let response = search_messages_with_conn(
+    let response = search_messages(
         &config,
-        &conn,
         SearchMessagesParams {
             subject_query: None,
             date_from: None,
@@ -191,12 +172,12 @@ fn search_by_account_returns_only_matching_messages() {
 
 #[test]
 fn search_messages_defaults_to_allowed_accounts_only() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
 
-    let response = search_messages_with_conn(
+    let response = search_messages(
         &config,
-        &conn,
         SearchMessagesParams {
             subject_query: Some("Budget".to_string()),
             date_from: None,
@@ -219,12 +200,12 @@ fn search_messages_defaults_to_allowed_accounts_only() {
 
 #[test]
 fn search_messages_rejects_disallowed_explicit_account_filter() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
 
-    let err = search_messages_with_conn(
+    let err = search_messages(
         &config,
-        &conn,
         SearchMessagesParams {
             subject_query: Some("Q3".to_string()),
             date_from: None,
@@ -246,8 +227,9 @@ fn search_messages_rejects_disallowed_explicit_account_filter() {
 
 #[test]
 fn search_messages_reports_attachment_count_without_body_preview() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
     conn.execute(
         "INSERT INTO attachments (ROWID, message, attachment_id, name) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![1_i64, 1_i64, "att-1", "notes.txt"],
@@ -278,9 +260,8 @@ fn search_messages_reports_attachment_count_without_body_preview() {
         ),
     );
 
-    let response = search_messages_with_conn(
+    let response = search_messages(
         &config,
-        &conn,
         SearchMessagesParams {
             subject_query: Some("Q3".to_string()),
             date_from: None,
@@ -304,8 +285,9 @@ fn search_messages_reports_attachment_count_without_body_preview() {
 
 #[test]
 fn search_messages_prefers_database_summary_and_attachment_metadata() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
     conn.execute_batch(
         r#"
         INSERT INTO attachments (ROWID, message, attachment_id, name) VALUES
@@ -315,9 +297,8 @@ fn search_messages_prefers_database_summary_and_attachment_metadata() {
     )
     .unwrap();
 
-    let response = search_messages_with_conn(
+    let response = search_messages(
         &config,
-        &conn,
         SearchMessagesParams {
             subject_query: Some("Q3".to_string()),
             date_from: None,
@@ -344,8 +325,9 @@ fn search_messages_prefers_database_summary_and_attachment_metadata() {
 
 #[test]
 fn search_messages_falls_back_to_emlx_preview_when_database_summary_is_missing() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
     seed_emlx_in_account(
         &config,
         "account-b",
@@ -361,9 +343,8 @@ fn search_messages_falls_back_to_emlx_preview_when_database_summary_is_missing()
         ),
     );
 
-    let response = search_messages_with_conn(
+    let response = search_messages(
         &config,
-        &conn,
         SearchMessagesParams {
             subject_query: Some("Budget".to_string()),
             date_from: None,
@@ -389,8 +370,9 @@ fn search_messages_falls_back_to_emlx_preview_when_database_summary_is_missing()
 
 #[test]
 fn search_messages_counts_attachments_from_database_for_nested_mailbox_results() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
     conn.execute(
         "INSERT INTO attachments (ROWID, message, attachment_id, name) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![1_i64, 2_i64, "agenda-1", "agenda.txt"],
@@ -422,9 +404,8 @@ fn search_messages_counts_attachments_from_database_for_nested_mailbox_results()
         ),
     );
 
-    let response = search_messages_with_conn(
+    let response = search_messages(
         &config,
-        &conn,
         SearchMessagesParams {
             subject_query: Some("Budget".to_string()),
             date_from: None,
@@ -447,12 +428,10 @@ fn search_messages_counts_attachments_from_database_for_nested_mailbox_results()
 
 #[test]
 fn search_with_no_filters_returns_validation_error() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
 
-    let err = search_messages_with_conn(
+    let err = search_messages(
         &config,
-        &conn,
         SearchMessagesParams {
             subject_query: None,
             date_from: None,
@@ -474,8 +453,9 @@ fn search_with_no_filters_returns_validation_error() {
 
 #[test]
 fn get_message_returns_body_and_attachment_summary() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
     seed_emlx_in_account(
         &config,
         "account-a",
@@ -501,9 +481,11 @@ fn get_message_returns_body_and_attachment_summary() {
         ),
     );
 
-    let response = get_message_with_conn(
+    let (repo, store) = open_repo_store(&config);
+    let response = get_message(
+        &repo,
+        &store,
         &config,
-        &conn,
         GetMessageParams {
             message_id: "1".to_string(),
             include_body: true,
@@ -524,8 +506,9 @@ fn get_message_returns_body_and_attachment_summary() {
 
 #[test]
 fn get_attachment_content_returns_text_for_text_attachment() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
     seed_emlx_in_account(
         &config,
         "account-a",
@@ -551,9 +534,11 @@ fn get_attachment_content_returns_text_for_text_attachment() {
         ),
     );
 
-    let response = get_attachment_content_with_conn(
+    let (repo, store) = open_repo_store(&config);
+    let response = get_attachment_content(
+        &repo,
+        &store,
         &config,
-        &conn,
         GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
@@ -568,9 +553,9 @@ fn get_attachment_content_returns_text_for_text_attachment() {
 
 #[test]
 fn list_mailboxes_returns_all_mailboxes() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
-    let response = list_mailboxes_with_conn(&config, &conn).unwrap();
+    let (repo, _store) = open_repo_store(&config);
+    let response = list_mailboxes(&repo, &config).unwrap();
 
     assert_eq!(response.status, None);
     assert_eq!(response.total_count, Some(2));
@@ -579,10 +564,12 @@ fn list_mailboxes_returns_all_mailboxes() {
 
 #[test]
 fn list_mailboxes_hides_disallowed_accounts() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
 
-    let response = list_mailboxes_with_conn(&config, &conn).unwrap();
+    let (repo, _store) = open_repo_store(&config);
+    let response = list_mailboxes(&repo, &config).unwrap();
 
     assert_eq!(response.status, None);
     assert_eq!(response.total_count, Some(1));
@@ -594,12 +581,15 @@ fn list_mailboxes_hides_disallowed_accounts() {
 
 #[test]
 fn get_message_blocks_disallowed_accounts() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
 
-    let err = get_message_with_conn(
+    let (repo, store) = open_repo_store(&config);
+    let err = get_message(
+        &repo,
+        &store,
         &config,
-        &conn,
         GetMessageParams {
             message_id: "1".to_string(),
             include_body: false,
@@ -616,8 +606,9 @@ fn get_message_blocks_disallowed_accounts() {
 
 #[test]
 fn get_attachment_blocks_disallowed_accounts() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
     seed_emlx_in_account(
         &config,
         "account-a",
@@ -643,9 +634,11 @@ fn get_attachment_blocks_disallowed_accounts() {
         ),
     );
 
-    let err = get_attachment_content_with_conn(
+    let (repo, store) = open_repo_store(&config);
+    let err = get_attachment_content(
+        &repo,
+        &store,
         &config,
-        &conn,
         GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
@@ -659,7 +652,9 @@ fn get_attachment_blocks_disallowed_accounts() {
 
 #[test]
 fn get_message_reads_body_from_nested_mailbox_uuid_data_layout() {
-    let conn = make_test_db();
+    let (_temp_dir, config) = make_test_config();
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
     conn.execute(
         "UPDATE mailboxes SET url = ?1 WHERE ROWID = 2",
         ["ews://account-b/Inbox/Internal%20services/Confluence"],
@@ -682,9 +677,11 @@ fn get_message_reads_body_from_nested_mailbox_uuid_data_layout() {
         ),
     );
 
-    let response = get_message_with_conn(
+    let (repo, store) = open_repo_store(&config);
+    let response = get_message(
+        &repo,
+        &store,
         &config,
-        &conn,
         GetMessageParams {
             message_id: "2".to_string(),
             include_body: true,
@@ -702,7 +699,9 @@ fn get_message_reads_body_from_nested_mailbox_uuid_data_layout() {
 
 #[test]
 fn get_attachment_reads_attachment_from_nested_mailbox_uuid_data_layout() {
-    let conn = make_test_db();
+    let (_temp_dir, config) = make_test_config();
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
     conn.execute(
         "INSERT INTO attachments (ROWID, message, attachment_id, name) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![1_i64, 2_i64, "agenda-1", "agenda.txt"],
@@ -735,9 +734,11 @@ fn get_attachment_reads_attachment_from_nested_mailbox_uuid_data_layout() {
         ),
     );
 
-    let response = get_attachment_content_with_conn(
+    let (repo, store) = open_repo_store(&config);
+    let response = get_attachment_content(
+        &repo,
+        &store,
         &config,
-        &conn,
         GetAttachmentParams {
             attachment_id: "2:0".to_string(),
             message_id: "2".to_string(),
@@ -753,7 +754,9 @@ fn get_attachment_reads_attachment_from_nested_mailbox_uuid_data_layout() {
 
 #[test]
 fn get_message_prefers_message_id_match_over_wrong_numeric_hint() {
-    let conn = make_test_db();
+    let (_temp_dir, config) = make_test_config();
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
     conn.execute(
         "UPDATE messages SET global_message_id = ?1 WHERE ROWID = 2",
         [99974],
@@ -797,9 +800,11 @@ fn get_message_prefers_message_id_match_over_wrong_numeric_hint() {
     )
     .unwrap();
 
-    let response = get_message_with_conn(
+    let (repo, store) = open_repo_store(&config);
+    let response = get_message(
+        &repo,
+        &store,
         &config,
-        &conn,
         GetMessageParams {
             message_id: "2".to_string(),
             include_body: true,
@@ -817,8 +822,9 @@ fn get_message_prefers_message_id_match_over_wrong_numeric_hint() {
 
 #[test]
 fn get_message_uses_cache_for_repeated_calls() {
-    let conn = make_test_db();
     let (_temp_dir, config) = make_test_config();
+    let db_path = config.envelope_db_path();
+    let conn = make_test_db(&db_path);
     seed_emlx_in_account(
         &config,
         "account-a",
@@ -851,7 +857,8 @@ fn get_message_uses_cache_for_repeated_calls() {
         include_recipients: false,
     };
 
-    let first = get_message_with_conn(&config, &conn, params.clone()).unwrap();
+    let (repo, store) = open_repo_store(&config);
+    let first = get_message(&repo, &store, &config, params.clone()).unwrap();
     assert_eq!(first.status, None);
     let first_message = first.message.expect("first message");
     assert!(
@@ -861,7 +868,7 @@ fn get_message_uses_cache_for_repeated_calls() {
             .contains("Hello from emlx body")
     );
 
-    let second = get_message_with_conn(&config, &conn, params).unwrap();
+    let second = get_message(&repo, &store, &config, params).unwrap();
     assert_eq!(second.status, None);
     let second_message = second.message.expect("second message");
     assert!(

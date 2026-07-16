@@ -1,12 +1,13 @@
 //! `get_attachment_content` tool implementation.
 
-use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::MailConfig;
+use crate::db::MailRepository;
 use crate::domain::{AttachmentMeta, ContentFormat};
 use crate::error::MailMcpError;
+use crate::mail::AttachmentStore;
 use crate::mail::{extract_text, parse_emlx};
 use crate::server::tools::ResponseStatus;
 use crate::server::tools::message_lookup::{
@@ -83,7 +84,7 @@ pub struct GetAttachmentResult {
     pub extraction_method: Option<String>,
 }
 
-/// Execute `get_attachment_content` against an already-open `SQLite` connection.
+/// Execute `get_attachment_content` using the repository trait.
 ///
 /// # Errors
 ///
@@ -92,7 +93,7 @@ pub struct GetAttachmentResult {
 #[allow(clippy::ptr_arg, clippy::needless_pass_by_value)]
 pub fn get_attachment_content_with_conn(
     config: &MailConfig,
-    conn: &Connection,
+    repo: &dyn MailRepository,
     params: GetAttachmentParams,
 ) -> Result<GetAttachmentResponse, MailMcpError> {
     let message_id: i64 = match params.message_id.parse() {
@@ -132,7 +133,7 @@ pub fn get_attachment_content_with_conn(
         ));
     }
 
-    let row = match load_accessible_message(config, conn, message_id)? {
+    let row = match load_accessible_message(config, repo, message_id)? {
         AccessibleMessage::Found(row) => row,
         AccessibleMessage::NotFound => {
             return Err(MailMcpError::MessageNotFound {
@@ -223,26 +224,27 @@ pub fn get_attachment_content_with_conn(
 ///
 /// Returns an error if the database cannot be opened or accessed.
 pub fn get_attachment_content(
+    repo: &dyn MailRepository,
+    _store: &dyn AttachmentStore,
     config: &MailConfig,
     params: GetAttachmentParams,
 ) -> Result<GetAttachmentResponse, MailMcpError> {
-    let db_path = config.envelope_db_path();
-    let conn = crate::db::open_readonly(&db_path)?;
-    get_attachment_content_with_conn(config, &conn, params)
+    get_attachment_content_with_conn(config, repo, params)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::ContentFormat;
-    use rusqlite::Connection;
+    use crate::db::SqliteMailRepository;
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
 
     /// Create an in-memory test database with a minimal schema and seed data.
-    fn make_test_db() -> Connection {
-        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+    fn make_test_repo() -> (TempDir, SqliteMailRepository) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("test.db");
+        let conn = rusqlite::Connection::open(&db_path).expect("create db");
         conn.execute_batch(
             r#"
             CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
@@ -281,7 +283,9 @@ mod tests {
             "#,
         )
         .expect("seed test schema");
-        conn
+        drop(conn);
+        let repo = SqliteMailRepository::new(db_path).unwrap();
+        (temp_dir, repo)
     }
 
     fn create_minimal_docx() -> Vec<u8> {
@@ -361,15 +365,14 @@ mod tests {
 
     #[test]
     fn get_attachment_content_with_conn_invalid_attachment_id_format() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
+        let (temp_dir, repo) = make_test_repo();
         let config = make_test_config(&temp_dir, None);
         let params = GetAttachmentParams {
             attachment_id: "invalid".to_string(),
             message_id: "1".to_string(),
         };
 
-        let err = get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
+        let err = get_attachment_content_with_conn(&config, &repo, params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::Validation(_)));
         assert!(err.to_string().contains("Invalid attachment_id format"));
@@ -377,15 +380,14 @@ mod tests {
 
     #[test]
     fn get_attachment_content_with_conn_message_not_found() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
+        let (temp_dir, repo) = make_test_repo();
         let config = make_test_config(&temp_dir, None);
         let params = GetAttachmentParams {
             attachment_id: "999:0".to_string(),
             message_id: "999".to_string(),
         };
 
-        let err = get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
+        let err = get_attachment_content_with_conn(&config, &repo, params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::MessageNotFound { .. }));
         assert!(err.to_string().contains("not found"));
@@ -393,15 +395,14 @@ mod tests {
 
     #[test]
     fn get_attachment_content_with_conn_blocked_account() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
+        let (temp_dir, repo) = make_test_repo();
         let config = make_test_config(&temp_dir, Some(vec!["ews://other-account".to_string()]));
         let params = GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
         };
 
-        let err = get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
+        let err = get_attachment_content_with_conn(&config, &repo, params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::Validation(_)));
         assert!(err.to_string().contains("excluded by APPLE_MAIL_ACCOUNT"));
@@ -409,16 +410,16 @@ mod tests {
 
     #[test]
     fn get_attachment_content_with_conn_attachment_not_found() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
-        let config = make_test_config(&temp_dir, None);
+        let (temp_dir, repo) = make_test_repo();
+        let temp_dir2 = TempDir::new().unwrap();
+        let config = make_test_config(&temp_dir2, None);
         let params = GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
         };
 
         // Create a fake .emlx file without attachments
-        let mail_dir = temp_dir
+        let mail_dir = temp_dir2
             .path()
             .join("V10")
             .join("account-a")
@@ -437,7 +438,7 @@ mod tests {
         let emlx_content = format!("{}\n{}", email_content.len(), email_content);
         fs::write(&emlx_path, emlx_content).unwrap();
 
-        let err = get_attachment_content_with_conn(&config, &conn, params).unwrap_err();
+        let err = get_attachment_content_with_conn(&config, &repo, params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::AttachmentNotFound { .. }));
         assert!(err.to_string().contains("not found"));
@@ -445,16 +446,16 @@ mod tests {
 
     #[test]
     fn get_attachment_content_with_conn_success_text_attachment() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
-        let config = make_test_config(&temp_dir, None);
+        let (temp_dir, repo) = make_test_repo();
+        let temp_dir2 = TempDir::new().unwrap();
+        let config = make_test_config(&temp_dir2, None);
         let params = GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
         };
 
         // Create a fake .emlx file with a text attachment
-        let mail_dir = temp_dir
+        let mail_dir = temp_dir2
             .path()
             .join("V10")
             .join("account-a")
@@ -483,7 +484,7 @@ mod tests {
         let emlx_content = format!("{}\n{}", email_content.len(), email_content);
         fs::write(&emlx_path, emlx_content).unwrap();
 
-        let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
+        let response = get_attachment_content_with_conn(&config, &repo, params).unwrap();
 
         assert_eq!(response.status, None);
         assert!(response.attachment.is_some());
@@ -496,16 +497,16 @@ mod tests {
 
     #[test]
     fn get_attachment_content_with_conn_success_binary_attachment() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
-        let config = make_test_config(&temp_dir, None);
+        let (temp_dir, repo) = make_test_repo();
+        let temp_dir2 = TempDir::new().unwrap();
+        let config = make_test_config(&temp_dir2, None);
         let params = GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
         };
 
         // Create a fake .emlx file with a binary attachment (image)
-        let mail_dir = temp_dir
+        let mail_dir = temp_dir2
             .path()
             .join("V10")
             .join("account-a")
@@ -534,7 +535,7 @@ mod tests {
         let emlx_content = format!("{}\n{}", email_content.len(), email_content);
         fs::write(&emlx_path, emlx_content).unwrap();
 
-        let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
+        let response = get_attachment_content_with_conn(&config, &repo, params).unwrap();
 
         // Should return partial status with guidance about OCR
         assert_eq!(response.status, Some(ResponseStatus::Partial));
@@ -549,15 +550,23 @@ mod tests {
 
     #[test]
     fn get_attachment_content_with_conn_falls_back_to_external_apple_mail_attachment() {
-        let conn = make_test_db();
-        conn.execute(
-            "INSERT INTO attachments (ROWID, message, attachment_id, name) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![1_i64, 1_i64, "2", "Test Document.docx"],
-        )
-        .unwrap();
+        let (temp_dir, repo) = make_test_repo();
+        // Add attachment to the database via direct connection
+        let db_path = temp_dir.path().join("test.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute(
+                "INSERT INTO attachments (ROWID, message, attachment_id, name) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![1_i64, 1_i64, "2", "Test Document.docx"],
+            )
+            .unwrap();
+            drop(conn);
+        }
+        // Re-create repo to pick up new data
+        let repo = SqliteMailRepository::new(&db_path).unwrap();
 
-        let temp_dir = TempDir::new().unwrap();
-        let config = make_test_config(&temp_dir, None);
+        let temp_dir2 = TempDir::new().unwrap();
+        let config = make_test_config(&temp_dir2, None);
         let params = GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
@@ -565,7 +574,7 @@ mod tests {
 
         let docx_bytes = create_minimal_docx();
 
-        let mail_dir = temp_dir
+        let mail_dir = temp_dir2
             .path()
             .join("V10")
             .join("account-a")
@@ -605,7 +614,7 @@ mod tests {
         fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
         fs::write(&attachment_path, docx_bytes).unwrap();
 
-        let response = get_attachment_content_with_conn(&config, &conn, params).unwrap();
+        let response = get_attachment_content_with_conn(&config, &repo, params).unwrap();
 
         assert_eq!(response.status, None);
         let attachment = response.attachment.expect("attachment result");

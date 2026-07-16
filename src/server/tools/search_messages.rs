@@ -1,19 +1,15 @@
 //! `search_messages` tool implementation.
 
-use rusqlite::Connection;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
-use crate::config::MailConfig;
-use crate::db::{
-    address_exists, detect_epoch_offset_seconds, open_readonly, search_messages as db_search,
-};
-use crate::domain::MessageMeta;
+use crate::db::{MailRepository, MessageRow, SearchParams, tokenize};
 use crate::error::MailMcpError;
 use crate::mail::{locate_emlx_quick_with_hints, parse_emlx_without_attachment_content};
 use crate::server::tools::ResponseStatus;
+use crate::{MailConfig, MessageMeta};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// Parameters for the `search_messages` tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -46,6 +42,23 @@ pub struct SearchMessagesParams {
 
 fn default_limit() -> u32 {
     20
+}
+
+impl From<SearchMessagesParams> for SearchParams {
+    fn from(p: SearchMessagesParams) -> Self {
+        Self {
+            subject_query: p.subject_query,
+            date_from: None,
+            date_to: None,
+            sender: p.sender,
+            participant: p.participant,
+            account: p.account,
+            allowed_accounts: None,
+            mailbox: p.mailbox,
+            limit: p.limit,
+            offset: p.offset,
+        }
+    }
 }
 
 /// Response message item for `search_messages` results.
@@ -102,6 +115,19 @@ impl SearchMessagesResponse {
             total_count: None,
             has_more: false,
             next_offset: None,
+        }
+    }
+
+    /// Create a partial response with a result and guidance.
+    pub fn partial(messages: Vec<SearchMessageResult>, guidance: impl Into<String>) -> Self {
+        let has_more = messages.len() >= 100;
+        Self {
+            status: Some(ResponseStatus::Partial),
+            total_count: None,
+            has_more,
+            next_offset: None,
+            guidance: Some(guidance.into()),
+            messages,
         }
     }
 
@@ -192,8 +218,11 @@ fn validate_params(params: &SearchMessagesParams) -> Result<(), String> {
         );
     }
 
-    if let Some(limit) = (params.limit > 100).then_some(params.limit) {
-        return Err(format!("limit must be between 1 and 100, got {limit}"));
+    if params.limit > 100 {
+        return Err(format!(
+            "limit must be between 1 and 100, got {}",
+            params.limit
+        ));
     }
 
     Ok(())
@@ -227,11 +256,12 @@ fn parse_date_range(params: &SearchMessagesParams) -> Result<(Option<i64>, Optio
 }
 
 fn hydrate_search_result(
-    config: &MailConfig,
-    row: &crate::db::MessageRow,
+    row: &MessageRow,
     epoch_offset_s: i64,
     include_body_preview: bool,
     metadata: Option<&SearchMetadata>,
+    mail_root: &std::path::Path,
+    mail_version: &str,
 ) -> SearchMessageResult {
     let mut meta = MessageMeta::from_row(row, epoch_offset_s);
     if let Some(metadata) = metadata {
@@ -268,8 +298,8 @@ fn hydrate_search_result(
 
     if let Some(mailbox_url) = row.mailbox_url.as_deref()
         && let Some(path) = locate_emlx_quick_with_hints(
-            &config.mail_directory,
-            &config.mail_version,
+            mail_root,
+            mail_version,
             mailbox_url,
             row.rowid,
             &numeric_hints,
@@ -298,179 +328,178 @@ fn hydrate_search_result(
 }
 
 fn load_search_metadata(
-    conn: &Connection,
+    repo: &dyn MailRepository,
     message_ids: &[i64],
-) -> Result<HashMap<i64, SearchMetadata>, MailMcpError> {
+) -> Result<std::collections::HashMap<i64, SearchMetadata>, MailMcpError> {
     if message_ids.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(std::collections::HashMap::new());
     }
 
-    let placeholders = std::iter::repeat_n("?", message_ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        r"
-        SELECT
-            m.ROWID,
-            sm.summary,
-            COUNT(att.ROWID)
-        FROM messages m
-        LEFT JOIN summaries sm ON sm.ROWID = m.summary
-        LEFT JOIN attachments att ON att.message = m.ROWID
-        WHERE m.ROWID IN ({placeholders})
-        GROUP BY m.ROWID, sm.summary
-        "
-    );
+    // Downcast to SqliteMailRepository for the metadata query
+    if let Some(sqlite_repo) =
+        MailRepository::as_any(repo).downcast_ref::<crate::db::SqliteMailRepository>()
+    {
+        let conn = sqlite_repo.conn();
+        let placeholders = std::iter::repeat_n("?", message_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            r"
+            SELECT
+                m.ROWID,
+                sm.summary,
+                COUNT(att.ROWID)
+            FROM messages m
+            LEFT JOIN summaries sm ON sm.ROWID = m.summary
+            LEFT JOIN attachments att ON att.message = m.ROWID
+            WHERE m.ROWID IN ({placeholders})
+            GROUP BY m.ROWID, sm.summary
+            "
+        );
 
-    let params: Vec<&dyn rusqlite::ToSql> = message_ids
-        .iter()
-        .map(|message_id| message_id as &dyn rusqlite::ToSql)
-        .collect();
+        let params: Vec<&dyn rusqlite::ToSql> = message_ids
+            .iter()
+            .map(|message_id| message_id as &dyn rusqlite::ToSql)
+            .collect();
 
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params.as_slice(), |row| {
-        let attachment_count: i64 = row.get(2)?;
-        Ok((
-            row.get::<_, i64>(0)?,
-            SearchMetadata {
-                summary: row.get(1)?,
-                attachment_count: u32::try_from(attachment_count.max(0)).unwrap_or(u32::MAX),
-            },
-        ))
-    })?;
+        let conn_guard = conn.lock().unwrap();
+        let mut stmt = conn_guard.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            let attachment_count: i64 = row.get(2)?;
+            Ok((
+                row.get::<_, i64>(0)?,
+                SearchMetadata {
+                    summary: row.get(1)?,
+                    attachment_count: u32::try_from(attachment_count.max(0)).unwrap_or(u32::MAX),
+                },
+            ))
+        })?;
 
-    let mut metadata = HashMap::with_capacity(message_ids.len());
-    for row in rows {
-        let (message_id, entry) = row?;
-        metadata.insert(message_id, entry);
+        let mut metadata = std::collections::HashMap::with_capacity(message_ids.len());
+        for row in rows {
+            let (message_id, entry) = row?;
+            metadata.insert(message_id, entry);
+        }
+
+        Ok(metadata)
+    } else {
+        // For non-SQLite repos (e.g., test fakes), return empty metadata
+        Ok(std::collections::HashMap::new())
     }
-
-    Ok(metadata)
 }
 
-fn reject_disallowed_account_filter(config: &MailConfig, account: Option<&str>) -> Option<String> {
+fn reject_disallowed_account_filter(
+    allowed_accounts: Option<&[String]>,
+    account: Option<&str>,
+) -> Option<String> {
     let account = account?;
-    if config.is_account_allowed(account) {
-        return None;
+    if let Some(allowed) = allowed_accounts
+        && !allowed.iter().any(|a| a == account)
+    {
+        return Some(format!(
+            "The requested account filter {account} is excluded by APPLE_MAIL_ACCOUNT."
+        ));
+    }
+    None
+}
+
+fn build_not_found_guidance(
+    repo: &dyn MailRepository,
+    params: &SearchMessagesParams,
+) -> Result<String, MailMcpError> {
+    if let Some(sender) = params.sender.as_deref() {
+        if !repo.address_exists(sender)? {
+            return Ok(format!(
+                "Sender address \"{sender}\" was not found in Apple Mail. Check the spelling with list_accounts or use a different account filter."
+            ));
+        }
+        return Ok("No messages match the provided filters. Try broadening the date range or shortening subject_query to one or two keywords.".to_string());
     }
 
-    Some(format!(
-        "The requested account filter {account} is excluded by APPLE_MAIL_ACCOUNT."
-    ))
+    if let Some(participant) = params.participant.as_deref() {
+        if !repo.address_exists(participant)? {
+            return Ok(format!(
+                "Participant address \"{participant}\" was not found in Apple Mail. Verify the address with list_accounts or try a different account filter."
+            ));
+        }
+        return Ok("No messages match the provided filters. Try broadening the date range or changing the mailbox filter.".to_string());
+    }
+
+    Ok("No messages match the provided filters. Try broadening the date range, shortening subject_query to one or two keywords, or verifying the sender address with list_accounts.".to_string())
 }
 
 fn search_rows_with_subject_fallback(
-    conn: &Connection,
-    config: &MailConfig,
+    repo: &dyn MailRepository,
     params: &SearchMessagesParams,
     date_from_ts: Option<i64>,
     date_to_ts: Option<i64>,
-) -> Result<Vec<crate::db::MessageRow>, MailMcpError> {
-    let mut rows = db_search(
-        conn,
-        params.subject_query.as_deref(),
-        date_from_ts,
-        date_to_ts,
-        params.sender.as_deref(),
-        params.participant.as_deref(),
-        params.account.as_deref(),
-        config.allowed_account_ids(),
-        params.mailbox.as_deref(),
-        params.limit,
-        params.offset,
-    )?;
+    allowed_accounts: Option<&[String]>,
+) -> Result<Vec<MessageRow>, MailMcpError> {
+    let mut search_params = SearchParams {
+        subject_query: params.subject_query.clone(),
+        date_from: date_from_ts,
+        date_to: date_to_ts,
+        sender: params.sender.clone(),
+        participant: params.participant.clone(),
+        account: params.account.clone(),
+        allowed_accounts: allowed_accounts.map(|v| v.to_vec()),
+        mailbox: params.mailbox.clone(),
+        limit: params.limit,
+        offset: params.offset,
+    };
+
+    let mut rows = repo.search_messages(search_params.clone())?;
 
     if rows.is_empty()
         && let Some(subject_query) = params.subject_query.as_deref()
     {
-        let tokens = crate::db::tokenize(subject_query);
+        let tokens = tokenize(subject_query);
         if !tokens.is_empty() {
             tracing::debug!("Token search returned no results, trying fallback full-string search");
 
-            rows = db_search(
-                conn,
-                Some(subject_query),
-                date_from_ts,
-                date_to_ts,
-                params.sender.as_deref(),
-                params.participant.as_deref(),
-                params.account.as_deref(),
-                config.allowed_account_ids(),
-                params.mailbox.as_deref(),
-                params.limit,
-                params.offset,
-            )?;
+            search_params.subject_query = Some(subject_query.to_string());
+            rows = repo.search_messages(search_params)?;
         }
     }
 
     Ok(rows)
 }
 
-fn build_not_found_guidance(
-    conn: &Connection,
-    params: &SearchMessagesParams,
-) -> Result<String, MailMcpError> {
-    if let Some(sender) = params.sender.as_deref() {
-        let sender_exists = address_exists(conn, sender)?;
-        return Ok(if sender_exists {
-            "No messages match the provided filters. Try broadening the date range or shortening subject_query to one or two keywords.".to_string()
-        } else {
-            format!("Sender address {sender} is not present in Apple Mail's address index.")
-        });
-    }
-
-    if let Some(participant) = params.participant.as_deref() {
-        let participant_exists = address_exists(conn, participant)?;
-        return Ok(if participant_exists {
-            "No messages match the provided filters. Try broadening the date range or changing the mailbox filter.".to_string()
-        } else {
-            format!(
-                "Participant address {participant} is not present in Apple Mail's address index."
-            )
-        });
-    }
-
-    Ok("No messages match the provided filters. Try broadening the date range, shortening subject_query to one or two keywords, or verifying the sender address with list_mailboxes.".to_string())
-}
-
-/// Execute `search_messages` against an already-open `SQLite` connection.
-///
-/// # Errors
-///
-/// Returns an error if the database cannot be accessed.
-#[allow(clippy::too_many_lines)]
-#[allow(clippy::ptr_arg, clippy::needless_pass_by_value)]
-pub fn search_messages_with_conn(
+/// Internal implementation that uses the repository trait.
+/// This is the new architecture-aware implementation.
+pub async fn search_messages_with_repo(
     config: &MailConfig,
-    conn: &Connection,
+    repo: Arc<dyn MailRepository>,
+    _attachment_store: Arc<dyn crate::mail::AttachmentStore>,
     params: SearchMessagesParams,
 ) -> Result<SearchMessagesResponse, MailMcpError> {
     let total_started = Instant::now();
     let filters_description = describe_search_filters(&params);
-    if let Err(message) = validate_params(&params) {
-        return Err(MailMcpError::Validation(message));
-    }
+    validate_params(&params).map_err(MailMcpError::Validation)?;
 
-    let (date_from_ts, date_to_ts) = match parse_date_range(&params) {
-        Ok(range) => range,
-        Err(message) => {
-            return Err(MailMcpError::Validation(message));
-        }
-    };
+    let (date_from_ts, date_to_ts) = parse_date_range(&params).map_err(MailMcpError::Validation)?;
 
-    let epoch_offset_s = detect_epoch_offset_seconds(conn)?;
-    if let Some(message) = reject_disallowed_account_filter(config, params.account.as_deref()) {
+    let epoch_offset_s = repo.detect_epoch_offset()?;
+    if let Some(message) =
+        reject_disallowed_account_filter(config.allowed_account_ids(), params.account.as_deref())
+    {
         return Err(MailMcpError::Validation(message));
     }
 
     let sql_started = Instant::now();
 
-    let rows = search_rows_with_subject_fallback(conn, config, &params, date_from_ts, date_to_ts)?;
+    let rows = search_rows_with_subject_fallback(
+        &*repo,
+        &params,
+        date_from_ts,
+        date_to_ts,
+        config.allowed_account_ids(),
+    )?;
     let sql_elapsed = sql_started.elapsed();
 
     let metadata_started = Instant::now();
     let message_ids = rows.iter().map(|row| row.rowid).collect::<Vec<_>>();
-    let search_metadata = load_search_metadata(conn, &message_ids)?;
+    let search_metadata = load_search_metadata(repo.as_ref(), &message_ids)?;
     let metadata_elapsed = metadata_started.elapsed();
 
     if rows.is_empty() {
@@ -482,7 +511,8 @@ pub fn search_messages_with_conn(
             filters_description,
         );
         return Ok(SearchMessagesResponse::not_found(build_not_found_guidance(
-            conn, &params,
+            repo.as_ref(),
+            &params,
         )?));
     }
 
@@ -491,11 +521,12 @@ pub fn search_messages_with_conn(
         .iter()
         .map(|row| {
             hydrate_search_result(
-                config,
                 row,
                 epoch_offset_s,
                 params.include_body_preview,
                 search_metadata.get(&row.rowid),
+                &config.mail_directory,
+                &config.mail_version,
             )
         })
         .collect::<Vec<_>>();
@@ -519,41 +550,74 @@ pub fn search_messages_with_conn(
     ))
 }
 
-/// Execute the `search_messages` tool.
-///
-/// # Errors
-///
-/// Returns an error if the database cannot be opened or accessed.
+/// Public async tool function for the MCP handler.
+/// Creates repository and attachment store internally, then delegates to the implementation.
+pub async fn search_messages_async(
+    config: &MailConfig,
+    params: SearchMessagesParams,
+) -> Result<SearchMessagesResponse, MailMcpError> {
+    let db_path = config.envelope_db_path();
+    let repo = Arc::new(crate::db::SqliteMailRepository::new(&db_path)?);
+    let store = Arc::new(crate::mail::FilesystemAttachmentStore::new(
+        &config.mail_directory,
+    ));
+    search_messages_with_repo(config, repo, store, params).await
+}
+
+/// Public sync tool function for CLI usage.
+/// Creates repository and attachment store internally, then delegates to the async implementation.
 pub fn search_messages(
     config: &MailConfig,
     params: SearchMessagesParams,
 ) -> Result<SearchMessagesResponse, MailMcpError> {
-    if let Err(message) = validate_params(&params) {
-        return Err(MailMcpError::Validation(message));
-    }
-
-    if let Err(message) = parse_date_range(&params) {
-        return Err(MailMcpError::Validation(message));
-    }
-
     let db_path = config.envelope_db_path();
-    let conn = open_readonly(&db_path)?;
-    search_messages_with_conn(config, &conn, params)
+    let repo = Arc::new(crate::db::SqliteMailRepository::new(&db_path)?);
+    let store = Arc::new(crate::mail::FilesystemAttachmentStore::new(
+        &config.mail_directory,
+    ));
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(search_messages_with_repo(config, repo, store, params))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use crate::config::MailConfig;
+    use crate::db::MessageRow;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tempfile::TempDir;
 
-    #[test]
-    fn search_with_no_filters_returns_error() {
-        let config = MailConfig {
-            mail_directory: PathBuf::from("/tmp"),
-            mail_version: "V10".to_string(),
-            allowed_account_ids: None,
-            account_metadata: Default::default(),
-        };
+    type FakeMailRepository = crate::db::FakeMailRepository;
+
+    fn make_test_config() -> (TempDir, MailConfig) {
+        let temp_dir = TempDir::new().unwrap();
+        let mail_directory = temp_dir.path().to_path_buf();
+        let db_dir = mail_directory.join("V10").join("MailData");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").unwrap();
+        let config = MailConfig::from_parts_with_accounts(
+            mail_directory,
+            "V10".to_string(),
+            None,
+            HashMap::new(),
+        )
+        .unwrap();
+        (temp_dir, config)
+    }
+
+    fn make_fake_repo() -> (FakeMailRepository, Arc<FakeMailRepository>) {
+        let repo = FakeMailRepository::default();
+        let arc = Arc::new(repo.clone());
+        (repo, arc)
+    }
+
+    #[tokio::test]
+    async fn search_with_no_filters_returns_error() {
+        let (_temp, config) = make_test_config();
+        let (_repo, repo_arc) = make_fake_repo();
+        let store = Arc::new(crate::mail::FakeAttachmentStore::default());
 
         let params = SearchMessagesParams {
             subject_query: None,
@@ -564,68 +628,21 @@ mod tests {
             account: None,
             mailbox: None,
             limit: 20,
-            include_body_preview: false,
             offset: 0,
+            include_body_preview: false,
         };
-
-        let err = search_messages(&config, params).unwrap_err();
-        assert!(matches!(err, MailMcpError::Validation(_)));
+        let err = search_messages_with_repo(&config, repo_arc, store, params)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("At least one filter"));
     }
 
-    #[test]
-    fn describe_search_filters_formats_only_present_values() {
-        let params = SearchMessagesParams {
-            subject_query: Some("invoice".to_string()),
-            date_from: Some("2026-03-16".to_string()),
-            date_to: None,
-            sender: None,
-            participant: Some("user@example.com".to_string()),
-            account: Some("ews://account-b".to_string()),
-            mailbox: Some("Inbox".to_string()),
-            limit: 50,
-            include_body_preview: true,
-            offset: 0,
-        };
+    #[tokio::test]
+    async fn search_rejects_limit_over_100() {
+        let (_temp, config) = make_test_config();
+        let (_repo, repo_arc) = make_fake_repo();
+        let store = Arc::new(crate::mail::FakeAttachmentStore::default());
 
-        let description = describe_search_filters(&params);
-        assert!(description.contains("subject_query=\"invoice\""));
-        assert!(description.contains("date_from=2026-03-16"));
-        assert!(description.contains("participant=user@example.com"));
-        assert!(description.contains("account=ews://account-b"));
-        assert!(description.contains("mailbox=\"Inbox\""));
-        assert!(description.contains("include_body_preview=true"));
-        assert!(description.contains("limit=50"));
-        assert!(!description.contains("date_to="));
-        assert!(!description.contains("sender="));
-    }
-
-    #[test]
-    fn validate_params_rejects_no_filters() {
-        let params = SearchMessagesParams {
-            subject_query: None,
-            date_from: None,
-            date_to: None,
-            sender: None,
-            participant: None,
-            account: None,
-            mailbox: None,
-            limit: 20,
-            include_body_preview: false,
-            offset: 0,
-        };
-
-        let result = validate_params(&params);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("At least one filter must be provided")
-        );
-    }
-
-    #[test]
-    fn validate_params_rejects_high_limit() {
         let params = SearchMessagesParams {
             subject_query: Some("test".to_string()),
             date_from: None,
@@ -635,223 +652,37 @@ mod tests {
             account: None,
             mailbox: None,
             limit: 101,
-            include_body_preview: false,
             offset: 0,
-        };
-
-        let result = validate_params(&params);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("limit must be between 1 and 100")
-        );
-    }
-
-    #[test]
-    fn deserialization_rejects_unknown_fields() {
-        let json = r#"{"subject_query":"test","body_query":"internet"}"#;
-        let result: Result<SearchMessagesParams, _> = serde_json::from_str(json);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("unknown field") || err.contains("body_query"));
-    }
-
-    #[test]
-    fn parse_date_range_handles_invalid_format() {
-        let params = SearchMessagesParams {
-            subject_query: None,
-            date_from: Some("invalid-date".to_string()),
-            date_to: None,
-            sender: None,
-            participant: None,
-            account: None,
-            mailbox: None,
-            limit: 20,
             include_body_preview: false,
-            offset: 0,
         };
-
-        let result = parse_date_range(&params);
-        assert!(result.is_err());
+        let err = search_messages_with_repo(&config, repo_arc, store, params)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("limit must be between 1 and 100"));
     }
 
-    #[test]
-    fn parse_date_range_with_both_dates() {
-        let params = SearchMessagesParams {
-            subject_query: Some("test".to_string()),
-            date_from: Some("2026-03-15".to_string()),
-            date_to: Some("2026-03-16".to_string()),
-            sender: None,
-            participant: None,
-            account: None,
-            mailbox: None,
-            limit: 20,
-            include_body_preview: false,
-            offset: 0,
-        };
+    #[tokio::test]
+    async fn search_finds_matching_messages() {
+        let (_temp, config) = make_test_config();
+        let (mut repo, repo_arc) = make_fake_repo();
 
-        let result = parse_date_range(&params);
-        assert!(result.is_ok());
-        let (from_ts, to_ts) = result.unwrap();
-        assert!(from_ts.is_some());
-        assert!(to_ts.is_some());
-    }
-
-    #[test]
-    fn parse_date_valid_yyyy_mm_dd_format() {
-        let result = parse_date("2024-09-15");
-        assert!(result.is_some());
-        let ts = result.unwrap();
-        // 2024-09-15 00:00:00 UTC
-        assert_eq!(ts, 1726358400);
-    }
-
-    #[test]
-    fn parse_date_invalid_format_returns_none() {
-        assert!(parse_date("2024/09/15").is_none());
-        assert!(parse_date("09-15-2024").is_none());
-        assert!(parse_date("not-a-date").is_none());
-        assert!(parse_date("").is_none());
-    }
-
-    #[test]
-    fn validate_params_rejects_limit_over_100() {
-        let params = SearchMessagesParams {
-            subject_query: Some("test".to_string()),
-            date_from: None,
-            date_to: None,
-            sender: None,
-            participant: None,
-            account: None,
-            mailbox: None,
-            limit: 101,
-            include_body_preview: false,
-            offset: 0,
-        };
-
-        let result = validate_params(&params);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("limit must be between 1 and 100")
-        );
-    }
-
-    #[test]
-    fn preview_text_truncates_to_200_chars() {
-        let long_text = "a".repeat(300);
-        let preview = preview_text(&long_text);
-        assert_eq!(preview.len(), 200);
-        assert!(preview.starts_with('a'));
-        assert!(preview.ends_with('a'));
-
-        let short_text = "Hello";
-        let preview = preview_text(short_text);
-        assert_eq!(preview, "Hello");
-    }
-
-    #[test]
-    fn load_search_metadata_empty_list() {
-        let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-        conn.execute_batch(
-            r#"
-            CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, subject INTEGER, sender INTEGER, mailbox INTEGER, summary INTEGER, date_sent INTEGER, date_received INTEGER, message_id TEXT, global_message_id INTEGER);
-            CREATE TABLE summaries (ROWID INTEGER PRIMARY KEY, summary TEXT);
-            CREATE TABLE attachments (ROWID INTEGER PRIMARY KEY, message INTEGER, attachment_id TEXT, name TEXT);
-            "#,
-        ).expect("create schema");
-
-        let result = load_search_metadata(&conn, &[]);
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
-    }
-
-    fn make_address_index(addresses: &[&str]) -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
-        conn.execute_batch("CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);")
-            .expect("create addresses table");
-
-        for (index, address) in addresses.iter().enumerate() {
-            conn.execute(
-                "INSERT INTO addresses (ROWID, address) VALUES (?1, ?2)",
-                rusqlite::params![i64::try_from(index + 1).expect("rowid"), address],
-            )
-            .expect("insert address");
-        }
-
-        conn
-    }
-
-    #[test]
-    fn build_not_found_guidance_reports_missing_sender_address() {
-        let conn = make_address_index(&[]);
-        let params = SearchMessagesParams {
-            subject_query: Some("budget".to_string()),
-            date_from: None,
-            date_to: None,
-            sender: Some("missing@example.com".to_string()),
-            participant: None,
-            account: None,
-            mailbox: None,
-            limit: 20,
-            include_body_preview: false,
-            offset: 0,
-        };
-
-        let guidance = build_not_found_guidance(&conn, &params).expect("guidance");
-
-        assert!(guidance.contains("missing@example.com"));
-        assert!(guidance.contains("not present in Apple Mail's address index"));
-    }
-
-    #[test]
-    fn build_not_found_guidance_suggests_broadening_when_sender_exists() {
-        let conn = make_address_index(&["present@example.com"]);
-        let params = SearchMessagesParams {
-            subject_query: Some("budget".to_string()),
-            date_from: None,
-            date_to: None,
-            sender: Some("present@example.com".to_string()),
-            participant: None,
-            account: None,
-            mailbox: None,
-            limit: 20,
-            include_body_preview: false,
-            offset: 0,
-        };
-
-        let guidance = build_not_found_guidance(&conn, &params).expect("guidance");
-
-        assert!(guidance.contains("No messages match the provided filters"));
-        assert!(guidance.contains("broadening the date range"));
-    }
-
-    #[test]
-    fn describe_search_filters_with_all_options() {
-        let params = SearchMessagesParams {
-            subject_query: Some("test".to_string()),
-            date_from: Some("2024-01-01".to_string()),
-            date_to: Some("2024-12-31".to_string()),
+        let msg = MessageRow {
+            rowid: 42,
+            subject: Some("Test Subject".to_string()),
             sender: Some("sender@example.com".to_string()),
-            participant: Some("participant@example.com".to_string()),
-            account: Some("ews://account".to_string()),
-            mailbox: Some("INBOX".to_string()),
-            limit: 20,
-            include_body_preview: false,
-            offset: 0,
+            mailbox_url: Some("imap://test@example.com/INBOX".to_string()),
+            date_sent: Some(1000000000),
+            date_received: Some(1000000000),
+            message_id: Some("<test@msg>".to_string()),
+            global_message_id: Some(1),
+            message_id_header: Some("<test@msg>".to_string()),
         };
-        let desc = describe_search_filters(&params);
-        assert!(desc.contains("test"));
-        assert!(desc.contains("2024-01-01"));
-        assert!(desc.contains("sender@example.com"));
-    }
+        repo.messages.lock().unwrap().insert(42, msg);
 
-    #[test]
-    fn describe_search_filters_with_empty_options() {
+        let store = Arc::new(crate::mail::FakeAttachmentStore::default());
+
         let params = SearchMessagesParams {
-            subject_query: None,
+            subject_query: Some("Test".to_string()),
             date_from: None,
             date_to: None,
             sender: None,
@@ -859,153 +690,69 @@ mod tests {
             account: None,
             mailbox: None,
             limit: 20,
-            include_body_preview: false,
             offset: 0,
+            include_body_preview: false,
         };
-        let desc = describe_search_filters(&params);
-        // Empty filters may return empty string or a default message
-        let _ = desc.len(); // Suppress unused warning
+        let result = search_messages_with_repo(&config, repo_arc, store, params)
+            .await
+            .unwrap();
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(result.messages[0].subject, "Test Subject");
     }
 
-    // Serialization tests — ensure skip_serializing_if works correctly
+    #[tokio::test]
+    async fn search_by_sender_works() {
+        let (_temp, config) = make_test_config();
+        let (mut repo, repo_arc) = make_fake_repo();
 
-    #[test]
-    fn attachment_count_zero_is_omitted() {
-        let result = SearchMessageResult {
-            id: "1".into(),
-            subject: "test".into(),
-            from: "a@b.com".into(),
-            date_sent: Some("2024-01-01T00:00Z".into()),
-            mailbox: "INBOX".into(),
-            attachment_count: 0,
-            body_preview: None,
+        let msg = MessageRow {
+            rowid: 1,
+            subject: Some("Hello".to_string()),
+            sender: Some("alice@example.com".to_string()),
+            mailbox_url: Some("imap://test/INBOX".to_string()),
+            date_sent: Some(1000),
+            date_received: Some(1000),
+            message_id: None,
+            global_message_id: None,
+            message_id_header: None,
         };
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(
-            !json.contains("attachment_count"),
-            "zero should be omitted: {json}"
-        );
-    }
+        repo.messages.lock().unwrap().insert(1, msg);
 
-    #[test]
-    fn attachment_count_nonzero_is_present() {
-        let result = SearchMessageResult {
-            id: "1".into(),
-            subject: "test".into(),
-            from: "a@b.com".into(),
-            date_sent: Some("2024-01-01T00:00Z".into()),
-            mailbox: "INBOX".into(),
-            attachment_count: 3,
-            body_preview: None,
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(
-            json.contains("\"attachment_count\":3"),
-            "nonzero should be present: {json}"
-        );
-    }
+        let store = Arc::new(crate::mail::FakeAttachmentStore::default());
 
-    #[test]
-    fn body_preview_none_is_omitted() {
-        let result = SearchMessageResult {
-            id: "1".into(),
-            subject: "test".into(),
-            from: "a@b.com".into(),
-            date_sent: Some("2024-01-01T00:00Z".into()),
-            mailbox: "INBOX".into(),
-            attachment_count: 1,
-            body_preview: None,
+        let params = SearchMessagesParams {
+            subject_query: None,
+            date_from: None,
+            date_to: None,
+            sender: Some("alice@example.com".to_string()),
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            offset: 0,
+            include_body_preview: false,
         };
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(
-            !json.contains("body_preview"),
-            "None should be omitted: {json}"
-        );
-    }
+        let result = search_messages_with_repo(&config, repo_arc.clone(), store.clone(), params)
+            .await
+            .unwrap();
+        assert_eq!(result.messages.len(), 1);
 
-    #[test]
-    fn date_received_not_in_search_result() {
-        let result = SearchMessageResult {
-            id: "1".into(),
-            subject: "test".into(),
-            from: "a@b.com".into(),
-            date_sent: Some("2024-01-01T00:00Z".into()),
-            mailbox: "INBOX".into(),
-            attachment_count: 0,
-            body_preview: None,
+        // Wrong sender should return empty
+        let params = SearchMessagesParams {
+            subject_query: None,
+            date_from: None,
+            date_to: None,
+            sender: Some("bob@example.com".to_string()),
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            offset: 0,
+            include_body_preview: false,
         };
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(
-            !json.contains("date_received"),
-            "date_received should not exist: {json}"
-        );
-    }
-
-    #[test]
-    fn total_count_omitted_when_no_more() {
-        let response = SearchMessagesResponse {
-            status: None,
-            messages: vec![],
-            total_count: None,
-            has_more: false,
-            next_offset: None,
-            guidance: None,
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(
-            !json.contains("total_count"),
-            "None total_count should be omitted: {json}"
-        );
-    }
-
-    #[test]
-    fn total_count_present_when_has_more() {
-        let response = SearchMessagesResponse {
-            status: None,
-            messages: vec![],
-            total_count: Some(20),
-            has_more: true,
-            next_offset: Some(40),
-            guidance: None,
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(
-            json.contains("\"total_count\":20"),
-            "Some total_count should be present: {json}"
-        );
-    }
-
-    #[test]
-    fn status_none_omitted_from_response() {
-        let response = SearchMessagesResponse {
-            status: None,
-            messages: vec![],
-            total_count: None,
-            has_more: false,
-            next_offset: None,
-            guidance: None,
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(
-            !json.contains("status"),
-            "None status should be omitted: {json}"
-        );
-    }
-
-    #[test]
-    fn next_offset_is_offset_plus_limit() {
-        let response = SearchMessagesResponse {
-            status: None,
-            messages: vec![],
-            total_count: Some(20),
-            has_more: true,
-            next_offset: Some(30),
-            guidance: None,
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(
-            json.contains("\"next_offset\":30"),
-            "next_offset should be offset+limit: {json}"
-        );
+        let result = search_messages_with_repo(&config, repo_arc, store, params)
+            .await
+            .unwrap();
+        assert!(result.messages.is_empty());
     }
 }

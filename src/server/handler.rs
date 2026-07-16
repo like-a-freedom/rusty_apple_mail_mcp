@@ -1,12 +1,14 @@
 //! MCP Server handler implementation with typed tool schemas and routing helpers.
 
 use crate::config::MailConfig;
+use crate::db::{MailRepository, SqliteMailRepository};
 use crate::error::MailMcpError;
+use crate::mail::{AttachmentStore, FilesystemAttachmentStore};
 use crate::server::tools::{
     GetAttachmentParams, GetMessageParams, ListAccountsParams, SearchMessagesParams,
     get_attachment_content as tool_get_attachment, get_message as tool_get_message,
     list_accounts as tool_list_accounts, list_mailboxes as tool_list_mailboxes,
-    search_messages as tool_search_messages,
+    search_messages_async as tool_search_messages,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -30,6 +32,8 @@ struct EmptyToolParams {}
 #[derive(Clone)]
 pub struct MailMcpServer {
     config: Arc<MailConfig>,
+    repo: Arc<dyn MailRepository>,
+    attachment_store: Arc<dyn AttachmentStore>,
 }
 
 impl MailMcpServer {
@@ -61,8 +65,12 @@ impl MailMcpServer {
             );
         }
         config.validate()?;
+        let repo = Arc::new(SqliteMailRepository::new(&db_path)?);
+        let attachment_store = Arc::new(FilesystemAttachmentStore::new(&config.mail_directory));
         Ok(Self {
             config: Arc::new(config),
+            repo,
+            attachment_store,
         })
     }
 
@@ -102,8 +110,8 @@ impl MailMcpServer {
         );
     }
 
-    /// Parse typed tool parameters, execute the tool, and wrap its JSON response.
-    fn call_typed_tool<TParams, TResponse, F>(
+    /// Parse typed tool parameters, execute the tool with repo and store, and wrap its JSON response.
+    fn call_tool_with_repo<TParams, TResponse, F>(
         &self,
         arguments: Map<String, Value>,
         tool_fn: F,
@@ -111,11 +119,21 @@ impl MailMcpServer {
     where
         TParams: DeserializeOwned,
         TResponse: Serialize,
-        F: FnOnce(&MailConfig, TParams) -> Result<TResponse, MailMcpError>,
+        F: FnOnce(
+            &dyn MailRepository,
+            &dyn AttachmentStore,
+            &MailConfig,
+            TParams,
+        ) -> Result<TResponse, MailMcpError>,
     {
         let params: TParams = serde_json::from_value(Value::Object(arguments))
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        let response = tool_fn(self.config.as_ref(), params)?;
+        let response = tool_fn(
+            self.repo.as_ref(),
+            self.attachment_store.as_ref(),
+            self.config.as_ref(),
+            params,
+        )?;
         let value = serde_json::to_value(response).map_err(|e| {
             McpError::internal_error(
                 "failed to serialize response",
@@ -164,13 +182,25 @@ impl MailMcpServer {
         arguments: Map<String, Value>,
     ) -> Result<CallToolResult, McpError> {
         match name {
-            "search_messages" => self.call_typed_tool(arguments, tool_search_messages),
-            "get_message" => self.call_typed_tool(arguments, tool_get_message),
-            "get_attachment_content" => self.call_typed_tool(arguments, tool_get_attachment),
-            "list_accounts" => self.call_typed_tool(arguments, tool_list_accounts),
-            "list_mailboxes" => self.call_typed_tool(arguments, |config, _: EmptyToolParams| {
-                tool_list_mailboxes(config)
-            }),
+            "search_messages" => {
+                let params: SearchMessagesParams = serde_json::from_value(Value::Object(arguments))
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let response = tool_search_messages(self.config.as_ref(), params).await?;
+                let value = serde_json::to_value(response).map_err(|e| {
+                    McpError::internal_error(
+                        "failed to serialize response",
+                        Some(json!({ "reason": e.to_string() })),
+                    )
+                })?;
+                Ok(CallToolResult::structured(value))
+            }
+            "get_message" => self.call_tool_with_repo(arguments, tool_get_message),
+            "get_attachment_content" => self.call_tool_with_repo(arguments, tool_get_attachment),
+            "list_accounts" => self.call_tool_with_repo(arguments, tool_list_accounts),
+            "list_mailboxes" => self
+                .call_tool_with_repo(arguments, |repo, _store, config, _: EmptyToolParams| {
+                    tool_list_mailboxes(repo, config)
+                }),
             _ => Err(McpError::invalid_request("Unknown tool method", None)),
         }
     }
@@ -327,7 +357,26 @@ mod tests {
         let mail_version = "V10".to_string();
         let db_dir = mail_directory.join(&mail_version).join("MailData");
         std::fs::create_dir_all(&db_dir).expect("mail data dir");
-        std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
+        let db_path = db_dir.join("Envelope Index");
+        // Create a real SQLite database instead of a placeholder file
+        let conn = rusqlite::Connection::open(&db_path).expect("create db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (
+                ROWID INTEGER PRIMARY KEY,
+                mailbox INTEGER,
+                date_sent INTEGER,
+                date_received INTEGER,
+                message_id TEXT,
+                global_message_id INTEGER,
+                subject INTEGER,
+                sender INTEGER
+            );
+            "#,
+        )
+        .expect("create schema");
+        drop(conn);
 
         let config = MailConfig::from_parts_with_accounts(
             mail_directory,
@@ -371,20 +420,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn call_tool_by_name_unknown_tool() {
+    #[tokio::test]
+    async fn call_tool_by_name_unknown_tool() {
         let (_temp_dir, config) = create_temp_config();
         let server = MailMcpServer::new(config).expect("server creation");
 
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async { server.call_tool_by_name("unknown_tool", Map::new()).await });
+        let result = server.call_tool_by_name("unknown_tool", Map::new()).await;
 
         assert!(result.is_err());
     }
 
-    #[test]
-    fn call_tool_by_name_list_accounts() {
+    #[tokio::test]
+    async fn call_tool_by_name_list_accounts() {
         let (_temp_dir, config) = create_temp_config();
 
         // Create test database with mailboxes using proper SQLite API
@@ -404,17 +451,15 @@ mod tests {
 
         let server = MailMcpServer::new(config).expect("server creation");
 
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async { server.call_tool_by_name("list_accounts", Map::new()).await });
+        let result = server.call_tool_by_name("list_accounts", Map::new()).await;
 
         assert!(result.is_ok());
         let call_result = result.unwrap();
         assert!(!call_result.content.is_empty());
     }
 
-    #[test]
-    fn call_tool_by_name_list_mailboxes() {
+    #[tokio::test]
+    async fn call_tool_by_name_list_mailboxes() {
         let (_temp_dir, config) = create_temp_config();
 
         // Create test database with mailboxes using proper SQLite API
@@ -434,24 +479,20 @@ mod tests {
 
         let server = MailMcpServer::new(config).expect("server creation");
 
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async { server.call_tool_by_name("list_mailboxes", Map::new()).await });
+        let result = server.call_tool_by_name("list_mailboxes", Map::new()).await;
 
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn call_tool_by_name_search_messages_requires_filter() {
+    #[tokio::test]
+    async fn call_tool_by_name_search_messages_requires_filter() {
         let (_temp_dir, config) = create_temp_config();
         let server = MailMcpServer::new(config).expect("server creation");
 
         let mut args = Map::new();
         args.insert("limit".to_string(), json!(20));
 
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async { server.call_tool_by_name("search_messages", args).await });
+        let result = server.call_tool_by_name("search_messages", args).await;
 
         assert!(result.is_err());
     }
@@ -505,8 +546,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn call_tool_with_invalid_params() {
+    #[tokio::test]
+    async fn call_tool_with_invalid_params() {
         let (_temp_dir, config) = create_temp_config();
         let server = MailMcpServer::new(config).expect("server creation");
 
@@ -514,9 +555,7 @@ mod tests {
         let mut args = Map::new();
         args.insert("limit".to_string(), json!("not_a_number"));
 
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async { server.call_tool_by_name("search_messages", args).await });
+        let result = server.call_tool_by_name("search_messages", args).await;
 
         assert!(result.is_err());
     }
@@ -581,35 +620,31 @@ mod tests {
         assert!(config.is_err());
     }
 
-    #[test]
-    fn call_tool_by_name_get_message_requires_message_id() {
+    #[tokio::test]
+    async fn call_tool_by_name_get_message_requires_message_id() {
         let (_temp_dir, config) = create_temp_config();
         let server = MailMcpServer::new(config).expect("server creation");
 
         // Call get_message without message_id
         let args = Map::new();
 
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async { server.call_tool_by_name("get_message", args).await });
+        let result = server.call_tool_by_name("get_message", args).await;
 
         // Should return an error response (not a panic)
         assert!(result.is_err() || (result.is_ok() && !result.unwrap().content.is_empty()));
     }
 
-    #[test]
-    fn call_tool_by_name_get_attachment_requires_attachment_id() {
+    #[tokio::test]
+    async fn call_tool_by_name_get_attachment_requires_attachment_id() {
         let (_temp_dir, config) = create_temp_config();
         let server = MailMcpServer::new(config).expect("server creation");
 
         // Call get_attachment_content without attachment_id
         let args = Map::new();
 
-        let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            server
-                .call_tool_by_name("get_attachment_content", args)
-                .await
-        });
+        let result = server
+            .call_tool_by_name("get_attachment_content", args)
+            .await;
 
         // Should return an error response (not a panic)
         assert!(result.is_err() || (result.is_ok() && !result.unwrap().content.is_empty()));
