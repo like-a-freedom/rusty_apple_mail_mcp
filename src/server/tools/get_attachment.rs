@@ -8,7 +8,8 @@ use crate::db::MailRepository;
 use crate::domain::{AttachmentMeta, ContentFormat};
 use crate::error::MailMcpError;
 use crate::mail::AttachmentStore;
-use crate::mail::{extract_text, parse_emlx};
+use crate::mail::extract::extract_text;
+use crate::mail::parse_emlx;
 use crate::server::tools::ResponseStatus;
 use crate::server::tools::message_lookup::{
     AccessibleMessage, load_accessible_message, locate_message_file,
@@ -199,21 +200,22 @@ pub fn get_attachment_content_with_conn(
     };
 
     match extract_text(content, &raw_attachment.mime_type) {
-        crate::mail::ExtractionResult::Text { content, method } => {
+        Ok(text) => {
             let result = GetAttachmentResult {
                 content_format: ContentFormat::ExtractedText,
-                content: Some(content),
-                extraction_method: Some(method.to_string()),
+                content: Some(text),
+                extraction_method: Some("extracted".to_string()),
                 ..base_result
             };
             Ok(GetAttachmentResponse::success(result))
         }
-        crate::mail::ExtractionResult::NotSupported { reason } => {
+        Err(e) => {
+            let reason = e.to_string();
             let result = GetAttachmentResult {
-                extraction_method: Some(reason.to_string()),
+                extraction_method: Some(reason.clone()),
                 ..base_result
             };
-            Ok(GetAttachmentResponse::partial(result, reason.to_string()))
+            Ok(GetAttachmentResponse::partial(result, reason))
         }
     }
 }
@@ -492,7 +494,7 @@ mod tests {
         assert_eq!(attachment.filename, "notes.txt");
         assert_eq!(attachment.content_format, ContentFormat::ExtractedText);
         assert_eq!(attachment.content.as_deref(), Some("Attachment content"));
-        assert_eq!(attachment.extraction_method.as_deref(), Some("direct_utf8"));
+        assert_eq!(attachment.extraction_method.as_deref(), Some("extracted"));
     }
 
     #[test]
@@ -619,10 +621,7 @@ mod tests {
         assert_eq!(response.status, None);
         let attachment = response.attachment.expect("attachment result");
         assert_eq!(attachment.content_format, ContentFormat::ExtractedText);
-        assert_eq!(
-            attachment.extraction_method.as_deref(),
-            Some("docx_to_markdown")
-        );
+        assert_eq!(attachment.extraction_method.as_deref(), Some("extracted"));
         let content = attachment.content.expect("extracted content");
         assert!(
             content.contains("External DOCX"),
