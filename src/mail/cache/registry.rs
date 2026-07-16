@@ -224,8 +224,7 @@ pub fn clear_all_caches() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
-    use tempfile::TempDir;
+    use std::path::PathBuf;
 
     #[test]
     fn test_registry_new() {
@@ -316,7 +315,7 @@ mod tests {
     #[test]
     fn test_global_registry() {
         let registry = global_registry();
-        let mut guard = registry.lock().unwrap();
+        let guard = registry.lock().unwrap();
         assert_eq!(guard.total_len(), 0);
     }
 }

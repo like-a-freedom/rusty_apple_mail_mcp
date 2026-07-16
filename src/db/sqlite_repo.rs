@@ -5,10 +5,11 @@ use crate::db::connection::open_readonly;
 use crate::db::epoch::detect_epoch_offset_seconds;
 use crate::db::mailboxes::{count_messages_in_mailbox, list_mailboxes};
 use crate::db::messages::{MessageRow, get_message_by_id, get_recipients, search_messages};
-use crate::db::{MailRepository, SearchParams};
+use crate::db::{MailRepository, MessageMetadata, SearchParams};
 use crate::error::MailMcpError;
 use rusqlite::Connection;
 use std::any::Any;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -105,6 +106,53 @@ impl MailRepository for SqliteMailRepository {
         crate::db::messages::address_exists(&conn, address)
     }
 
+    fn get_message_metadata(
+        &self,
+        message_ids: &[i64],
+    ) -> Result<HashMap<i64, MessageMetadata>, MailMcpError> {
+        if message_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self.conn.lock().unwrap();
+        let placeholders = std::iter::repeat_n("?", message_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            r"
+            SELECT
+                m.ROWID,
+                sm.summary,
+                COUNT(att.ROWID)
+            FROM messages m
+            LEFT JOIN summaries sm ON sm.ROWID = m.summary
+            LEFT JOIN attachments att ON att.message = m.ROWID
+            WHERE m.ROWID IN ({placeholders})
+            GROUP BY m.ROWID, sm.summary
+            "
+        );
+        let params: Vec<&dyn rusqlite::ToSql> = message_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            let attachment_count: i64 = row.get(2)?;
+            Ok((
+                row.get::<_, i64>(0)?,
+                MessageMetadata {
+                    summary: row.get(1)?,
+                    attachment_count: u32::try_from(attachment_count.max(0)).unwrap_or(u32::MAX),
+                },
+            ))
+        })?;
+        let mut metadata = HashMap::with_capacity(message_ids.len());
+        for row in rows {
+            let (message_id, entry) = row?;
+            metadata.insert(message_id, entry);
+        }
+        Ok(metadata)
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -113,7 +161,6 @@ impl MailRepository for SqliteMailRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::messages::MessageRow;
     use tempfile::TempDir;
 
     fn make_test_repo() -> (TempDir, SqliteMailRepository) {
