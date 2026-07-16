@@ -121,7 +121,7 @@ mod cli_validation_tests {
         let db_dir = mail_directory.join("V10").join("MailData");
         std::fs::create_dir_all(&db_dir).expect("mail data dir");
         std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
-        let config = MailConfig::from_parts_with_accounts(
+        let config = MailConfig::new(
             mail_directory,
             "V10".to_string(),
             None,

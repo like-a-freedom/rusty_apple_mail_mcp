@@ -1,23 +1,25 @@
+mod accounts;
+mod builder;
+mod parser;
+mod paths;
+mod validator;
+
+pub use accounts::load_account_metadata_for_selectors;
+pub use builder::MailConfigBuilder;
+pub use parser::{MailConfigOverrides, parse_account_selectors};
+pub use paths::{
+    default_mail_directory, envelope_db_path, expand_mail_directory, normalize_mail_directory,
+};
+pub use validator::validate_config;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::accounts::{
-    AccountMetadata, default_accounts_db_path, load_account_metadata, resolve_account_selectors,
-};
+use crate::accounts::AccountMetadata;
 use crate::db::mailbox_account_id;
 use crate::error::MailMcpError;
 
-const DEFAULT_MAIL_VERSION: &str = "V10";
-
-/// Optional configuration overrides, typically sourced from CLI arguments.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct MailConfigOverrides {
-    pub(crate) mail_directory: Option<PathBuf>,
-    pub(crate) mail_version: Option<String>,
-    pub(crate) account: Option<String>,
-}
-
-/// Server configuration. Loaded strictly from environment variables.
+/// Server configuration for Apple Mail access.
 #[derive(Debug, Clone)]
 pub struct MailConfig {
     pub mail_directory: PathBuf,
@@ -27,80 +29,7 @@ pub struct MailConfig {
 }
 
 impl MailConfig {
-    /// Resolve configuration from environment variables, falling back to defaults.
-    /// `APPLE_MAIL_DIR`, `APPLE_MAIL_VERSION`, `APPLE_MAIL_ACCOUNT`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MailMcpError`] if environment variables are invalid or the Accounts database
-    /// cannot be loaded when account selectors are specified.
-    pub fn from_env() -> Result<Self, MailMcpError> {
-        Self::from_overrides(MailConfigOverrides::default())
-    }
-
-    /// Resolve configuration from CLI overrides, environment variables, and defaults.
-    ///
-    /// CLI overrides take precedence over environment variables.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MailMcpError`] if the resolved values are invalid or dependent metadata
-    /// cannot be loaded.
-    pub(crate) fn from_overrides(overrides: MailConfigOverrides) -> Result<Self, MailMcpError> {
-        let MailConfigOverrides {
-            mail_directory,
-            mail_version,
-            account,
-        } = overrides;
-
-        let mail_directory = mail_directory
-            .map(normalize_mail_directory)
-            .or_else(|| {
-                std::env::var("APPLE_MAIL_DIR")
-                    .ok()
-                    .map(|raw| expand_mail_directory(&raw))
-            })
-            .unwrap_or_else(default_mail_directory);
-
-        let mail_version = mail_version
-            .or_else(|| std::env::var("APPLE_MAIL_VERSION").ok())
-            .unwrap_or_else(|| DEFAULT_MAIL_VERSION.to_string());
-
-        let raw_account_selectors = account.or_else(|| std::env::var("APPLE_MAIL_ACCOUNT").ok());
-        let account_selectors = parse_account_selectors(raw_account_selectors.as_deref())?;
-        let account_metadata = load_metadata_for_selectors(&account_selectors)?;
-        let allowed_account_ids = if account_selectors.is_empty() {
-            None
-        } else {
-            Some(resolve_account_selectors(
-                &account_selectors,
-                &account_metadata,
-            )?)
-        };
-
-        Self::from_parts_with_accounts(
-            mail_directory,
-            mail_version,
-            allowed_account_ids,
-            account_metadata,
-        )
-    }
-
-    /// Build a configuration from already-resolved values and validate it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MailMcpError::Config`] if validation fails.
-    pub fn from_parts(mail_directory: PathBuf, mail_version: String) -> Result<Self, MailMcpError> {
-        Self::from_parts_with_accounts(mail_directory, mail_version, None, HashMap::new())
-    }
-
-    /// Build a configuration with pre-resolved account metadata and optional allowlist.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MailMcpError::Config`] if validation fails.
-    pub fn from_parts_with_accounts(
+    pub fn new(
         mail_directory: PathBuf,
         mail_version: String,
         allowed_account_ids: Option<Vec<String>>,
@@ -112,143 +41,32 @@ impl MailConfig {
             allowed_account_ids,
             account_metadata,
         };
-        config.validate()?;
+        validate_config(&config)?;
         Ok(config)
     }
 
-    /// Absolute path to the Envelope Index `SQLite` database.
-    #[must_use]
     pub fn envelope_db_path(&self) -> PathBuf {
-        self.mail_directory
-            .join(&self.mail_version)
-            .join("MailData")
-            .join("Envelope Index")
+        envelope_db_path(&self.mail_directory, &self.mail_version)
     }
 
-    /// Returns the configured allowlist of account IDs, if any.
-    #[must_use]
     pub fn allowed_account_ids(&self) -> Option<&[String]> {
         self.allowed_account_ids.as_deref()
     }
 
-    /// Returns `true` if the given account is permitted by the current configuration.
-    #[must_use]
     pub fn is_account_allowed(&self, account_id: &str) -> bool {
         self.allowed_account_ids
             .as_ref()
             .is_none_or(|allowed| allowed.iter().any(|candidate| candidate == account_id))
     }
 
-    /// Returns `true` if the mailbox URL belongs to an allowed account.
-    #[must_use]
     pub fn is_mailbox_allowed(&self, mailbox_url: &str) -> bool {
         mailbox_account_id(mailbox_url)
             .as_deref()
             .is_none_or(|account_id| self.is_account_allowed(account_id))
     }
 
-    /// Returns friendly metadata for the given canonical account ID.
-    #[must_use]
     pub fn account_metadata(&self, account_id: &str) -> Option<&AccountMetadata> {
         self.account_metadata.get(account_id)
-    }
-
-    /// Validate the configuration for env-only stdio startup.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MailMcpError::Config`] if validation fails.
-    pub fn validate(&self) -> Result<(), MailMcpError> {
-        if self.mail_version.trim().is_empty() {
-            return Err(MailMcpError::Config(
-                "APPLE_MAIL_VERSION must not be empty".to_string(),
-            ));
-        }
-
-        let db_path = self.envelope_db_path();
-        if !db_path.exists() {
-            return Err(MailMcpError::DatabaseNotFound { path: db_path });
-        }
-
-        Ok(())
-    }
-}
-
-fn default_mail_directory() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("~"))
-        .join("Library/Mail")
-}
-
-fn normalize_mail_directory(path: PathBuf) -> PathBuf {
-    expand_mail_directory(&path.to_string_lossy())
-}
-
-fn expand_mail_directory(raw: &str) -> PathBuf {
-    if raw == "~" {
-        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(raw));
-    }
-
-    if let Some(stripped) = raw.strip_prefix("~/")
-        && let Some(home_dir) = dirs::home_dir()
-    {
-        return home_dir.join(stripped);
-    }
-
-    PathBuf::from(raw)
-}
-
-fn parse_account_selectors(raw: Option<&str>) -> Result<Vec<String>, MailMcpError> {
-    let Some(raw) = raw else {
-        return Ok(Vec::new());
-    };
-
-    let selectors = raw
-        .split(',')
-        .map(str::trim)
-        .filter(|selector| !selector.is_empty())
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-
-    if selectors.is_empty() {
-        return Err(MailMcpError::Config(
-            "APPLE_MAIL_ACCOUNT was provided, but no account selectors were found".to_string(),
-        ));
-    }
-
-    Ok(selectors)
-}
-
-fn load_metadata_for_selectors(
-    account_selectors: &[String],
-) -> Result<HashMap<String, AccountMetadata>, MailMcpError> {
-    let accounts_db_path = default_accounts_db_path();
-    let Some(path) = accounts_db_path.as_deref() else {
-        return if account_selectors.is_empty() {
-            Ok(HashMap::new())
-        } else {
-            Err(MailMcpError::Config(
-                "APPLE_MAIL_ACCOUNT is set, but the home directory could not be resolved"
-                    .to_string(),
-            ))
-        };
-    };
-
-    if !path.exists() {
-        return if account_selectors.is_empty() {
-            Ok(HashMap::new())
-        } else {
-            Err(MailMcpError::Config(format!(
-                "APPLE_MAIL_ACCOUNT is set, but Accounts database was not found at {}",
-                path.display()
-            )))
-        };
-    }
-
-    match load_account_metadata(path) {
-        Ok(metadata) => Ok(metadata),
-        Err(_) if account_selectors.is_empty() => Ok(HashMap::new()),
-        Err(error) => Err(error),
     }
 }
 
@@ -276,7 +94,7 @@ mod tests {
     #[test]
     fn default_mail_version_is_v10() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::from_parts(mail_directory, mail_version).unwrap();
+        let cfg = MailConfig::new(mail_directory, mail_version, None, HashMap::new()).unwrap();
         let db = cfg.envelope_db_path();
         assert!(db.ends_with("Envelope Index"));
         assert!(db.to_str().unwrap().contains("V10"));
@@ -290,20 +108,17 @@ mod tests {
         unsafe {
             std::env::set_var("APPLE_MAIL_DIR", &mail_directory);
             std::env::set_var("APPLE_MAIL_VERSION", "V9");
-            // Set HOME to temp_dir so default_accounts_db_path points inside temp_dir
             std::env::set_var("HOME", temp_dir.path());
-            // Create a dummy Accounts4.sqlite (empty file) to avoid "unable to open database file"
             let accounts_dir = temp_dir.path().join("Library").join("Accounts");
             std::fs::create_dir_all(&accounts_dir).expect("accounts dir");
             std::fs::write(accounts_dir.join("Accounts4.sqlite"), b"")
                 .expect("accounts db placeholder");
         }
-        // Create the Envelope Index for V9
         let v9_db_dir = mail_directory.join("V9").join("MailData");
         std::fs::create_dir_all(&v9_db_dir).expect("mail data dir");
         std::fs::write(v9_db_dir.join("Envelope Index"), b"sqlite placeholder")
             .expect("db placeholder");
-        let cfg = MailConfig::from_env().unwrap();
+        let cfg = MailConfigBuilder::new().build().unwrap();
         assert_eq!(cfg.mail_version, "V9");
         assert_eq!(cfg.mail_directory, mail_directory);
     }
@@ -315,16 +130,16 @@ mod tests {
         unsafe {
             std::env::set_var("APPLE_MAIL_DIR", &mail_directory);
             std::env::set_var("APPLE_MAIL_VERSION", "V10");
-            // Set HOME to temp_dir so default_accounts_db_path points inside temp_dir
             std::env::set_var("HOME", temp_dir.path());
-            // Create a dummy Accounts4.sqlite (empty file) to avoid "unable to open database file"
             let accounts_dir = temp_dir.path().join("Library").join("Accounts");
             std::fs::create_dir_all(&accounts_dir).expect("accounts dir");
             std::fs::write(accounts_dir.join("Accounts4.sqlite"), b"")
                 .expect("accounts db placeholder");
         }
 
-        let cfg = MailConfig::from_env().expect("config should load without extra email config");
+        let cfg = MailConfigBuilder::new()
+            .build()
+            .expect("config should load without extra email config");
         assert_eq!(cfg.mail_version, "V10");
         assert_eq!(cfg.mail_directory, mail_directory);
     }
@@ -347,7 +162,7 @@ mod tests {
                 .expect("accounts db placeholder");
         }
 
-        let override_config = MailConfig::from_overrides(MailConfigOverrides {
+        let override_config = MailConfigBuilder::from_overrides(MailConfigOverrides {
             mail_directory: Some(override_mail_directory.clone()),
             mail_version: Some(override_mail_version.clone()),
             account: None,
@@ -372,7 +187,7 @@ mod tests {
                 account_type: "ews".to_string(),
             },
         )]);
-        let cfg = MailConfig::from_parts_with_accounts(
+        let cfg = MailConfig::new(
             mail_directory,
             mail_version,
             Some(vec!["ews://work".to_string()]),
@@ -392,74 +207,27 @@ mod tests {
     }
 
     #[test]
-    fn expand_mail_directory_expands_tilde_prefix() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let expected = dirs::home_dir().expect("home dir").join("Library/Mail");
-
-        assert_eq!(expand_mail_directory("~/Library/Mail"), expected);
-    }
-
-    #[test]
     fn validate_requires_non_empty_mail_version() {
         let (_temp_dir, mail_directory, _mail_version) = make_valid_config_inputs();
-        let error = MailConfig::from_parts(mail_directory, String::new())
+        let error = MailConfig::new(mail_directory, String::new(), None, HashMap::new())
             .expect_err("missing mail version should fail");
         assert!(error.to_string().contains("APPLE_MAIL_VERSION"));
     }
 
     #[test]
-    fn parse_account_selectors_requires_non_empty_values() {
-        let error = parse_account_selectors(Some(" ,  , ")).expect_err("empty selectors fail");
-        assert!(error.to_string().contains("APPLE_MAIL_ACCOUNT"));
-    }
-
-    #[test]
-    fn parse_account_selectors_splits_and_trims_values() {
-        let selectors =
-            parse_account_selectors(Some(" Work Email, user@work.example.com ,imap://personal "))
-                .expect("selectors should parse");
-
-        assert_eq!(
-            selectors,
-            vec!["Work Email", "user@work.example.com", "imap://personal"]
-        );
-    }
-
-    #[test]
-    fn parse_account_selectors_single_value() {
-        let selectors = parse_account_selectors(Some("account1")).expect("single selector parse");
-        assert_eq!(selectors, vec!["account1"]);
-    }
-
-    #[test]
-    fn parse_account_selectors_empty_after_trim() {
-        // All values are empty after trimming
-        let error = parse_account_selectors(Some("")).expect_err("empty string fails");
-        assert!(error.to_string().contains("APPLE_MAIL_ACCOUNT"));
-    }
-
-    #[test]
-    fn parse_account_selectors_none_returns_empty() {
-        let result = parse_account_selectors(None);
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
-    }
-
-    #[test]
     fn validate_passes_with_valid_config() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::from_parts(mail_directory.clone(), mail_version).unwrap();
-        assert!(cfg.validate().is_ok());
+        let cfg =
+            MailConfig::new(mail_directory.clone(), mail_version, None, HashMap::new()).unwrap();
+        assert!(validate_config(&cfg).is_ok());
     }
 
     #[test]
     fn validate_fails_when_db_missing() {
         let temp_dir = TempDir::new().expect("temp dir");
         let mail_directory = temp_dir.path().to_path_buf();
-        // Don't create db file - from_parts will fail because it calls validate internally
-        let error = MailConfig::from_parts(mail_directory, "V10".to_string())
+        let error = MailConfig::new(mail_directory, "V10".to_string(), None, HashMap::new())
             .expect_err("missing db should fail");
-        // Should be DatabaseNotFound or Config error about missing db
         assert!(
             error.to_string().contains("not found") || error.to_string().contains("Envelope Index")
         );
@@ -468,30 +236,23 @@ mod tests {
     #[test]
     fn validate_fails_on_whitespace_only_mail_version() {
         let (_temp_dir, mail_directory, _mail_version) = make_valid_config_inputs();
-        // from_parts_with_accounts calls validate internally, so whitespace fails there
-        let error = MailConfig::from_parts_with_accounts(
-            mail_directory,
-            "   ".to_string(),
-            None,
-            HashMap::new(),
-        )
-        .expect_err("whitespace version should fail");
+        let error = MailConfig::new(mail_directory, "   ".to_string(), None, HashMap::new())
+            .expect_err("whitespace version should fail");
         assert!(error.to_string().contains("APPLE_MAIL_VERSION"));
     }
 
     #[test]
     fn is_account_allowed_none_means_all_allowed() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::from_parts(mail_directory, mail_version).unwrap();
+        let cfg = MailConfig::new(mail_directory, mail_version, None, HashMap::new()).unwrap();
         assert!(cfg.allowed_account_ids().is_none());
-        // When allowed_account_ids is None, all accounts should be allowed
         assert!(cfg.is_account_allowed("any-account"));
     }
 
     #[test]
     fn is_account_allowed_some_restricts_to_list() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::from_parts_with_accounts(
+        let cfg = MailConfig::new(
             mail_directory,
             mail_version,
             Some(vec!["account1".to_string(), "account2".to_string()]),
@@ -507,7 +268,7 @@ mod tests {
     #[test]
     fn is_mailbox_allowed_none_means_all_allowed() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::from_parts(mail_directory, mail_version).unwrap();
+        let cfg = MailConfig::new(mail_directory, mail_version, None, HashMap::new()).unwrap();
         assert!(cfg.is_mailbox_allowed("imap://any/INBOX"));
         assert!(cfg.is_mailbox_allowed("ews://any/Inbox"));
     }
@@ -515,7 +276,7 @@ mod tests {
     #[test]
     fn is_mailbox_allowed_filters_by_allowed_accounts() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::from_parts_with_accounts(
+        let cfg = MailConfig::new(
             mail_directory,
             mail_version,
             Some(vec!["ews://work".to_string()]),
@@ -530,7 +291,7 @@ mod tests {
     #[test]
     fn account_metadata_returns_none_for_unknown() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::from_parts(mail_directory, mail_version).unwrap();
+        let cfg = MailConfig::new(mail_directory, mail_version, None, HashMap::new()).unwrap();
         assert!(cfg.account_metadata("unknown").is_none());
     }
 
@@ -548,9 +309,7 @@ mod tests {
                 account_type: "test".to_string(),
             },
         )]);
-        let cfg =
-            MailConfig::from_parts_with_accounts(mail_directory, mail_version, None, metadata)
-                .unwrap();
+        let cfg = MailConfig::new(mail_directory, mail_version, None, metadata).unwrap();
 
         let meta = cfg.account_metadata("test-account");
         assert!(meta.is_some());
@@ -560,7 +319,13 @@ mod tests {
     #[test]
     fn envelope_db_path_constructs_correct_path() {
         let (_temp_dir, mail_directory, _mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::from_parts(mail_directory.clone(), "V10".to_string()).unwrap();
+        let cfg = MailConfig::new(
+            mail_directory.clone(),
+            "V10".to_string(),
+            None,
+            HashMap::new(),
+        )
+        .unwrap();
         let db_path = cfg.envelope_db_path();
         assert!(db_path.to_string_lossy().contains("V10"));
         assert!(db_path.to_string_lossy().contains("MailData"));
@@ -570,7 +335,7 @@ mod tests {
     #[test]
     fn from_parts_fails_on_empty_version() {
         let (_temp_dir, mail_directory, _mail_version) = make_valid_config_inputs();
-        let error = MailConfig::from_parts(mail_directory, "".to_string())
+        let error = MailConfig::new(mail_directory, "".to_string(), None, HashMap::new())
             .expect_err("empty version fails");
         assert!(error.to_string().contains("APPLE_MAIL_VERSION"));
     }
@@ -578,7 +343,7 @@ mod tests {
     #[test]
     fn from_parts_creates_config_without_accounts() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::from_parts(mail_directory, mail_version).unwrap();
+        let cfg = MailConfig::new(mail_directory, mail_version, None, HashMap::new()).unwrap();
         assert_eq!(cfg.allowed_account_ids(), None);
         assert!(cfg.account_metadata("any").is_none());
     }
