@@ -149,13 +149,8 @@ mod tests {
         std::fs::create_dir_all(&db_dir).expect("mail data dir");
         std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
 
-        let config = MailConfig::from_parts_with_accounts(
-            mail_directory,
-            mail_version,
-            None,
-            HashMap::new(),
-        )
-        .expect("config");
+        let config =
+            MailConfig::new(mail_directory, mail_version, None, HashMap::new()).expect("config");
         (temp_dir, config)
     }
 
@@ -178,7 +173,7 @@ mod tests {
     fn list_mailboxes_with_conn_filters_by_allowed_accounts() {
         let (_temp_dir, repo) = make_test_repo();
         let (temp_dir, _config) = make_test_config();
-        let config = MailConfig::from_parts_with_accounts(
+        let config = MailConfig::new(
             temp_dir.path().to_path_buf(),
             "V10".to_string(),
             Some(vec!["ews://account-b".to_string()]),
