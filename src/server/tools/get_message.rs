@@ -1,7 +1,6 @@
 //! `get_message` tool implementation.
 
 use lru::LruCache;
-use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
@@ -10,9 +9,10 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::config::MailConfig;
-use crate::db::{detect_epoch_offset_seconds, get_recipients, open_readonly};
+use crate::db::MailRepository;
 use crate::domain::AttachmentMeta;
 use crate::error::MailMcpError;
+use crate::mail::AttachmentStore;
 use crate::mail::{parse_emlx_without_attachment_content, raw_attachments_to_meta};
 use crate::server::tools::ResponseStatus;
 use crate::server::tools::message_lookup::{
@@ -120,7 +120,7 @@ pub struct GetMessageResult {
     pub attachments: Vec<AttachmentMeta>,
 }
 
-/// Execute `get_message` against an already-open `SQLite` connection.
+/// Execute `get_message` using the repository trait.
 ///
 /// # Errors
 ///
@@ -133,7 +133,7 @@ pub struct GetMessageResult {
 #[allow(clippy::ptr_arg, clippy::needless_pass_by_value)]
 pub fn get_message_with_conn(
     config: &MailConfig,
-    conn: &Connection,
+    repo: &dyn MailRepository,
     params: GetMessageParams,
 ) -> Result<GetMessageResponse, MailMcpError> {
     let total_started = Instant::now();
@@ -147,7 +147,7 @@ pub fn get_message_with_conn(
     };
 
     let db_started = Instant::now();
-    let row = match load_accessible_message(config, conn, message_id)? {
+    let row = match load_accessible_message(config, repo, message_id)? {
         AccessibleMessage::Found(row) => row,
         AccessibleMessage::NotFound => {
             return Err(MailMcpError::MessageNotFound {
@@ -161,9 +161,9 @@ pub fn get_message_with_conn(
         }
     };
 
-    let epoch_offset_s = detect_epoch_offset_seconds(conn)?;
+    let epoch_offset_s = repo.detect_epoch_offset()?;
 
-    let recipients = get_recipients(conn, message_id)?;
+    let recipients = repo.get_recipients(message_id)?;
     let db_elapsed = db_started.elapsed();
 
     let mut to = Vec::new();
@@ -298,25 +298,27 @@ pub fn get_message_with_conn(
 ///
 /// Returns an error if the database cannot be opened or accessed.
 pub fn get_message(
+    repo: &dyn MailRepository,
+    _store: &dyn AttachmentStore,
     config: &MailConfig,
     params: GetMessageParams,
 ) -> Result<GetMessageResponse, MailMcpError> {
-    let db_path = config.envelope_db_path();
-    let conn = open_readonly(&db_path)?;
-    get_message_with_conn(config, &conn, params)
+    get_message_with_conn(config, repo, params)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
+    use crate::db::SqliteMailRepository;
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
 
     /// Create an in-memory test database with a minimal schema and seed data.
-    fn make_test_db() -> Connection {
-        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+    fn make_test_repo() -> (TempDir, SqliteMailRepository) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("test.db");
+        let conn = rusqlite::Connection::open(&db_path).expect("create db");
         conn.execute_batch(
             r#"
             CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
@@ -355,7 +357,9 @@ mod tests {
             "#,
         )
         .expect("seed test schema");
-        conn
+        drop(conn);
+        let repo = SqliteMailRepository::new(db_path).unwrap();
+        (temp_dir, repo)
     }
 
     fn make_test_config(
@@ -378,8 +382,7 @@ mod tests {
 
     #[test]
     fn get_message_with_conn_invalid_message_id_format() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
+        let (temp_dir, repo) = make_test_repo();
         let config = make_test_config(&temp_dir, None);
         let params = GetMessageParams {
             message_id: "invalid".to_string(),
@@ -389,7 +392,7 @@ mod tests {
             include_recipients: false,
         };
 
-        let err = get_message_with_conn(&config, &conn, params).unwrap_err();
+        let err = get_message_with_conn(&config, &repo, params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::Validation(_)));
         assert!(err.to_string().contains("Invalid message_id format"));
@@ -397,8 +400,7 @@ mod tests {
 
     #[test]
     fn get_message_with_conn_message_not_found() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
+        let (temp_dir, repo) = make_test_repo();
         let config = make_test_config(&temp_dir, None);
         let params = GetMessageParams {
             message_id: "999".to_string(),
@@ -408,7 +410,7 @@ mod tests {
             include_recipients: false,
         };
 
-        let err = get_message_with_conn(&config, &conn, params).unwrap_err();
+        let err = get_message_with_conn(&config, &repo, params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::MessageNotFound { .. }));
         assert!(err.to_string().contains("not found"));
@@ -416,8 +418,7 @@ mod tests {
 
     #[test]
     fn get_message_with_conn_blocked_account() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
+        let (temp_dir, repo) = make_test_repo();
         let config = make_test_config(&temp_dir, Some(vec!["ews://other-account".to_string()]));
         let params = GetMessageParams {
             message_id: "1".to_string(),
@@ -427,7 +428,7 @@ mod tests {
             include_recipients: false,
         };
 
-        let err = get_message_with_conn(&config, &conn, params).unwrap_err();
+        let err = get_message_with_conn(&config, &repo, params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::Validation(_)));
         assert!(err.to_string().contains("excluded by APPLE_MAIL_ACCOUNT"));
@@ -435,8 +436,7 @@ mod tests {
 
     #[test]
     fn get_message_with_conn_success_no_body() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
+        let (temp_dir, repo) = make_test_repo();
         let config = make_test_config(&temp_dir, None);
         let params = GetMessageParams {
             message_id: "1".to_string(),
@@ -446,7 +446,7 @@ mod tests {
             include_recipients: false,
         };
 
-        let response = get_message_with_conn(&config, &conn, params).unwrap();
+        let response = get_message_with_conn(&config, &repo, params).unwrap();
 
         assert_eq!(response.status, None);
         assert!(response.message.is_some());
@@ -460,23 +460,30 @@ mod tests {
 
     #[test]
     fn get_message_with_conn_maps_apple_mail_recipient_types_zero_and_one() {
-        let conn = make_test_db();
-        conn.execute("DELETE FROM recipients WHERE message = 1", [])
-            .expect("clear seeded recipients");
-        conn.execute(
-            "INSERT INTO addresses (ROWID, address) VALUES (?1, ?2)",
-            rusqlite::params![3_i64, "cc@example.com"],
-        )
-        .expect("insert cc address");
-        conn.execute_batch(
-            r#"
-            INSERT INTO recipients VALUES (1, 2, 0);
-            INSERT INTO recipients VALUES (1, 3, 1);
-            "#,
-        )
-        .expect("insert recipients");
+        let (temp_dir, repo) = make_test_repo();
+        // Re-open connection to add more test data
+        let db_path = temp_dir.path().join("test.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).expect("create db");
+            conn.execute("DELETE FROM recipients WHERE message = 1", [])
+                .expect("clear seeded recipients");
+            conn.execute(
+                "INSERT INTO addresses (ROWID, address) VALUES (?1, ?2)",
+                rusqlite::params![3_i64, "cc@example.com"],
+            )
+            .expect("insert cc address");
+            conn.execute_batch(
+                r#"
+                INSERT INTO recipients VALUES (1, 2, 0);
+                INSERT INTO recipients VALUES (1, 3, 1);
+                "#,
+            )
+            .expect("insert recipients");
+            drop(conn);
+        }
+        // Re-create repo to pick up new data
+        let repo = SqliteMailRepository::new(&db_path).unwrap();
 
-        let temp_dir = TempDir::new().unwrap();
         let config = make_test_config(&temp_dir, None);
         let params = GetMessageParams {
             message_id: "1".to_string(),
@@ -486,7 +493,7 @@ mod tests {
             include_recipients: true,
         };
 
-        let response = get_message_with_conn(&config, &conn, params).unwrap();
+        let response = get_message_with_conn(&config, &repo, params).unwrap();
 
         assert_eq!(response.status, None);
         let message = response.message.expect("message response");
@@ -496,12 +503,12 @@ mod tests {
 
     #[test]
     fn get_message_with_conn_success_with_emlx() {
-        let conn = make_test_db();
-        let temp_dir = TempDir::new().unwrap();
-        let config = make_test_config(&temp_dir, None);
+        let (temp_dir, repo) = make_test_repo();
+        let temp_dir2 = TempDir::new().unwrap();
+        let config = make_test_config(&temp_dir2, None);
 
         // Create a fake .emlx file
-        let mail_dir = temp_dir
+        let mail_dir = temp_dir2
             .path()
             .join("V10")
             .join("account-a")
@@ -528,7 +535,7 @@ mod tests {
             include_recipients: false,
         };
 
-        let response = get_message_with_conn(&config, &conn, params).unwrap();
+        let response = get_message_with_conn(&config, &repo, params).unwrap();
 
         assert_eq!(response.status, None);
         assert!(response.message.is_some());

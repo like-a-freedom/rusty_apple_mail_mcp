@@ -1,14 +1,10 @@
 //! `list_mailboxes` tool implementation.
 
-use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::config::MailConfig;
-use crate::db::{
-    count_messages_in_mailbox, list_mailboxes as db_list_mailboxes, mailbox_account_id,
-    open_readonly,
-};
+use crate::db::MailRepository;
 use crate::error::MailMcpError;
 use crate::server::tools::ResponseStatus;
 
@@ -60,16 +56,17 @@ pub struct MailboxResult {
     pub account_id: Option<String>,
 }
 
-/// Execute `list_mailboxes` against an already-open `SQLite` connection.
+/// Execute `list_mailboxes` using the repository trait.
 ///
 /// # Errors
 ///
 /// Returns an error if the database cannot be accessed.
 pub fn list_mailboxes_with_conn(
     config: &MailConfig,
-    conn: &Connection,
+    repo: &dyn MailRepository,
 ) -> Result<ListMailboxesResponse, MailMcpError> {
-    let mailboxes = db_list_mailboxes(conn)?
+    let mailboxes = repo
+        .list_mailboxes()?
         .into_iter()
         .filter(|(_, url)| config.is_mailbox_allowed(url))
         .collect::<Vec<_>>();
@@ -85,8 +82,8 @@ pub fn list_mailboxes_with_conn(
         .map(|(id, url)| MailboxResult {
             name: crate::domain::extract_mailbox_name(url),
             url: url.clone(),
-            message_count: count_messages_in_mailbox(conn, *id).unwrap_or(0),
-            account_id: mailbox_account_id(url),
+            message_count: repo.count_messages_in_mailbox(*id).unwrap_or(0),
+            account_id: crate::db::mailbox_account_id(url),
         })
         .collect::<Vec<_>>();
 
@@ -99,22 +96,25 @@ pub fn list_mailboxes_with_conn(
 /// # Errors
 ///
 /// Returns an error if the database cannot be opened or accessed.
-pub fn list_mailboxes(config: &MailConfig) -> Result<ListMailboxesResponse, MailMcpError> {
-    let db_path = config.envelope_db_path();
-    let conn = open_readonly(&db_path)?;
-    list_mailboxes_with_conn(config, &conn)
+pub fn list_mailboxes(
+    repo: &dyn MailRepository,
+    config: &MailConfig,
+) -> Result<ListMailboxesResponse, MailMcpError> {
+    list_mailboxes_with_conn(config, repo)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
+    use crate::db::SqliteMailRepository;
     use std::collections::HashMap;
     use tempfile::TempDir;
 
     /// Create an in-memory test database with mailboxes and messages.
-    fn make_test_db() -> Connection {
-        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+    fn make_test_repo() -> (TempDir, SqliteMailRepository) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("test.db");
+        let conn = rusqlite::Connection::open(&db_path).expect("create db");
         conn.execute_batch(
             r#"
             CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
@@ -136,7 +136,9 @@ mod tests {
             "#,
         )
         .expect("seed test schema");
-        conn
+        drop(conn);
+        let repo = SqliteMailRepository::new(db_path).unwrap();
+        (temp_dir, repo)
     }
 
     fn make_test_config() -> (TempDir, MailConfig) {
@@ -159,9 +161,9 @@ mod tests {
 
     #[test]
     fn list_mailboxes_with_conn_returns_mailboxes() {
-        let conn = make_test_db();
-        let (_temp_dir, config) = make_test_config();
-        let response = list_mailboxes_with_conn(&config, &conn).unwrap();
+        let (_temp_dir, repo) = make_test_repo();
+        let (_temp_dir2, config) = make_test_config();
+        let response = list_mailboxes_with_conn(&config, &repo).unwrap();
 
         assert_eq!(response.status, None);
         assert_eq!(response.total_count, Some(2));
@@ -174,7 +176,7 @@ mod tests {
 
     #[test]
     fn list_mailboxes_with_conn_filters_by_allowed_accounts() {
-        let conn = make_test_db();
+        let (_temp_dir, repo) = make_test_repo();
         let (temp_dir, _config) = make_test_config();
         let config = MailConfig::from_parts_with_accounts(
             temp_dir.path().to_path_buf(),
@@ -183,7 +185,7 @@ mod tests {
             HashMap::new(),
         )
         .expect("valid config");
-        let response = list_mailboxes_with_conn(&config, &conn).unwrap();
+        let response = list_mailboxes_with_conn(&config, &repo).unwrap();
 
         assert_eq!(response.status, None);
         assert_eq!(response.total_count, Some(1));
@@ -197,7 +199,9 @@ mod tests {
 
     #[test]
     fn list_mailboxes_with_conn_returns_not_found_when_empty() {
-        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("test.db");
+        let conn = rusqlite::Connection::open(&db_path).expect("create db");
         conn.execute_batch(
             r#"
             CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
@@ -212,8 +216,10 @@ mod tests {
             "#,
         )
         .expect("seed empty schema");
-        let (_temp_dir, config) = make_test_config();
-        let response = list_mailboxes_with_conn(&config, &conn).unwrap();
+        drop(conn);
+        let repo = SqliteMailRepository::new(db_path).unwrap();
+        let (_temp_dir2, config) = make_test_config();
+        let response = list_mailboxes_with_conn(&config, &repo).unwrap();
 
         assert_eq!(response.status, Some(ResponseStatus::NotFound));
         assert_eq!(response.total_count, Some(0));
@@ -222,9 +228,9 @@ mod tests {
 
     #[test]
     fn list_mailboxes_with_conn_counts_messages() {
-        let conn = make_test_db();
-        let (_temp_dir, config) = make_test_config();
-        let response = list_mailboxes_with_conn(&config, &conn).unwrap();
+        let (_temp_dir, repo) = make_test_repo();
+        let (_temp_dir2, config) = make_test_config();
+        let response = list_mailboxes_with_conn(&config, &repo).unwrap();
 
         assert_eq!(response.status, None);
         let inbox = response
