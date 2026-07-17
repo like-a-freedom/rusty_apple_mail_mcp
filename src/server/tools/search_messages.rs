@@ -532,7 +532,7 @@ pub fn search_messages(
     ));
     let future = search_messages_with_repo(config, repo, store, params);
     match tokio::runtime::Handle::try_current() {
-        Ok(handle) => handle.block_on(future),
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
         Err(_) => tokio::runtime::Runtime::new().unwrap().block_on(future),
     }
 }
