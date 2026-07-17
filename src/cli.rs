@@ -31,8 +31,6 @@ pub struct Cli {
 pub enum Command {
     /// List all email accounts
     ListAccounts(ListAccountsArgs),
-    /// List all mailboxes
-    ListMailboxes(ListMailboxesArgs),
     /// Search messages
     Search(SearchArgs),
     /// Get a specific message by ID
@@ -48,10 +46,6 @@ pub struct ListAccountsArgs {
     #[arg(long, default_value = "false")]
     pub include_mailboxes: bool,
 }
-
-/// Arguments for list_mailboxes command.
-#[derive(Debug, Parser)]
-pub struct ListMailboxesArgs {}
 
 /// Arguments for search_messages command.
 #[derive(Debug, Parser)]
@@ -116,4 +110,4 @@ pub struct GetAttachmentArgs {
     pub message_id: String,
 }
 
-pub use commands::{get_attachment, get_message, list_accounts, list_mailboxes, search_messages};
+pub use commands::{get_attachment, get_message, list_accounts, search_messages};

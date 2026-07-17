@@ -166,6 +166,7 @@ pub fn list_accounts(
     repo: &dyn MailRepository,
     _store: &dyn AttachmentStore,
     config: &MailConfig,
+    _locator: &crate::mail::EmlxLocator<'_>,
     params: ListAccountsParams,
 ) -> Result<ListAccountsResponse, MailMcpError> {
     list_accounts_with_conn(config, repo, params)

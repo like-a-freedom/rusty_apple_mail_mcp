@@ -8,6 +8,7 @@ use crate::db::MailRepository;
 use crate::domain::{AttachmentMeta, ContentFormat};
 use crate::error::MailMcpError;
 use crate::mail::AttachmentStore;
+use crate::mail::EmlxLocator;
 use crate::mail::extract::extract_text;
 use crate::mail::parse_emlx;
 use crate::server::tools::ResponseStatus;
@@ -95,6 +96,7 @@ pub struct GetAttachmentResult {
 pub fn get_attachment_content_with_conn(
     config: &MailConfig,
     repo: &dyn MailRepository,
+    locator: &EmlxLocator<'_>,
     params: GetAttachmentParams,
 ) -> Result<GetAttachmentResponse, MailMcpError> {
     let message_id: i64 = match params.message_id.parse() {
@@ -148,7 +150,7 @@ pub fn get_attachment_content_with_conn(
         }
     };
 
-    let Some(emlx_path) = locate_message_file(config, &row) else {
+    let Some(emlx_path) = locate_message_file(locator, config, &row) else {
         return Err(MailMcpError::Validation(
             "Message body file not found on disk (emlx missing). The message may not be downloaded yet or the local file was deleted.".to_string(),
         ));
@@ -229,15 +231,17 @@ pub fn get_attachment_content(
     repo: &dyn MailRepository,
     _store: &dyn AttachmentStore,
     config: &MailConfig,
+    locator: &EmlxLocator<'_>,
     params: GetAttachmentParams,
 ) -> Result<GetAttachmentResponse, MailMcpError> {
-    get_attachment_content_with_conn(config, repo, params)
+    get_attachment_content_with_conn(config, repo, locator, params)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::SqliteMailRepository;
+    use crate::mail::CacheRegistry;
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
@@ -365,6 +369,12 @@ mod tests {
         .expect("valid config")
     }
 
+    fn test_locator() -> EmlxLocator<'static> {
+        use std::sync::LazyLock;
+        static REGISTRY: LazyLock<CacheRegistry> = LazyLock::new(CacheRegistry::new);
+        EmlxLocator::new(&REGISTRY)
+    }
+
     #[test]
     fn get_attachment_content_with_conn_invalid_attachment_id_format() {
         let (temp_dir, repo) = make_test_repo();
@@ -374,7 +384,8 @@ mod tests {
             message_id: "1".to_string(),
         };
 
-        let err = get_attachment_content_with_conn(&config, &repo, params).unwrap_err();
+        let err =
+            get_attachment_content_with_conn(&config, &repo, &test_locator(), params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::Validation(_)));
         assert!(err.to_string().contains("Invalid attachment_id format"));
@@ -389,7 +400,8 @@ mod tests {
             message_id: "999".to_string(),
         };
 
-        let err = get_attachment_content_with_conn(&config, &repo, params).unwrap_err();
+        let err =
+            get_attachment_content_with_conn(&config, &repo, &test_locator(), params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::MessageNotFound { .. }));
         assert!(err.to_string().contains("not found"));
@@ -404,7 +416,8 @@ mod tests {
             message_id: "1".to_string(),
         };
 
-        let err = get_attachment_content_with_conn(&config, &repo, params).unwrap_err();
+        let err =
+            get_attachment_content_with_conn(&config, &repo, &test_locator(), params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::Validation(_)));
         assert!(err.to_string().contains("excluded by APPLE_MAIL_ACCOUNT"));
@@ -440,7 +453,8 @@ mod tests {
         let emlx_content = format!("{}\n{}", email_content.len(), email_content);
         fs::write(&emlx_path, emlx_content).unwrap();
 
-        let err = get_attachment_content_with_conn(&config, &repo, params).unwrap_err();
+        let err =
+            get_attachment_content_with_conn(&config, &repo, &test_locator(), params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::AttachmentNotFound { .. }));
         assert!(err.to_string().contains("not found"));
@@ -486,7 +500,8 @@ mod tests {
         let emlx_content = format!("{}\n{}", email_content.len(), email_content);
         fs::write(&emlx_path, emlx_content).unwrap();
 
-        let response = get_attachment_content_with_conn(&config, &repo, params).unwrap();
+        let response =
+            get_attachment_content_with_conn(&config, &repo, &test_locator(), params).unwrap();
 
         assert_eq!(response.status, None);
         assert!(response.attachment.is_some());
@@ -537,7 +552,8 @@ mod tests {
         let emlx_content = format!("{}\n{}", email_content.len(), email_content);
         fs::write(&emlx_path, emlx_content).unwrap();
 
-        let response = get_attachment_content_with_conn(&config, &repo, params).unwrap();
+        let response =
+            get_attachment_content_with_conn(&config, &repo, &test_locator(), params).unwrap();
 
         // Should return partial status with guidance about OCR
         assert_eq!(response.status, Some(ResponseStatus::Partial));
@@ -616,7 +632,8 @@ mod tests {
         fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
         fs::write(&attachment_path, docx_bytes).unwrap();
 
-        let response = get_attachment_content_with_conn(&config, &repo, params).unwrap();
+        let response =
+            get_attachment_content_with_conn(&config, &repo, &test_locator(), params).unwrap();
 
         assert_eq!(response.status, None);
         let attachment = response.attachment.expect("attachment result");

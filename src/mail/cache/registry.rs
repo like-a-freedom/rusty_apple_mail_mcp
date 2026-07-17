@@ -4,7 +4,7 @@
 //! and provides a unified interface for cache operations.
 
 use std::path::{Path, PathBuf};
-use std::sync::{MutexGuard, RwLock};
+use std::sync::RwLock;
 
 use crate::mail::CacheKey;
 use crate::mail::cache::{
@@ -191,36 +191,6 @@ impl CacheRegistry {
     }
 }
 
-// Global registry for backward compatibility
-use once_cell::sync::OnceCell;
-use std::sync::Mutex;
-
-/// Global cache registry instance.
-///
-/// This provides a singleton cache registry for use throughout the application.
-/// In the future, this should be replaced with dependency injection.
-static GLOBAL_REGISTRY: OnceCell<Mutex<CacheRegistry>> = OnceCell::new();
-
-/// Get or initialize the global cache registry.
-pub fn global_registry() -> &'static Mutex<CacheRegistry> {
-    GLOBAL_REGISTRY.get_or_init(|| Mutex::new(CacheRegistry::new()))
-}
-
-/// Get a lock on the global registry for reading.
-pub fn global_registry_read() -> MutexGuard<'static, CacheRegistry> {
-    global_registry().lock().unwrap()
-}
-
-/// Get a lock on the global registry for writing.
-pub fn global_registry_write() -> MutexGuard<'static, CacheRegistry> {
-    global_registry().lock().unwrap()
-}
-
-/// Clear all global caches.
-pub fn clear_all_caches() {
-    global_registry_write().clear_all();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,12 +280,5 @@ mod tests {
 
         let registry2 = registry.clone();
         assert_eq!(registry2.total_len(), 1);
-    }
-
-    #[test]
-    fn test_global_registry() {
-        let registry = global_registry();
-        let guard = registry.lock().unwrap();
-        assert_eq!(guard.total_len(), 0);
     }
 }
