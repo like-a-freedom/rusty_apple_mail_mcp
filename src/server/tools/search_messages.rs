@@ -707,4 +707,62 @@ mod tests {
             .unwrap();
         assert!(result.messages.is_empty());
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sync_search_messages_works_inside_tokio_runtime() {
+        let (_temp, config) = make_test_config();
+        // Remove placeholder and create a real SQLite database
+        let db_path = config.envelope_db_path();
+        std::fs::remove_file(&db_path).expect("remove placeholder");
+        let conn = rusqlite::Connection::open(&db_path).expect("create db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (
+                ROWID INTEGER PRIMARY KEY,
+                subject INTEGER,
+                sender INTEGER,
+                mailbox INTEGER,
+                summary INTEGER,
+                date_sent INTEGER,
+                date_received INTEGER,
+                message_id TEXT,
+                global_message_id INTEGER
+            );
+            CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+            CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
+            CREATE TABLE sender_addresses (sender INTEGER PRIMARY KEY, address INTEGER REFERENCES addresses);
+            CREATE TABLE summaries (ROWID INTEGER PRIMARY KEY, summary TEXT);
+            CREATE TABLE attachments (ROWID INTEGER PRIMARY KEY, message INTEGER REFERENCES messages, attachment_id TEXT, name TEXT);
+            CREATE TABLE message_global_data (ROWID INTEGER PRIMARY KEY, message_id INTEGER, message_id_header TEXT);
+            CREATE TABLE recipients (message INTEGER REFERENCES messages, address INTEGER REFERENCES addresses, type INTEGER);
+            INSERT INTO subjects VALUES (1, 'Test Subject');
+            INSERT INTO addresses VALUES (1, 'test@example.com');
+            INSERT INTO sender_addresses VALUES (1, 1);
+            INSERT INTO mailboxes VALUES (1, 'imap://test/INBOX');
+            INSERT INTO message_global_data VALUES (10, 111, '<msg1@mail>');
+            INSERT INTO messages VALUES (1, 1, 1, 1, NULL, 748051200, 748051200, '<msg1@mail>', 10);
+            "#,
+        )
+        .expect("seed db");
+        drop(conn);
+
+        let params = SearchMessagesParams {
+            subject_query: Some("Test Subject".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 20,
+            offset: 0,
+            include_body_preview: false,
+        };
+
+        // Call the SYNC function from inside a tokio runtime — exercises block_in_place
+        let result = search_messages(&config, params).expect("sync search inside tokio runtime");
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(result.messages[0].subject, "Test Subject");
+    }
 }
