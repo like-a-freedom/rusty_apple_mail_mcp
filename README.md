@@ -136,7 +136,7 @@ CLI mode supports the same configuration options as MCP mode:
 |---|---|---|
 | `--mail-directory` | `APPLE_MAIL_DIR` | Mail data directory (default: `~/Library/Mail`) |
 | `--mail-version` | `APPLE_MAIL_VERSION` | Envelope Index version (default: `V10`) |
-| `--account` | `APPLE_MAIL_ACCOUNT` | Account selector(s) |
+| `--account` | `APPLE_MAIL_ACCOUNT` | Account selector(s); comma-separated account names, emails, or IDs (see [Account scoping](#account-scoping)) |
 
 Example:
 
@@ -198,7 +198,7 @@ The server is configured **only** through environment variables:
 |---|---|---|---|
 | `APPLE_MAIL_DIR` | no | `~/Library/Mail` | Root folder of the Mail data |
 | `APPLE_MAIL_VERSION` | no | `V10` | Envelope Index version subdirectory |
-| `APPLE_MAIL_ACCOUNT` | no | unset | Comma-separated account selectors such as `Work Email` or `user@example.com`; when set, the whole server is restricted to the resolved account(s) |
+| `APPLE_MAIL_ACCOUNT` | no | unset | Comma-separated account selectors (account name, email, or account ID); restricts all tools to matched accounts (see [Account scoping](#account-scoping)) |
 | `RUST_LOG` | no | unset | Standard Rust tracing filter used by `tracing_subscriber`; controls server logs written to stderr |
 
 Example setup:
@@ -241,10 +241,59 @@ When `RUST_LOG` enables `debug` for this crate, `search_messages` logs timing br
 
 If `APPLE_MAIL_ACCOUNT` is set, the server resolves each selector through macOS `~/Library/Accounts/Accounts4.sqlite` and then restricts **all** tools to the matched Mail account IDs.
 
+#### Discovering account selectors
+
+Run `list_accounts` without scoping first — it shows all available accounts with their names and emails:
+
+```bash
+rusty_apple_mail_mcp list-accounts
+```
+
+Example output:
+
+```json
+{
+  "accounts": [
+    {
+      "account_id": "ews://7FD31F78-81BB-4EAF-8955-9EC689C83920",
+      "account_type": "ews",
+      "account_name": "Exchange",
+      "email": "anton.solovey@kaspersky.com",
+      "mailbox_count": 74,
+      "message_count": 69291
+    },
+    {
+      "account_id": "imap://CD5254B8-6B26-4ABA-B175-C8C984164B87",
+      "account_type": "imap",
+      "email": "solovey.anton@gmail.com",
+      "mailbox_count": 150,
+      "message_count": 39494
+    }
+  ]
+}
+```
+
+Use `account_name`, `email`, or `account_id` as selectors.
+
+#### Selector format
+
+| Selector type | Example | When to use |
+|---|---|---|
+| Account name | `Exchange` | Human-friendly, from macOS Accounts settings |
+| Email address | `user@example.com` | Unique, works across protocols |
+| Account ID | `ews://UUID` | Always available in `list_accounts` output |
+
+Multiple selectors are comma-separated:
+
+```bash
+APPLE_MAIL_ACCOUNT="Exchange,solovey.anton@gmail.com"
+```
+
+#### How matching works
+
 - Matching is case-insensitive and trims whitespace.
-- Supported selectors include human-friendly account names and email addresses.
-- Startup fails fast if a selector matches zero accounts or multiple accounts.
-- `list_accounts` returns `account_name` and `email` when available, so valid selector values are discoverable from the MCP interface itself.
+- Startup fails fast if a selector matches zero accounts (typo) or multiple accounts (ambiguous).
+- Accounts not registered in macOS Accounts settings cannot be selected by name or email — use their `account_id` instead.
 
 ## VS Code integration
 
