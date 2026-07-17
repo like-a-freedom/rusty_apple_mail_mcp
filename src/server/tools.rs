@@ -3,7 +3,6 @@
 mod get_attachment;
 mod get_message;
 mod list_accounts;
-mod list_mailboxes;
 mod message_lookup;
 mod search_messages;
 
@@ -27,7 +26,6 @@ pub use get_message::{GetMessageParams, GetMessageResponse, get_message, get_mes
 pub use list_accounts::{
     ListAccountsParams, ListAccountsResponse, list_accounts, list_accounts_with_conn,
 };
-pub use list_mailboxes::{ListMailboxesResponse, list_mailboxes, list_mailboxes_with_conn};
 pub use search_messages::{
     SearchMessagesParams, SearchMessagesResponse, search_messages, search_messages_async,
 };

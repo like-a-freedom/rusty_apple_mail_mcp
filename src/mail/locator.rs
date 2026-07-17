@@ -15,190 +15,352 @@ use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
-use crate::mail::cache::{CacheKey, MailboxIndex, global_registry_read, global_registry_write};
+use crate::mail::cache::{CacheKey, CacheRegistry, MailboxIndex};
 
-/// Locate the .emlx file for a given message.
+/// Locate `.emlx` files on the filesystem with an injected cache.
 ///
-/// # Arguments
-///
-/// * `mail_dir` - Base mail directory (e.g., ~/Library/Mail)
-/// * `mail_version` - Mail version folder (e.g., "V10")
-/// * `mailbox_url` - Mailbox URL from the database
-/// * `message_rowid` - Message ROWID from the database
-///
-/// # Returns
-///
-/// Path to the .emlx file if found, None otherwise.
-#[must_use]
-pub fn locate_emlx(
-    mail_dir: &Path,
-    mail_version: &str,
-    mailbox_url: &str,
-    message_rowid: i64,
-) -> Option<PathBuf> {
-    locate_emlx_with_hints(
-        mail_dir,
-        mail_version,
-        mailbox_url,
-        message_rowid,
-        &[message_rowid.to_string()],
-        None,
-    )
+/// Wraps a reference to a [`CacheRegistry`] so all lookups go through
+/// the caller's cache rather than a global singleton.
+pub struct EmlxLocator<'a> {
+    registry: &'a CacheRegistry,
 }
 
-/// Locate the `.emlx` file using fast exact-path hints first, then a mailbox-local cached index.
-pub fn locate_emlx_with_hints(
-    mail_dir: &Path,
-    mail_version: &str,
-    mailbox_url: &str,
-    message_rowid: i64,
-    numeric_hints: &[String],
-    message_id_header: Option<&str>,
-) -> Option<PathBuf> {
-    let cache_key = CacheKey {
-        mail_root: mail_dir.join(mail_version),
-        message_rowid,
-    };
-
-    // Check cache first
-    if let Some(cached) = global_registry_read().get_valid_path(&cache_key) {
-        return Some(cached);
+impl<'a> EmlxLocator<'a> {
+    /// Create a new locator backed by the given cache registry.
+    pub fn new(registry: &'a CacheRegistry) -> Self {
+        Self { registry }
     }
 
-    let mut candidate_ids = numeric_hints.to_vec();
-    if !candidate_ids
-        .iter()
-        .any(|candidate| candidate == &message_rowid.to_string())
-    {
-        candidate_ids.push(message_rowid.to_string());
+    /// Locate the `.emlx` file for a given message.
+    #[must_use]
+    pub fn locate_emlx(
+        &self,
+        mail_dir: &Path,
+        mail_version: &str,
+        mailbox_url: &str,
+        message_rowid: i64,
+    ) -> Option<PathBuf> {
+        self.locate_emlx_with_hints(
+            mail_dir,
+            mail_version,
+            mailbox_url,
+            message_rowid,
+            &[message_rowid.to_string()],
+            None,
+        )
     }
 
-    if let Some(path) = find_emlx_file(
-        mail_dir,
-        mail_version,
-        mailbox_url,
-        &[message_rowid.to_string()],
-        false,
-    ) {
-        global_registry_write().insert_path(cache_key.clone(), path.clone());
-        return Some(path);
-    }
+    /// Locate the `.emlx` file using fast exact-path hints first, then a mailbox-local cached index.
+    pub fn locate_emlx_with_hints(
+        &self,
+        mail_dir: &Path,
+        mail_version: &str,
+        mailbox_url: &str,
+        message_rowid: i64,
+        numeric_hints: &[String],
+        message_id_header: Option<&str>,
+    ) -> Option<PathBuf> {
+        let cache_key = CacheKey {
+            mail_root: mail_dir.join(mail_version),
+            message_rowid,
+        };
 
-    let mailbox_dirs = candidate_mailbox_directories(&mail_dir.join(mail_version), mailbox_url);
-
-    if let Some(path) = find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, false)
-        && path_matches_message_id(&path, message_id_header)
-    {
-        global_registry_write().insert_path(cache_key.clone(), path.clone());
-        return Some(path);
-    }
-
-    if let Some(path) = find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, true)
-        && path_matches_message_id(&path, message_id_header)
-    {
-        global_registry_write().insert_path(cache_key.clone(), path.clone());
-        return Some(path);
-    }
-
-    if let Some(header) = message_id_header {
-        for mailbox_dir in &mailbox_dirs {
-            if let Some(path) = lookup_mailbox_header(mailbox_dir, header) {
-                global_registry_write().insert_path(cache_key.clone(), path.clone());
-                return Some(path);
-            }
+        if let Some(cached) = self.registry.get_valid_path(&cache_key) {
+            return Some(cached);
         }
-    }
 
-    for mailbox_dir in &mailbox_dirs {
-        if let Some(path) = lookup_mailbox_index(mailbox_dir, &candidate_ids, message_id_header) {
-            global_registry_write().insert_path(cache_key.clone(), path.clone());
-            return Some(path);
-        }
-    }
-
-    None
-}
-
-/// Locate the `.emlx` file using cache and direct-path heuristics only.
-///
-/// This variant intentionally avoids recursive directory walking and is suitable
-/// for list/search operations where latency matters more than exhaustive lookup.
-#[must_use]
-pub fn locate_emlx_quick(
-    mail_dir: &Path,
-    mail_version: &str,
-    mailbox_url: &str,
-    message_rowid: i64,
-) -> Option<PathBuf> {
-    locate_emlx_quick_with_hints(
-        mail_dir,
-        mail_version,
-        mailbox_url,
-        message_rowid,
-        &[message_rowid.to_string()],
-        None,
-    )
-}
-
-/// Locate the `.emlx` file using fast hints and mailbox-local indexes only.
-///
-/// This variant avoids recursive directory walking, making it suitable for list
-/// operations that still need reliable matching by `Message-ID` or alternate
-/// numeric stems.
-pub fn locate_emlx_quick_with_hints(
-    mail_dir: &Path,
-    mail_version: &str,
-    mailbox_url: &str,
-    message_rowid: i64,
-    numeric_hints: &[String],
-    message_id_header: Option<&str>,
-) -> Option<PathBuf> {
-    let cache_key = CacheKey {
-        mail_root: mail_dir.join(mail_version),
-        message_rowid,
-    };
-
-    if let Some(cached) = global_registry_read().get_valid_path(&cache_key) {
-        return Some(cached);
-    }
-
-    let mut candidate_ids = numeric_hints.to_vec();
-    if !candidate_ids
-        .iter()
-        .any(|candidate| candidate == &message_rowid.to_string())
-    {
-        candidate_ids.push(message_rowid.to_string());
-    }
-
-    let mailbox_dirs = candidate_mailbox_directories(&mail_dir.join(mail_version), mailbox_url);
-
-    if let Some(header) = message_id_header {
-        for mailbox_dir in &mailbox_dirs {
-            if let Some(path) = lookup_mailbox_header_cached(mailbox_dir, header) {
-                global_registry_write().insert_path(cache_key.clone(), path.clone());
-                return Some(path);
-            }
-        }
-    }
-
-    if let Some(path) = find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, false) {
-        global_registry_write().insert_path(cache_key.clone(), path.clone());
-        return Some(path);
-    }
-
-    for mailbox_dir in &mailbox_dirs {
-        if let Some(path) =
-            lookup_mailbox_index_cached(mailbox_dir, &candidate_ids, message_id_header)
+        let mut candidate_ids = numeric_hints.to_vec();
+        if !candidate_ids
+            .iter()
+            .any(|candidate| candidate == &message_rowid.to_string())
         {
-            global_registry_write().insert_path(cache_key.clone(), path.clone());
+            candidate_ids.push(message_rowid.to_string());
+        }
+
+        if let Some(path) = find_emlx_file(
+            mail_dir,
+            mail_version,
+            mailbox_url,
+            &[message_rowid.to_string()],
+            false,
+        ) {
+            self.registry.insert_path(cache_key.clone(), path.clone());
             return Some(path);
         }
+
+        let mailbox_dirs = candidate_mailbox_directories(&mail_dir.join(mail_version), mailbox_url);
+
+        if let Some(path) =
+            find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, false)
+            && self.path_matches_message_id(&path, message_id_header)
+        {
+            self.registry.insert_path(cache_key.clone(), path.clone());
+            return Some(path);
+        }
+
+        if let Some(path) =
+            find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, true)
+            && self.path_matches_message_id(&path, message_id_header)
+        {
+            self.registry.insert_path(cache_key.clone(), path.clone());
+            return Some(path);
+        }
+
+        if let Some(header) = message_id_header {
+            for mailbox_dir in &mailbox_dirs {
+                if let Some(path) = self.lookup_mailbox_header(mailbox_dir, header) {
+                    self.registry.insert_path(cache_key.clone(), path.clone());
+                    return Some(path);
+                }
+            }
+        }
+
+        for mailbox_dir in &mailbox_dirs {
+            if let Some(path) =
+                self.lookup_mailbox_index(mailbox_dir, &candidate_ids, message_id_header)
+            {
+                self.registry.insert_path(cache_key.clone(), path.clone());
+                return Some(path);
+            }
+        }
+
+        None
     }
 
-    None
+    /// Locate the `.emlx` file using cache and direct-path heuristics only.
+    ///
+    /// This variant intentionally avoids recursive directory walking and is suitable
+    /// for list/search operations where latency matters more than exhaustive lookup.
+    #[must_use]
+    pub fn locate_emlx_quick(
+        &self,
+        mail_dir: &Path,
+        mail_version: &str,
+        mailbox_url: &str,
+        message_rowid: i64,
+    ) -> Option<PathBuf> {
+        self.locate_emlx_quick_with_hints(
+            mail_dir,
+            mail_version,
+            mailbox_url,
+            message_rowid,
+            &[message_rowid.to_string()],
+            None,
+        )
+    }
+
+    /// Locate the `.emlx` file using fast hints and mailbox-local indexes only.
+    ///
+    /// This variant avoids recursive directory walking, making it suitable for list
+    /// operations that still need reliable matching by `Message-ID` or alternate
+    /// numeric stems.
+    pub fn locate_emlx_quick_with_hints(
+        &self,
+        mail_dir: &Path,
+        mail_version: &str,
+        mailbox_url: &str,
+        message_rowid: i64,
+        numeric_hints: &[String],
+        message_id_header: Option<&str>,
+    ) -> Option<PathBuf> {
+        let cache_key = CacheKey {
+            mail_root: mail_dir.join(mail_version),
+            message_rowid,
+        };
+
+        if let Some(cached) = self.registry.get_valid_path(&cache_key) {
+            return Some(cached);
+        }
+
+        let mut candidate_ids = numeric_hints.to_vec();
+        if !candidate_ids
+            .iter()
+            .any(|candidate| candidate == &message_rowid.to_string())
+        {
+            candidate_ids.push(message_rowid.to_string());
+        }
+
+        let mailbox_dirs = candidate_mailbox_directories(&mail_dir.join(mail_version), mailbox_url);
+
+        if let Some(header) = message_id_header {
+            for mailbox_dir in &mailbox_dirs {
+                if let Some(path) = self.lookup_mailbox_header_cached(mailbox_dir, header) {
+                    self.registry.insert_path(cache_key.clone(), path.clone());
+                    return Some(path);
+                }
+            }
+        }
+
+        if let Some(path) =
+            find_emlx_file(mail_dir, mail_version, mailbox_url, &candidate_ids, false)
+        {
+            self.registry.insert_path(cache_key.clone(), path.clone());
+            return Some(path);
+        }
+
+        for mailbox_dir in &mailbox_dirs {
+            if let Some(path) =
+                self.lookup_mailbox_index_cached(mailbox_dir, &candidate_ids, message_id_header)
+            {
+                self.registry.insert_path(cache_key.clone(), path.clone());
+                return Some(path);
+            }
+        }
+
+        None
+    }
+
+    // Private helpers that use the registry
+
+    fn lookup_mailbox_index(
+        &self,
+        mailbox_dir: &Path,
+        candidate_ids: &[String],
+        message_id_header: Option<&str>,
+    ) -> Option<PathBuf> {
+        if let Some(path) =
+            self.lookup_mailbox_index_cached(mailbox_dir, candidate_ids, message_id_header)
+        {
+            return Some(path);
+        }
+
+        let mailbox_path = mailbox_dir.to_path_buf();
+        let mut index = {
+            if self.registry.contains_mailbox_index(&mailbox_path) {
+                self.registry.get_mailbox_index(&mailbox_path)?
+            } else {
+                let mut new_index = build_mailbox_index(mailbox_dir)?;
+                if message_id_header.is_some() {
+                    ensure_mailbox_headers(&mut new_index);
+                }
+                let matched = if let Some(header) = message_id_header {
+                    new_index.by_header.get(header).cloned()
+                } else {
+                    None
+                }
+                .or_else(|| {
+                    candidate_ids
+                        .iter()
+                        .find_map(|candidate_id| new_index.by_stem.get(candidate_id).cloned())
+                });
+                self.registry.insert_mailbox_index(mailbox_path, new_index);
+                return matched;
+            }
+        };
+
+        if let Some(header) = message_id_header {
+            ensure_mailbox_headers(&mut index);
+            if let Some(found) = index.by_header.get(header)
+                && found.exists()
+            {
+                let result = found.clone();
+                self.registry.insert_mailbox_index(mailbox_path, index);
+                return Some(result);
+            }
+        }
+        if let Some(found) = candidate_ids
+            .iter()
+            .find_map(|candidate_id| index.by_stem.get(candidate_id).cloned())
+            .filter(|p| p.exists())
+        {
+            self.registry.insert_mailbox_index(mailbox_path, index);
+            return Some(found);
+        }
+        self.registry.insert_mailbox_index(mailbox_path, index);
+        None
+    }
+
+    fn lookup_mailbox_index_cached(
+        &self,
+        mailbox_dir: &Path,
+        candidate_ids: &[String],
+        message_id_header: Option<&str>,
+    ) -> Option<PathBuf> {
+        let mailbox_path = mailbox_dir.to_path_buf();
+        if let Some(header) = message_id_header
+            && let Some(path) = self
+                .registry
+                .lookup_mailbox_by_header(&mailbox_path, header)
+        {
+            return Some(path);
+        }
+        for candidate_id in candidate_ids {
+            if let Some(path) = self
+                .registry
+                .lookup_mailbox_by_stem(&mailbox_path, candidate_id)
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    fn lookup_mailbox_header(
+        &self,
+        mailbox_dir: &Path,
+        message_id_header: &str,
+    ) -> Option<PathBuf> {
+        if let Some(path) = self.lookup_mailbox_header_cached(mailbox_dir, message_id_header) {
+            return Some(path);
+        }
+
+        let mailbox_path = mailbox_dir.to_path_buf();
+        let mut index = {
+            if self.registry.contains_mailbox_index(&mailbox_path) {
+                self.registry.get_mailbox_index(&mailbox_path)?
+            } else {
+                let mut new_index = build_mailbox_index(mailbox_dir)?;
+                ensure_mailbox_headers(&mut new_index);
+                let matched = new_index.by_header.get(message_id_header).cloned();
+                self.registry.insert_mailbox_index(mailbox_path, new_index);
+                return matched;
+            }
+        };
+
+        ensure_mailbox_headers(&mut index);
+        if let Some(found) = index.by_header.get(message_id_header)
+            && found.exists()
+        {
+            let result = found.clone();
+            self.registry.insert_mailbox_index(mailbox_path, index);
+            return Some(result);
+        }
+        self.registry.insert_mailbox_index(mailbox_path, index);
+        None
+    }
+
+    fn lookup_mailbox_header_cached(
+        &self,
+        mailbox_dir: &Path,
+        message_id_header: &str,
+    ) -> Option<PathBuf> {
+        self.registry
+            .lookup_mailbox_by_header(mailbox_dir, message_id_header)
+    }
+
+    fn extract_message_id_header(&self, path: &Path) -> Option<String> {
+        if let Some(cached) = self.registry.get_header(&path.to_path_buf()) {
+            return cached;
+        }
+        let header = extract_message_id_header_uncached(path);
+        if let Some(ref h) = header {
+            self.registry
+                .cache_with_header(path.to_path_buf(), h.clone());
+        } else {
+            self.registry.cache_headerless(path.to_path_buf());
+        }
+        header
+    }
+
+    fn path_matches_message_id(&self, path: &Path, message_id_header: Option<&str>) -> bool {
+        match message_id_header {
+            Some(expected) => self.extract_message_id_header(path).as_deref() == Some(expected),
+            None => true,
+        }
+    }
 }
 
-/// Internal function to find the .emlx file.
+/// Free functions (pure, no registry access)
 fn find_emlx_file(
     mail_dir: &Path,
     mail_version: &str,
@@ -209,7 +371,6 @@ fn find_emlx_file(
     let base_path = mail_dir.join(mail_version);
     let mailbox_dirs = candidate_mailbox_directories(&base_path, mailbox_url);
 
-    // Strategy 1: Try direct path construction from mailbox URL
     if let Some(path) = try_direct_path(&mailbox_dirs, candidate_ids)
         && path.exists()
     {
@@ -236,7 +397,6 @@ fn find_emlx_file(
     None
 }
 
-/// Try to construct a direct path from the mailbox URL.
 fn try_direct_path(mailbox_dirs: &[PathBuf], candidate_ids: &[String]) -> Option<PathBuf> {
     mailbox_dirs
         .iter()
@@ -408,119 +568,6 @@ fn hashed_data_bucket_segments(candidate_id: &str) -> Option<Vec<String>> {
     )
 }
 
-fn lookup_mailbox_index(
-    mailbox_dir: &Path,
-    candidate_ids: &[String],
-    message_id_header: Option<&str>,
-) -> Option<PathBuf> {
-    if let Some(path) = lookup_mailbox_index_cached(mailbox_dir, candidate_ids, message_id_header) {
-        return Some(path);
-    }
-
-    let mailbox_path = mailbox_dir.to_path_buf();
-    let mut index = {
-        let registry = global_registry_read();
-        if registry.contains_mailbox_index(&mailbox_path) {
-            registry.get_mailbox_index(&mailbox_path)?
-        } else {
-            drop(registry);
-            let mut new_index = build_mailbox_index(mailbox_dir)?;
-            if message_id_header.is_some() {
-                ensure_mailbox_headers(&mut new_index);
-            }
-            let matched = if let Some(header) = message_id_header {
-                new_index.by_header.get(header).cloned()
-            } else {
-                None
-            }
-            .or_else(|| {
-                candidate_ids
-                    .iter()
-                    .find_map(|candidate_id| new_index.by_stem.get(candidate_id).cloned())
-            });
-            global_registry_write().insert_mailbox_index(mailbox_path, new_index);
-            return matched;
-        }
-    };
-
-    if let Some(header) = message_id_header {
-        ensure_mailbox_headers(&mut index);
-        if let Some(found) = index.by_header.get(header)
-            && found.exists()
-        {
-            let result = found.clone();
-            global_registry_write().insert_mailbox_index(mailbox_path, index);
-            return Some(result);
-        }
-    }
-    if let Some(found) = candidate_ids
-        .iter()
-        .find_map(|candidate_id| index.by_stem.get(candidate_id).cloned())
-        .filter(|p| p.exists())
-    {
-        global_registry_write().insert_mailbox_index(mailbox_path, index);
-        return Some(found);
-    }
-    global_registry_write().insert_mailbox_index(mailbox_path, index);
-    None
-}
-
-fn lookup_mailbox_index_cached(
-    mailbox_dir: &Path,
-    candidate_ids: &[String],
-    message_id_header: Option<&str>,
-) -> Option<PathBuf> {
-    let registry = global_registry_read();
-    let mailbox_path = mailbox_dir.to_path_buf();
-    if let Some(header) = message_id_header
-        && let Some(path) = registry.lookup_mailbox_by_header(&mailbox_path, header)
-    {
-        return Some(path);
-    }
-    for candidate_id in candidate_ids {
-        if let Some(path) = registry.lookup_mailbox_by_stem(&mailbox_path, candidate_id) {
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn lookup_mailbox_header(mailbox_dir: &Path, message_id_header: &str) -> Option<PathBuf> {
-    if let Some(path) = lookup_mailbox_header_cached(mailbox_dir, message_id_header) {
-        return Some(path);
-    }
-
-    let mailbox_path = mailbox_dir.to_path_buf();
-    let mut index = {
-        let registry = global_registry_read();
-        if registry.contains_mailbox_index(&mailbox_path) {
-            registry.get_mailbox_index(&mailbox_path)?
-        } else {
-            drop(registry);
-            let mut new_index = build_mailbox_index(mailbox_dir)?;
-            ensure_mailbox_headers(&mut new_index);
-            let matched = new_index.by_header.get(message_id_header).cloned();
-            global_registry_write().insert_mailbox_index(mailbox_path, new_index);
-            return matched;
-        }
-    };
-
-    ensure_mailbox_headers(&mut index);
-    if let Some(found) = index.by_header.get(message_id_header)
-        && found.exists()
-    {
-        let result = found.clone();
-        global_registry_write().insert_mailbox_index(mailbox_path, index);
-        return Some(result);
-    }
-    global_registry_write().insert_mailbox_index(mailbox_path, index);
-    None
-}
-
-fn lookup_mailbox_header_cached(mailbox_dir: &Path, message_id_header: &str) -> Option<PathBuf> {
-    global_registry_read().lookup_mailbox_by_header(mailbox_dir, message_id_header)
-}
-
 fn build_mailbox_index(mailbox_dir: &Path) -> Option<MailboxIndex> {
     if !mailbox_dir.exists() {
         return None;
@@ -562,7 +609,7 @@ fn ensure_mailbox_headers(index: &mut MailboxIndex) {
         return;
     }
     for path in &index.header_candidates {
-        if let Some(header) = extract_message_id_header(path) {
+        if let Some(header) = extract_message_id_header_uncached(path) {
             index
                 .by_header
                 .entry(header)
@@ -570,19 +617,6 @@ fn ensure_mailbox_headers(index: &mut MailboxIndex) {
         }
     }
     index.headers_loaded = true;
-}
-
-fn extract_message_id_header(path: &Path) -> Option<String> {
-    if let Some(cached) = global_registry_read().get_header(&path.to_path_buf()) {
-        return cached;
-    }
-    let header = extract_message_id_header_uncached(path);
-    if let Some(ref h) = header {
-        global_registry_write().cache_with_header(path.to_path_buf(), h.clone());
-    } else {
-        global_registry_write().cache_headerless(path.to_path_buf());
-    }
-    header
 }
 
 fn extract_message_id_header_uncached(path: &Path) -> Option<String> {
@@ -623,21 +657,14 @@ fn extract_message_id_header_uncached(path: &Path) -> Option<String> {
     None
 }
 
-fn path_matches_message_id(path: &Path, message_id_header: Option<&str>) -> bool {
-    match message_id_header {
-        Some(expected) => extract_message_id_header(path).as_deref() == Some(expected),
-        None => true,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs::{self, File};
     use tempfile::TempDir;
 
-    fn clear_locator_caches() {
-        crate::mail::cache::clear_all_caches();
+    fn test_registry() -> CacheRegistry {
+        CacheRegistry::new()
     }
 
     #[test]
@@ -647,16 +674,16 @@ mod tests {
         let mail_version = "V10";
         let base_path = mail_dir.join(mail_version);
 
-        // Create a fake mailbox structure
         let uuid_dir = base_path.join("AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA");
         let messages_dir = uuid_dir.join("INBOX.mbox").join("Messages");
         fs::create_dir_all(&messages_dir).unwrap();
 
-        // Create a fake .emlx file
         let emlx_path = messages_dir.join("42.emlx");
         File::create(&emlx_path).unwrap();
 
-        let result = locate_emlx(
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx(
             mail_dir,
             mail_version,
             "imap://user@mail.example.com/INBOX",
@@ -673,7 +700,9 @@ mod tests {
         let mail_dir = temp_dir.path();
         let mail_version = "V10";
 
-        let result = locate_emlx(
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx(
             mail_dir,
             mail_version,
             "imap://user@mail.example.com/INBOX",
@@ -708,8 +737,12 @@ mod tests {
         File::create(&first_file).unwrap();
         File::create(&second_file).unwrap();
 
-        let first_result = locate_emlx(first.path(), "V10", "imap://u@example.com/INBOX", 42);
-        let second_result = locate_emlx(second.path(), "V10", "imap://u@example.com/INBOX", 42);
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let first_result =
+            locator.locate_emlx(first.path(), "V10", "imap://u@example.com/INBOX", 42);
+        let second_result =
+            locator.locate_emlx(second.path(), "V10", "imap://u@example.com/INBOX", 42);
 
         assert_eq!(first_result.unwrap(), first_file);
         assert_eq!(second_result.unwrap(), second_file);
@@ -717,7 +750,6 @@ mod tests {
 
     #[test]
     fn locate_emlx_quick_uses_direct_path_without_recursive_scan() {
-        clear_locator_caches();
         let temp_dir = TempDir::new().unwrap();
         let mail_dir = temp_dir.path();
         let base_path = mail_dir.join("V10");
@@ -728,13 +760,14 @@ mod tests {
         let emlx_path = messages_dir.join("7.emlx");
         File::create(&emlx_path).unwrap();
 
-        let result = locate_emlx_quick(mail_dir, "V10", "ews://account/Inbox", 7);
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx_quick(mail_dir, "V10", "ews://account/Inbox", 7);
         assert_eq!(result, Some(emlx_path));
     }
 
     #[test]
     fn locate_emlx_prefers_account_specific_directory_hint() {
-        clear_locator_caches();
         let temp_dir = TempDir::new().unwrap();
         let mail_dir = temp_dir.path();
         let base_path = mail_dir.join("V10");
@@ -754,13 +787,14 @@ mod tests {
         File::create(&wrong_file).unwrap();
         File::create(&right_file).unwrap();
 
-        let result = locate_emlx(mail_dir, "V10", "ews://account-b/Inbox", 9);
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx(mail_dir, "V10", "ews://account-b/Inbox", 9);
         assert_eq!(result, Some(right_file));
     }
 
     #[test]
     fn locate_emlx_finds_message_in_nested_mailbox_path() {
-        clear_locator_caches();
         let temp_dir = TempDir::new().unwrap();
         let mail_dir = temp_dir.path();
         let messages_dir = mail_dir
@@ -775,7 +809,9 @@ mod tests {
         let emlx_path = messages_dir.join("194184.emlx");
         File::create(&emlx_path).unwrap();
 
-        let result = locate_emlx(
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx(
             mail_dir,
             "V10",
             "ews://account-b/Inbox/Internal%20services/Confluence",
@@ -787,7 +823,6 @@ mod tests {
 
     #[test]
     fn locate_emlx_finds_message_in_uuid_data_subtree_for_nested_mailbox() {
-        clear_locator_caches();
         let temp_dir = TempDir::new().unwrap();
         let mail_dir = temp_dir.path();
         let messages_dir = mail_dir
@@ -806,7 +841,9 @@ mod tests {
         let emlx_path = messages_dir.join("194184.emlx");
         File::create(&emlx_path).unwrap();
 
-        let result = locate_emlx(
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx(
             mail_dir,
             "V10",
             "ews://account-b/Inbox/Internal%20services/Confluence",
@@ -818,7 +855,6 @@ mod tests {
 
     #[test]
     fn locate_emlx_quick_finds_message_in_three_level_uuid_data_subtree() {
-        clear_locator_caches();
         let temp_dir = TempDir::new().unwrap();
         let mail_dir = temp_dir.path();
         let messages_dir = mail_dir
@@ -838,7 +874,9 @@ mod tests {
         let emlx_path = messages_dir.join("194418.emlx");
         File::create(&emlx_path).unwrap();
 
-        let result = locate_emlx_quick(
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx_quick(
             mail_dir,
             "V10",
             "ews://account-b/Inbox/Internal%20services/TFS",
@@ -850,7 +888,6 @@ mod tests {
 
     #[test]
     fn locate_emlx_with_hints_matches_by_message_id_header_when_filename_differs() {
-        clear_locator_caches();
         let temp_dir = TempDir::new().unwrap();
         let mail_dir = temp_dir.path();
         let messages_dir = mail_dir
@@ -879,7 +916,9 @@ mod tests {
         )
         .unwrap();
 
-        let result = locate_emlx_with_hints(
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx_with_hints(
             mail_dir,
             "V10",
             "ews://account-b/Inbox/Internal%20services/Confluence",
@@ -893,7 +932,6 @@ mod tests {
 
     #[test]
     fn locate_emlx_with_hints_prefers_message_id_header_over_wrong_numeric_hint() {
-        clear_locator_caches();
         let temp_dir = TempDir::new().unwrap();
         let mail_dir = temp_dir.path();
         let messages_dir = mail_dir
@@ -929,7 +967,9 @@ mod tests {
         )
         .unwrap();
 
-        let result = locate_emlx_with_hints(
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx_with_hints(
             mail_dir,
             "V10",
             "ews://account-b/Inbox",
@@ -943,7 +983,6 @@ mod tests {
 
     #[test]
     fn locate_emlx_quick_with_hints_does_not_build_mailbox_index_on_cache_miss() {
-        clear_locator_caches();
         let temp_dir = TempDir::new().unwrap();
         let mail_dir = temp_dir.path();
         let messages_dir = mail_dir
@@ -966,7 +1005,9 @@ mod tests {
         )
         .unwrap();
 
-        let result = locate_emlx_quick_with_hints(
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx_quick_with_hints(
             mail_dir,
             "V10",
             "ews://account-b/Inbox",
@@ -980,7 +1021,6 @@ mod tests {
 
     #[test]
     fn build_mailbox_index_defers_message_id_headers_until_needed() {
-        clear_locator_caches();
         let temp_dir = TempDir::new().unwrap();
         let mailbox_dir = temp_dir.path().join("Inbox.mbox");
         let messages_dir = mailbox_dir.join("Messages");
@@ -1010,7 +1050,6 @@ mod tests {
 
     #[test]
     fn lookup_mailbox_header_populates_cached_headers_lazily() {
-        clear_locator_caches();
         let temp_dir = TempDir::new().unwrap();
         let mailbox_dir = temp_dir.path().join("Inbox.mbox");
         let messages_dir = mailbox_dir.join("Messages");
@@ -1029,21 +1068,24 @@ mod tests {
         )
         .unwrap();
 
+        let registry = test_registry();
         let index = build_mailbox_index(&mailbox_dir).expect("mailbox index");
-        global_registry_write().insert_mailbox_index(mailbox_dir.clone(), index);
+        registry.insert_mailbox_index(mailbox_dir.clone(), index);
+
+        let locator = EmlxLocator::new(&registry);
 
         assert_eq!(
-            lookup_mailbox_header_cached(&mailbox_dir, "<lazy-cache@example.com>"),
+            locator.lookup_mailbox_header_cached(&mailbox_dir, "<lazy-cache@example.com>"),
             None,
             "header should not be available before lazy hydration"
         );
 
         assert_eq!(
-            lookup_mailbox_header(&mailbox_dir, "<lazy-cache@example.com>"),
+            locator.lookup_mailbox_header(&mailbox_dir, "<lazy-cache@example.com>"),
             Some(emlx_path.clone())
         );
 
-        let cached = global_registry_read()
+        let cached = registry
             .get_mailbox_index(&mailbox_dir)
             .expect("cached mailbox index");
         assert_eq!(
@@ -1054,18 +1096,15 @@ mod tests {
 
     #[test]
     fn hashed_data_bucket_segments_computes_correctly() {
-        // For ID "194184" (6 digits), takes first 3 digits "194", reverses to ["4", "9", "1"]
         let segments = hashed_data_bucket_segments("194184");
         assert_eq!(
             segments,
             Some(vec!["4".to_string(), "9".to_string(), "1".to_string()])
         );
 
-        // For ID "79665" (5 digits), takes first 2 digits "79", reverses to ["9", "7"]
         let segments = hashed_data_bucket_segments("79665");
         assert_eq!(segments, Some(vec!["9".to_string(), "7".to_string()]));
 
-        // For ID "1234567" (7 digits), takes first 4 digits "1234", reverses to ["4", "3", "2", "1"]
         let segments = hashed_data_bucket_segments("1234567");
         assert_eq!(
             segments,
@@ -1077,11 +1116,9 @@ mod tests {
             ])
         );
 
-        // Short IDs (<=3 digits) return None
         let segments = hashed_data_bucket_segments("123");
         assert!(segments.is_none());
 
-        // Non-numeric IDs return None
         let segments = hashed_data_bucket_segments("abc123");
         assert!(segments.is_none());
     }
@@ -1092,7 +1129,7 @@ mod tests {
         assert_eq!(percent_decode("Internal%20services"), "Internal services");
         assert_eq!(percent_decode("Test%20Folder%20Name"), "Test Folder Name");
         assert_eq!(percent_decode("%48%65%6C%6C%6F"), "Hello");
-        assert_eq!(percent_decode("partial%"), "partial%"); // Invalid encoding
+        assert_eq!(percent_decode("partial%"), "partial%");
     }
 
     #[test]
@@ -1109,23 +1146,34 @@ mod tests {
     #[test]
     fn locate_emlx_returns_none_for_missing_mailbox_url() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let result = locate_emlx(temp_dir.path(), "V10", "", 42);
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx(temp_dir.path(), "V10", "", 42);
         assert!(result.is_none());
     }
 
     #[test]
     fn locate_emlx_with_hints_handles_empty_hints() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let result =
-            locate_emlx_with_hints(temp_dir.path(), "V10", "imap://test/INBOX", 42, &[], None);
-        // Should still work with message_rowid as default hint
-        assert!(result.is_none()); // No actual file exists
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx_with_hints(
+            temp_dir.path(),
+            "V10",
+            "imap://test/INBOX",
+            42,
+            &[],
+            None,
+        );
+        assert!(result.is_none());
     }
 
     #[test]
     fn locate_emlx_quick_with_empty_numeric_hints() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let result = locate_emlx_quick(temp_dir.path(), "V10", "imap://test/INBOX", 42);
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx_quick(temp_dir.path(), "V10", "imap://test/INBOX", 42);
         assert!(result.is_none());
     }
 
@@ -1165,7 +1213,6 @@ mod tests {
         let mailbox_name = "INBOX.mbox";
         let message_rowid = 999;
 
-        // Create the directory structure
         let messages_dir = temp_dir
             .path()
             .join(mail_version)
@@ -1174,29 +1221,29 @@ mod tests {
             .join("Messages");
         std::fs::create_dir_all(&messages_dir).unwrap();
 
-        // Write a test .emlx file
         let emlx_path = messages_dir.join(format!("{message_rowid}.emlx"));
         let emlx_content = "100\nFrom: test@example.com\n\nBody".to_string();
         std::fs::write(&emlx_path, emlx_content).unwrap();
 
-        // Try to locate with account-specific hint - this may or may not find the file
-        // depending on the implementation's path resolution logic
-        let result = locate_emlx(
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.locate_emlx(
             temp_dir.path(),
             mail_version,
             &format!("imap://test@example.com/{mailbox_name}"),
             message_rowid,
         );
 
-        // Just verify the function doesn't panic - actual result depends on implementation
-        // The file exists but locator may use different heuristics
         assert!(result.is_some() || result.is_none());
     }
 
     #[test]
     fn locate_emlx_handles_nonexistent_mailbox() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let result = locate_emlx(temp_dir.path(), "V10", "imap://test/NonExistentMailbox", 42);
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result =
+            locator.locate_emlx(temp_dir.path(), "V10", "imap://test/NonExistentMailbox", 42);
         assert!(result.is_none());
     }
 
@@ -1214,8 +1261,9 @@ mod tests {
     #[test]
     fn lookup_mailbox_header_cached_handles_missing_index() {
         let temp_dir = tempfile::tempdir().unwrap();
-        // Don't build index, just try to lookup
-        let result = lookup_mailbox_header_cached(temp_dir.path(), "<test@example.com>");
+        let registry = test_registry();
+        let locator = EmlxLocator::new(&registry);
+        let result = locator.lookup_mailbox_header_cached(temp_dir.path(), "<test@example.com>");
         assert!(result.is_none());
     }
 
@@ -1229,7 +1277,6 @@ mod tests {
 
     #[test]
     fn percent_decode_handles_invalid_utf8() {
-        // Invalid percent encoding should return original
         assert_eq!(percent_decode("%GG"), "%GG");
         assert_eq!(percent_decode("%2"), "%2");
         assert_eq!(percent_decode("%"), "%");
@@ -1237,25 +1284,14 @@ mod tests {
 
     #[test]
     fn hashed_data_bucket_segments_handles_edge_cases() {
-        // Empty string
         assert!(hashed_data_bucket_segments("").is_none());
-
-        // Single digit
         assert!(hashed_data_bucket_segments("1").is_none());
-
-        // Two digits
         assert!(hashed_data_bucket_segments("12").is_none());
-
-        // Three digits
         assert!(hashed_data_bucket_segments("123").is_none());
-
-        // Four digits - should return 1 segment reversed
         assert_eq!(
             hashed_data_bucket_segments("1234"),
             Some(vec!["1".to_string()])
         );
-
-        // Five digits - should return 2 segments reversed
         assert_eq!(
             hashed_data_bucket_segments("12345"),
             Some(vec!["2".to_string(), "1".to_string()])
