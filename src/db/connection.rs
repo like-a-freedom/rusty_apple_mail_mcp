@@ -1,6 +1,7 @@
 use crate::error::MailMcpError;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
+use std::time::Duration;
 
 /// Percent-encode a filesystem path for use in a `file:` URI.
 ///
@@ -28,11 +29,30 @@ fn is_locked_error(e: &rusqlite::Error) -> bool {
     msg.contains("locked") || msg.contains("busy")
 }
 
+/// Determine whether a SQLite error is likely caused by macOS TCC permissions.
+///
+/// SQLite error 14 (CANTOPEN) on a file that exists usually means the process
+/// lacks the macOS Full Disk Access entitlement needed to read `~/Library/Mail`.
+fn is_likely_tcc_error(e: &rusqlite::Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("unable to open database") || msg.contains("authorization denied")
+}
+
+/// macOS TCC guidance added to error messages when the database file exists
+/// but cannot be opened.
+const TCC_GUIDANCE: &str = " Ensure the application has Full Disk Access: \
+     System Settings → Privacy & Security → Full Disk Access. \
+     Add your terminal, IDE, or the MCP server host process, then retry.";
+
 /// Open the Envelope Index database in read-only mode.
 ///
 /// Uses `SQLite` URI to prevent any accidental writes.
 /// The connection stays read-only, but it must still observe the active `WAL`
 /// so newly indexed Mail messages remain visible before checkpointing.
+///
+/// Retries up to 3 times with exponential backoff when the database is locked
+/// by Apple Mail, and augments error messages with macOS TCC guidance when
+/// the file exists but cannot be opened (likely a permission issue).
 ///
 /// # Errors
 ///
@@ -47,19 +67,43 @@ pub fn open_readonly(path: impl AsRef<Path>) -> Result<Connection, MailMcpError>
         });
     }
     let uri = format!("file:{}?mode=ro", percent_encode_path(path));
-    Connection::open_with_flags(
-        &uri,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_URI
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| {
-        if is_locked_error(&e) {
-            MailMcpError::DatabaseLocked(e.to_string())
-        } else {
-            MailMcpError::Sqlite(e)
+
+    const MAX_RETRIES: u32 = 3;
+    for attempt in 0..MAX_RETRIES {
+        match Connection::open_with_flags(
+            &uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ) {
+            Ok(conn) => return Ok(conn),
+            Err(e) => {
+                if is_locked_error(&e) && attempt + 1 < MAX_RETRIES {
+                    let delay = Duration::from_millis(100 * 2u64.pow(attempt));
+                    std::thread::sleep(delay);
+                    continue;
+                }
+                if is_locked_error(&e) {
+                    let msg = format!(
+                        "Database is locked by Apple Mail after {MAX_RETRIES} retries. \
+                         Close Apple Mail or wait for it to finish indexing.{TCC_GUIDANCE}"
+                    );
+                    return Err(MailMcpError::DatabaseLocked(msg));
+                }
+                if is_likely_tcc_error(&e) {
+                    let msg = format!(
+                        "Cannot open database at {}.{}",
+                        path.display(),
+                        TCC_GUIDANCE
+                    );
+                    return Err(MailMcpError::DatabaseLocked(msg));
+                }
+                return Err(MailMcpError::Sqlite(e));
+            }
         }
-    })
+    }
+
+    unreachable!("retry loop always returns via early return or Err");
 }
 
 #[cfg(test)]
@@ -263,5 +307,89 @@ mod tests {
             .expect("read wal-backed rows");
 
         assert_eq!(row_count, 2);
+    }
+
+    #[test]
+    fn is_locked_error_detects_busy() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(5),
+            Some("database is busy".to_string()),
+        );
+        assert!(is_locked_error(&err));
+    }
+
+    #[test]
+    fn is_locked_error_detects_locked() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(6),
+            Some("database is locked".to_string()),
+        );
+        assert!(is_locked_error(&err));
+    }
+
+    #[test]
+    fn is_locked_error_ignores_other_errors() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(14),
+            Some("unable to open database file".to_string()),
+        );
+        assert!(!is_locked_error(&err));
+    }
+
+    #[test]
+    fn is_likely_tcc_error_detects_cantopen() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(14),
+            Some("unable to open database file".to_string()),
+        );
+        assert!(is_likely_tcc_error(&err));
+    }
+
+    #[test]
+    fn is_likely_tcc_error_detects_permission_denied() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(14),
+            Some("authorization denied".to_string()),
+        );
+        assert!(is_likely_tcc_error(&err));
+    }
+
+    #[test]
+    fn is_likely_tcc_error_ignores_corrupt() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(26),
+            Some("file is not a database".to_string()),
+        );
+        assert!(!is_likely_tcc_error(&err));
+    }
+
+    #[test]
+    fn open_readonly_retries_on_locked() {
+        use std::time::Instant;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("lock.db");
+
+        let conn = Connection::open(&db_path).expect("create db");
+        conn.execute("CREATE TABLE test (id INTEGER)", [])
+            .expect("create table");
+        drop(conn);
+
+        let started = Instant::now();
+        let result = open_readonly(&db_path);
+        let elapsed = started.elapsed();
+
+        assert!(result.is_ok());
+        // First attempt should succeed immediately (no contention) — < 50ms
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "should succeed without delay when no lock, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn tcc_guidance_appears_in_error_message() {
+        // Verify TCC_GUIDANCE is a non-empty string containing "Full Disk Access"
+        assert!(TCC_GUIDANCE.contains("Full Disk Access"));
     }
 }
