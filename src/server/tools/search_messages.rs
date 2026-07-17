@@ -530,9 +530,11 @@ pub fn search_messages(
     let store = Arc::new(crate::mail::FilesystemAttachmentStore::new(
         &config.mail_directory,
     ));
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(search_messages_with_repo(config, repo, store, params))
+    let future = search_messages_with_repo(config, repo, store, params);
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(future),
+        Err(_) => tokio::runtime::Runtime::new().unwrap().block_on(future),
+    }
 }
 
 #[cfg(test)]
