@@ -2,13 +2,13 @@
 
 ![Rust 2024](https://img.shields.io/badge/rust-2024-orange?style=flat-square&logo=rust)
 ![Protocol MCP](https://img.shields.io/badge/protocol-MCP-6f42c1?style=flat-square)
-![Transport stdio](https://img.shields.io/badge/transport-stdio-0a7ea4?style=flat-square)
+![Transport stdio](https://img.shields.io/badge/transport-stdio%20%7C%20CLI-0a7ea4?style=flat-square)
 ![Platform macOS](https://img.shields.io/badge/platform-macOS-111827?style=flat-square&logo=apple)
 ![Access read-only](https://img.shields.io/badge/access-read--only-15803d?style=flat-square)
 
 ## TL;DR
 
-Read-only MCP server for Apple Mail on macOS.
+Read-only MCP server for Apple Mail on macOS. Also works as a CLI tool.
 
 Need an AI agent to safely search and read Apple Mail on your Mac? This project provides a clean, read-only MCP layer over Apple Mail’s native storage — fast index-based searches, on‑demand body hydration from `.emlx`, and zero write access.
 
