@@ -37,7 +37,6 @@ The current tool set is intentionally compact:
 | `list_accounts` | Discover account identifiers; set `include_mailboxes=true` for combined account+mailbox discovery |
 | `get_message` | Read one message in full; recipients omitted by default (`include_recipients=true` to include) |
 | `get_attachment_content` | Extract readable attachment content |
-| `list_mailboxes` | List mailboxes/folders with message counts |
 
 ## Installation
 
@@ -114,9 +113,6 @@ In CLI mode, you can run individual commands directly from the terminal. This is
 # List all accounts
 rusty_apple_mail_mcp list-accounts
 rusty_apple_mail_mcp list-accounts --include-mailboxes
-
-# List all mailboxes
-rusty_apple_mail_mcp list-mailboxes
 
 # Search messages
 rusty_apple_mail_mcp search --subject-query "invoice"
@@ -317,7 +313,7 @@ The server is optimized to minimize token consumption:
 
 ### Combined account + mailbox discovery
 
-Instead of calling `list_accounts` then `list_mailboxes` separately, use `include_mailboxes=true`:
+Use `include_mailboxes=true` to get accounts with their mailboxes grouped in a single call:
 
 ```json
 {
