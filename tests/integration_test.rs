@@ -4,7 +4,7 @@ mod support;
 
 use rusty_apple_mail_mcp::db::SqliteMailRepository;
 use rusty_apple_mail_mcp::error::MailMcpError;
-use rusty_apple_mail_mcp::mail::FilesystemAttachmentStore;
+use rusty_apple_mail_mcp::mail::{CacheRegistry, EmlxLocator, FilesystemAttachmentStore};
 use rusty_apple_mail_mcp::server::{MailMcpServer, tools::*};
 use support::{
     make_restricted_test_config, make_test_config, make_test_db, seed_emlx_in_account,
@@ -20,10 +20,16 @@ fn open_repo_store(
     (repo, store)
 }
 
+fn test_locator() -> EmlxLocator<'static> {
+    use std::sync::LazyLock;
+    static REGISTRY: LazyLock<CacheRegistry> = LazyLock::new(CacheRegistry::new);
+    EmlxLocator::new(&REGISTRY)
+}
+
 #[test]
 fn tool_definitions_are_all_read_only() {
     let tools = MailMcpServer::tool_definitions();
-    assert_eq!(tools.len(), 5);
+    assert_eq!(tools.len(), 4);
     assert!(tools.iter().all(|tool| {
         tool.annotations
             .as_ref()
@@ -36,7 +42,14 @@ fn tool_definitions_are_all_read_only() {
 fn list_accounts_returns_distinct_accounts() {
     let (_temp_dir, config) = make_test_config();
     let (repo, store) = open_repo_store(&config);
-    let response = list_accounts(&repo, &store, &config, ListAccountsParams::default()).unwrap();
+    let response = list_accounts(
+        &repo,
+        &store,
+        &config,
+        &test_locator(),
+        ListAccountsParams::default(),
+    )
+    .unwrap();
 
     assert_eq!(response.status, None);
     assert_eq!(response.total_count, Some(2));
@@ -59,7 +72,14 @@ fn list_accounts_hides_disallowed_accounts() {
     let _conn = make_test_db(&db_path);
 
     let (repo, store) = open_repo_store(&config);
-    let response = list_accounts(&repo, &store, &config, ListAccountsParams::default()).unwrap();
+    let response = list_accounts(
+        &repo,
+        &store,
+        &config,
+        &test_locator(),
+        ListAccountsParams::default(),
+    )
+    .unwrap();
 
     assert_eq!(response.status, None);
     assert_eq!(response.total_count, Some(1));
@@ -486,6 +506,7 @@ fn get_message_returns_body_and_attachment_summary() {
         &repo,
         &store,
         &config,
+        &test_locator(),
         GetMessageParams {
             message_id: "1".to_string(),
             include_body: true,
@@ -539,6 +560,7 @@ fn get_attachment_content_returns_text_for_text_attachment() {
         &repo,
         &store,
         &config,
+        &test_locator(),
         GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
@@ -552,34 +574,6 @@ fn get_attachment_content_returns_text_for_text_attachment() {
 }
 
 #[test]
-fn list_mailboxes_returns_all_mailboxes() {
-    let (_temp_dir, config) = make_test_config();
-    let (repo, _store) = open_repo_store(&config);
-    let response = list_mailboxes(&repo, &config).unwrap();
-
-    assert_eq!(response.status, None);
-    assert_eq!(response.total_count, Some(2));
-    assert_eq!(response.mailboxes[0].name, "Inbox");
-}
-
-#[test]
-fn list_mailboxes_hides_disallowed_accounts() {
-    let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
-    let db_path = config.envelope_db_path();
-    let _conn = make_test_db(&db_path);
-
-    let (repo, _store) = open_repo_store(&config);
-    let response = list_mailboxes(&repo, &config).unwrap();
-
-    assert_eq!(response.status, None);
-    assert_eq!(response.total_count, Some(1));
-    assert_eq!(
-        response.mailboxes[0].account_id.as_deref(),
-        Some("ews://account-b")
-    );
-}
-
-#[test]
 fn get_message_blocks_disallowed_accounts() {
     let (_temp_dir, config) = make_restricted_test_config("ews://account-b");
     let db_path = config.envelope_db_path();
@@ -590,6 +584,7 @@ fn get_message_blocks_disallowed_accounts() {
         &repo,
         &store,
         &config,
+        &test_locator(),
         GetMessageParams {
             message_id: "1".to_string(),
             include_body: false,
@@ -639,6 +634,7 @@ fn get_attachment_blocks_disallowed_accounts() {
         &repo,
         &store,
         &config,
+        &test_locator(),
         GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
@@ -682,6 +678,7 @@ fn get_message_reads_body_from_nested_mailbox_uuid_data_layout() {
         &repo,
         &store,
         &config,
+        &test_locator(),
         GetMessageParams {
             message_id: "2".to_string(),
             include_body: true,
@@ -739,6 +736,7 @@ fn get_attachment_reads_attachment_from_nested_mailbox_uuid_data_layout() {
         &repo,
         &store,
         &config,
+        &test_locator(),
         GetAttachmentParams {
             attachment_id: "2:0".to_string(),
             message_id: "2".to_string(),
@@ -805,6 +803,7 @@ fn get_message_prefers_message_id_match_over_wrong_numeric_hint() {
         &repo,
         &store,
         &config,
+        &test_locator(),
         GetMessageParams {
             message_id: "2".to_string(),
             include_body: true,
@@ -858,7 +857,7 @@ fn get_message_uses_cache_for_repeated_calls() {
     };
 
     let (repo, store) = open_repo_store(&config);
-    let first = get_message(&repo, &store, &config, params.clone()).unwrap();
+    let first = get_message(&repo, &store, &config, &test_locator(), params.clone()).unwrap();
     assert_eq!(first.status, None);
     let first_message = first.message.expect("first message");
     assert!(
@@ -868,7 +867,7 @@ fn get_message_uses_cache_for_repeated_calls() {
             .contains("Hello from emlx body")
     );
 
-    let second = get_message(&repo, &store, &config, params).unwrap();
+    let second = get_message(&repo, &store, &config, &test_locator(), params).unwrap();
     assert_eq!(second.status, None);
     let second_message = second.message.expect("second message");
     assert!(

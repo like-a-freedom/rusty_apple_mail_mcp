@@ -6,7 +6,7 @@ use crate::config::MailConfig;
 use crate::db::MailRepository;
 use crate::db::MessageRow;
 use crate::error::MailMcpError;
-use crate::mail::locate_emlx_with_hints;
+use crate::mail::EmlxLocator;
 
 /// Result of resolving a message row with account visibility checks applied.
 pub(crate) enum AccessibleMessage {
@@ -40,7 +40,11 @@ pub(crate) fn load_accessible_message(
 
 /// Resolve the on-disk `.emlx` path for a message row using all known hints.
 #[must_use]
-pub(crate) fn locate_message_file(config: &MailConfig, row: &MessageRow) -> Option<PathBuf> {
+pub(crate) fn locate_message_file(
+    locator: &EmlxLocator<'_>,
+    config: &MailConfig,
+    row: &MessageRow,
+) -> Option<PathBuf> {
     let mut numeric_hints = vec![row.rowid.to_string()];
     if let Some(global_message_id) = row.global_message_id {
         numeric_hints.push(global_message_id.to_string());
@@ -51,7 +55,7 @@ pub(crate) fn locate_message_file(config: &MailConfig, row: &MessageRow) -> Opti
     numeric_hints.sort();
     numeric_hints.dedup();
 
-    locate_emlx_with_hints(
+    locator.locate_emlx_with_hints(
         &config.mail_directory,
         &config.mail_version,
         row.mailbox_url.as_deref().unwrap_or(""),

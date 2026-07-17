@@ -13,6 +13,7 @@ use crate::db::MailRepository;
 use crate::domain::AttachmentMeta;
 use crate::error::MailMcpError;
 use crate::mail::AttachmentStore;
+use crate::mail::EmlxLocator;
 use crate::mail::{parse_emlx_without_attachment_content, raw_attachments_to_meta};
 use crate::server::tools::ResponseStatus;
 use crate::server::tools::message_lookup::{
@@ -134,6 +135,7 @@ pub struct GetMessageResult {
 pub fn get_message_with_conn(
     config: &MailConfig,
     repo: &dyn MailRepository,
+    locator: &EmlxLocator<'_>,
     params: GetMessageParams,
 ) -> Result<GetMessageResponse, MailMcpError> {
     let total_started = Instant::now();
@@ -203,7 +205,7 @@ pub fn get_message_with_conn(
 
     if params.include_body || params.include_attachments_summary {
         let locator_started = Instant::now();
-        let emlx_path = locate_message_file(config, &row);
+        let emlx_path = locate_message_file(locator, config, &row);
         let locator_elapsed = locator_started.elapsed();
 
         if let Some(path) = emlx_path {
@@ -301,15 +303,17 @@ pub fn get_message(
     repo: &dyn MailRepository,
     _store: &dyn AttachmentStore,
     config: &MailConfig,
+    locator: &EmlxLocator<'_>,
     params: GetMessageParams,
 ) -> Result<GetMessageResponse, MailMcpError> {
-    get_message_with_conn(config, repo, params)
+    get_message_with_conn(config, repo, locator, params)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::SqliteMailRepository;
+    use crate::mail::CacheRegistry;
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
@@ -380,6 +384,12 @@ mod tests {
         .expect("valid config")
     }
 
+    fn test_locator() -> EmlxLocator<'static> {
+        use std::sync::LazyLock;
+        static REGISTRY: LazyLock<CacheRegistry> = LazyLock::new(CacheRegistry::new);
+        EmlxLocator::new(&REGISTRY)
+    }
+
     #[test]
     fn get_message_with_conn_invalid_message_id_format() {
         let (temp_dir, repo) = make_test_repo();
@@ -392,7 +402,7 @@ mod tests {
             include_recipients: false,
         };
 
-        let err = get_message_with_conn(&config, &repo, params).unwrap_err();
+        let err = get_message_with_conn(&config, &repo, &test_locator(), params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::Validation(_)));
         assert!(err.to_string().contains("Invalid message_id format"));
@@ -410,7 +420,7 @@ mod tests {
             include_recipients: false,
         };
 
-        let err = get_message_with_conn(&config, &repo, params).unwrap_err();
+        let err = get_message_with_conn(&config, &repo, &test_locator(), params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::MessageNotFound { .. }));
         assert!(err.to_string().contains("not found"));
@@ -428,7 +438,7 @@ mod tests {
             include_recipients: false,
         };
 
-        let err = get_message_with_conn(&config, &repo, params).unwrap_err();
+        let err = get_message_with_conn(&config, &repo, &test_locator(), params).unwrap_err();
 
         assert!(matches!(err, MailMcpError::Validation(_)));
         assert!(err.to_string().contains("excluded by APPLE_MAIL_ACCOUNT"));
@@ -446,7 +456,7 @@ mod tests {
             include_recipients: false,
         };
 
-        let response = get_message_with_conn(&config, &repo, params).unwrap();
+        let response = get_message_with_conn(&config, &repo, &test_locator(), params).unwrap();
 
         assert_eq!(response.status, None);
         assert!(response.message.is_some());
@@ -493,7 +503,7 @@ mod tests {
             include_recipients: true,
         };
 
-        let response = get_message_with_conn(&config, &repo, params).unwrap();
+        let response = get_message_with_conn(&config, &repo, &test_locator(), params).unwrap();
 
         assert_eq!(response.status, None);
         let message = response.message.expect("message response");
@@ -535,7 +545,7 @@ mod tests {
             include_recipients: false,
         };
 
-        let response = get_message_with_conn(&config, &repo, params).unwrap();
+        let response = get_message_with_conn(&config, &repo, &test_locator(), params).unwrap();
 
         assert_eq!(response.status, None);
         assert!(response.message.is_some());

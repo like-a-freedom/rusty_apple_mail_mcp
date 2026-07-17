@@ -3,12 +3,11 @@
 use crate::config::{MailConfig, validate_config};
 use crate::db::{MailRepository, SqliteMailRepository};
 use crate::error::MailMcpError;
-use crate::mail::{AttachmentStore, FilesystemAttachmentStore};
+use crate::mail::{AttachmentStore, CacheRegistry, EmlxLocator, FilesystemAttachmentStore};
 use crate::server::tools::{
     GetAttachmentParams, GetMessageParams, ListAccountsParams, SearchMessagesParams,
     get_attachment_content as tool_get_attachment, get_message as tool_get_message,
-    list_accounts as tool_list_accounts, list_mailboxes as tool_list_mailboxes,
-    search_messages_async as tool_search_messages,
+    list_accounts as tool_list_accounts, search_messages_async as tool_search_messages,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -19,14 +18,10 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-#[derive(Debug, Default, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct EmptyToolParams {}
 
 /// `MailMcpServer` - MCP server for Apple Mail read-only access.
 #[derive(Clone)]
@@ -34,6 +29,7 @@ pub struct MailMcpServer {
     config: Arc<MailConfig>,
     repo: Arc<dyn MailRepository>,
     attachment_store: Arc<dyn AttachmentStore>,
+    registry: CacheRegistry,
 }
 
 impl MailMcpServer {
@@ -71,6 +67,7 @@ impl MailMcpServer {
             config: Arc::new(config),
             repo,
             attachment_store,
+            registry: CacheRegistry::new(),
         })
     }
 
@@ -123,15 +120,18 @@ impl MailMcpServer {
             &dyn MailRepository,
             &dyn AttachmentStore,
             &MailConfig,
+            &EmlxLocator<'_>,
             TParams,
         ) -> Result<TResponse, MailMcpError>,
     {
         let params: TParams = serde_json::from_value(Value::Object(arguments))
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let locator = EmlxLocator::new(&self.registry);
         let response = tool_fn(
             self.repo.as_ref(),
             self.attachment_store.as_ref(),
             self.config.as_ref(),
+            &locator,
             params,
         )?;
         let value = serde_json::to_value(response).map_err(|e| {
@@ -167,11 +167,6 @@ impl MailMcpServer {
                 "Extract text content from an attachment. \
                  attachment_id format: \"{message_id}:{index}\" from get_message attachments list.",
             ),
-            Self::read_only_tool::<EmptyToolParams>(
-                "list_mailboxes",
-                "Deprecated: prefer list_accounts with include_mailboxes=true. \
-                 List all mailboxes with message counts.",
-            ),
         ]
     }
 
@@ -189,6 +184,7 @@ impl MailMcpServer {
                     self.repo.clone(),
                     self.attachment_store.clone(),
                     self.config.as_ref(),
+                    &EmlxLocator::new(&self.registry),
                     params,
                 )
                 .await?;
@@ -203,10 +199,6 @@ impl MailMcpServer {
             "get_message" => self.call_tool_with_repo(arguments, tool_get_message),
             "get_attachment_content" => self.call_tool_with_repo(arguments, tool_get_attachment),
             "list_accounts" => self.call_tool_with_repo(arguments, tool_list_accounts),
-            "list_mailboxes" => self
-                .call_tool_with_repo(arguments, |repo, _store, config, _: EmptyToolParams| {
-                    tool_list_mailboxes(repo, config)
-                }),
             _ => Err(McpError::invalid_request("Unknown tool method", None)),
         }
     }
@@ -224,7 +216,7 @@ impl ServerHandler for MailMcpServer {
                 "version": env!("CARGO_PKG_VERSION")
             },
             "instructions": "Read-only access to Apple Mail. \
-             Workflow: 1) list_accounts/list_mailboxes for discovery. \
+             Workflow: 1) list_accounts for discovery. \
              Use account_id as the `account` filter in search_messages. \
              2) search_messages to find emails — use message_id from results. \
              3) get_message to read full email. \
@@ -402,8 +394,8 @@ mod tests {
     fn list_tools_returns_tool_definitions() {
         let tools = MailMcpServer::tool_definitions();
         assert!(!tools.is_empty());
-        // Should have at least search_messages, get_message, get_attachment_content, list_accounts, list_mailboxes
-        assert!(tools.len() >= 5);
+        // Should have at least search_messages, get_message, get_attachment_content, list_accounts
+        assert!(tools.len() >= 4);
     }
 
     #[test]
@@ -460,32 +452,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn call_tool_by_name_list_mailboxes() {
-        let (_temp_dir, config) = create_temp_config();
-
-        // Create test database with mailboxes using proper SQLite API
-        let db_path = config.envelope_db_path();
-        // Remove the placeholder file first
-        let _ = std::fs::remove_file(&db_path);
-        let conn = rusqlite::Connection::open(&db_path).expect("create db");
-        conn.execute_batch(
-            r#"
-            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
-            CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, mailbox INTEGER, date_sent INTEGER, date_received INTEGER, message_id TEXT, global_message_id INTEGER, subject INTEGER, sender INTEGER);
-            INSERT INTO mailboxes VALUES (1, 'imap://test/INBOX');
-            INSERT INTO messages VALUES (1, 1, 0, 0, 'msg1', NULL, NULL, NULL);
-            "#,
-        ).expect("seed db");
-        drop(conn);
-
-        let server = MailMcpServer::new(config).expect("server creation");
-
-        let result = server.call_tool_by_name("list_mailboxes", Map::new()).await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
     async fn call_tool_by_name_search_messages_requires_filter() {
         let (_temp_dir, config) = create_temp_config();
         let server = MailMcpServer::new(config).expect("server creation");
@@ -501,7 +467,7 @@ mod tests {
     #[test]
     fn tool_definitions_all_read_only() {
         let tools = MailMcpServer::tool_definitions();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 4);
 
         for tool in &tools {
             assert!(
