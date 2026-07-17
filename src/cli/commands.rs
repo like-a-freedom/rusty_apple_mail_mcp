@@ -3,10 +3,9 @@
 use crate::config::MailConfig;
 use crate::db::SqliteMailRepository;
 use crate::error::MailMcpError;
-use crate::mail::FilesystemAttachmentStore;
+use crate::mail::{CacheRegistry, EmlxLocator, FilesystemAttachmentStore};
 use crate::server::tools::{
     GetAttachmentParams, GetMessageParams, ListAccountsParams, SearchMessagesParams,
-    list_mailboxes as server_list_mailboxes,
 };
 use crate::server::tools::{
     get_attachment_content as server_get_attachment, get_message as server_get_message,
@@ -26,15 +25,9 @@ fn open_repo_store(
 pub fn list_accounts(config: &MailConfig, include_mailboxes: bool) -> Result<(), MailMcpError> {
     let params = ListAccountsParams { include_mailboxes };
     let (repo, store) = open_repo_store(config)?;
-    let result = server_list_accounts(&repo, &store, config, params)?;
-    serde_json::to_writer_pretty(std::io::stdout(), &result)?;
-    Ok(())
-}
-
-/// Execute list_mailboxes command.
-pub fn list_mailboxes(config: &MailConfig) -> Result<(), MailMcpError> {
-    let (repo, _store) = open_repo_store(config)?;
-    let result = server_list_mailboxes(&repo, config)?;
+    let registry = CacheRegistry::new();
+    let locator = EmlxLocator::new(&registry);
+    let result = server_list_accounts(&repo, &store, config, &locator, params)?;
     serde_json::to_writer_pretty(std::io::stdout(), &result)?;
     Ok(())
 }
@@ -90,7 +83,9 @@ pub fn get_message(config: &MailConfig, args: super::GetMessageArgs) -> Result<(
         include_recipients: args.include_recipients,
     };
     let (repo, store) = open_repo_store(config)?;
-    let result = server_get_message(&repo, &store, config, params)?;
+    let registry = CacheRegistry::new();
+    let locator = EmlxLocator::new(&registry);
+    let result = server_get_message(&repo, &store, config, &locator, params)?;
     serde_json::to_writer_pretty(std::io::stdout(), &result)?;
     Ok(())
 }
@@ -105,7 +100,9 @@ pub fn get_attachment(
         message_id: args.message_id,
     };
     let (repo, store) = open_repo_store(config)?;
-    let result = server_get_attachment(&repo, &store, config, params)?;
+    let registry = CacheRegistry::new();
+    let locator = EmlxLocator::new(&registry);
+    let result = server_get_attachment(&repo, &store, config, &locator, params)?;
     serde_json::to_writer_pretty(std::io::stdout(), &result)?;
     Ok(())
 }

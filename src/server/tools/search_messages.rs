@@ -5,7 +5,8 @@ use std::time::Instant;
 
 use crate::db::{MailRepository, MessageRow, SearchParams, tokenize};
 use crate::error::MailMcpError;
-use crate::mail::{locate_emlx_quick_with_hints, parse_emlx_without_attachment_content};
+use crate::mail::EmlxLocator;
+use crate::mail::parse_emlx_without_attachment_content;
 use crate::server::tools::ResponseStatus;
 use crate::{MailConfig, MessageMeta};
 use schemars::JsonSchema;
@@ -256,6 +257,7 @@ fn parse_date_range(params: &SearchMessagesParams) -> Result<(Option<i64>, Optio
 }
 
 fn hydrate_search_result(
+    locator: &EmlxLocator<'_>,
     row: &MessageRow,
     epoch_offset_s: i64,
     include_body_preview: bool,
@@ -297,7 +299,7 @@ fn hydrate_search_result(
     numeric_hints.dedup();
 
     if let Some(mailbox_url) = row.mailbox_url.as_deref()
-        && let Some(path) = locate_emlx_quick_with_hints(
+        && let Some(path) = locator.locate_emlx_quick_with_hints(
             mail_root,
             mail_version,
             mailbox_url,
@@ -429,6 +431,7 @@ pub async fn search_messages_with_repo(
     config: &MailConfig,
     repo: Arc<dyn MailRepository>,
     _attachment_store: Arc<dyn crate::mail::AttachmentStore>,
+    locator: &EmlxLocator<'_>,
     params: SearchMessagesParams,
 ) -> Result<SearchMessagesResponse, MailMcpError> {
     let total_started = Instant::now();
@@ -479,6 +482,7 @@ pub async fn search_messages_with_repo(
         .iter()
         .map(|row| {
             hydrate_search_result(
+                locator,
                 row,
                 epoch_offset_s,
                 params.include_body_preview,
@@ -514,9 +518,10 @@ pub async fn search_messages_async(
     repo: Arc<dyn MailRepository>,
     store: Arc<dyn crate::mail::AttachmentStore>,
     config: &MailConfig,
+    locator: &EmlxLocator<'_>,
     params: SearchMessagesParams,
 ) -> Result<SearchMessagesResponse, MailMcpError> {
-    search_messages_with_repo(config, repo, store, params).await
+    search_messages_with_repo(config, repo, store, locator, params).await
 }
 
 /// Public sync tool function for CLI usage.
@@ -530,7 +535,9 @@ pub fn search_messages(
     let store = Arc::new(crate::mail::FilesystemAttachmentStore::new(
         &config.mail_directory,
     ));
-    let future = search_messages_with_repo(config, repo, store, params);
+    let registry = crate::mail::CacheRegistry::new();
+    let locator = EmlxLocator::new(&registry);
+    let future = search_messages_with_repo(config, repo, store, &locator, params);
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
         Err(_) => tokio::runtime::Runtime::new().unwrap().block_on(future),
@@ -542,11 +549,18 @@ mod tests {
     use super::*;
     use crate::config::MailConfig;
     use crate::db::MessageRow;
+    use crate::mail::CacheRegistry;
     use std::collections::HashMap;
     use std::sync::Arc;
     use tempfile::TempDir;
 
     type FakeMailRepository = crate::db::FakeMailRepository;
+
+    fn test_locator() -> EmlxLocator<'static> {
+        use std::sync::LazyLock;
+        static REGISTRY: LazyLock<CacheRegistry> = LazyLock::new(CacheRegistry::new);
+        EmlxLocator::new(&REGISTRY)
+    }
 
     fn make_test_config() -> (TempDir, MailConfig) {
         let temp_dir = TempDir::new().unwrap();
@@ -583,7 +597,7 @@ mod tests {
             offset: 0,
             include_body_preview: false,
         };
-        let err = search_messages_with_repo(&config, repo_arc, store, params)
+        let err = search_messages_with_repo(&config, repo_arc, store, &test_locator(), params)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("At least one filter"));
@@ -607,7 +621,7 @@ mod tests {
             offset: 0,
             include_body_preview: false,
         };
-        let err = search_messages_with_repo(&config, repo_arc, store, params)
+        let err = search_messages_with_repo(&config, repo_arc, store, &test_locator(), params)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("limit must be between 1 and 100"));
@@ -645,7 +659,7 @@ mod tests {
             offset: 0,
             include_body_preview: false,
         };
-        let result = search_messages_with_repo(&config, repo_arc, store, params)
+        let result = search_messages_with_repo(&config, repo_arc, store, &test_locator(), params)
             .await
             .unwrap();
         assert_eq!(result.messages.len(), 1);
@@ -684,9 +698,15 @@ mod tests {
             offset: 0,
             include_body_preview: false,
         };
-        let result = search_messages_with_repo(&config, repo_arc.clone(), store.clone(), params)
-            .await
-            .unwrap();
+        let result = search_messages_with_repo(
+            &config,
+            repo_arc.clone(),
+            store.clone(),
+            &test_locator(),
+            params,
+        )
+        .await
+        .unwrap();
         assert_eq!(result.messages.len(), 1);
 
         // Wrong sender should return empty
@@ -702,7 +722,7 @@ mod tests {
             offset: 0,
             include_body_preview: false,
         };
-        let result = search_messages_with_repo(&config, repo_arc, store, params)
+        let result = search_messages_with_repo(&config, repo_arc, store, &test_locator(), params)
             .await
             .unwrap();
         assert!(result.messages.is_empty());
