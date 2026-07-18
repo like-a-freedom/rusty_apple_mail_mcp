@@ -106,37 +106,33 @@ impl MailRepository for FakeMailRepository {
             results.retain(|m| {
                 m.subject
                     .as_ref()
-                    .map_or(false, |s| s.to_lowercase().contains(&subject_lower))
+                    .is_some_and(|s| s.to_lowercase().contains(&subject_lower))
             });
         }
         if let Some(sender) = &params.sender {
-            results.retain(|m| m.sender.as_ref().map_or(false, |s| s == sender));
+            results.retain(|m| m.sender.as_ref() == Some(sender));
         }
         if let Some(account) = &params.account {
             results.retain(|m| {
                 m.mailbox_url
                     .as_ref()
-                    .map_or(false, |u| u.starts_with(&format!("{account}/")))
+                    .is_some_and(|u| u.starts_with(&format!("{account}/")))
             });
         }
-        if let Some(allowed) = &params.allowed_accounts {
-            if !allowed.is_empty() {
-                results.retain(|m| {
-                    m.mailbox_url.as_ref().map_or(false, |u| {
-                        allowed.iter().any(|a| u.starts_with(&format!("{a}/")))
-                    })
-                });
-            }
-        }
-        if let Some(mailbox) = &params.mailbox {
+        if let Some(allowed) = &params.allowed_accounts
+            && !allowed.is_empty()
+        {
             results.retain(|m| {
                 m.mailbox_url
                     .as_ref()
-                    .map_or(false, |u| u.contains(mailbox))
+                    .is_some_and(|u| allowed.iter().any(|a| u.starts_with(&format!("{a}/"))))
             });
         }
+        if let Some(mailbox) = &params.mailbox {
+            results.retain(|m| m.mailbox_url.as_ref().is_some_and(|u| u.contains(mailbox)));
+        }
 
-        results.sort_by(|a, b| b.date_received.cmp(&a.date_received));
+        results.sort_by_key(|b| std::cmp::Reverse(b.date_received));
 
         let start = params.offset as usize;
         let end = (start + params.limit as usize).min(results.len());
