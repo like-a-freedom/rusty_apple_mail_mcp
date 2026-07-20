@@ -135,6 +135,9 @@ impl MailRepository for FakeMailRepository {
         results.sort_by_key(|b| std::cmp::Reverse(b.date_received));
 
         let start = params.offset as usize;
+        if start >= results.len() {
+            return Ok(vec![]);
+        }
         let end = (start + params.limit as usize).min(results.len());
         Ok(results[start..end].to_vec())
     }

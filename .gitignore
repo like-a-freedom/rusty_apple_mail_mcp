@@ -28,3 +28,4 @@ tarpaulin-report.html
 *.profraw
 cobertura.xml
 .vscode/
+CONTEXT.md
