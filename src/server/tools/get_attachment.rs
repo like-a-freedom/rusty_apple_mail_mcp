@@ -185,6 +185,8 @@ pub fn get_attachment_content_with_conn(
             .filename
             .clone()
             .unwrap_or_else(|| "unnamed".to_string()),
+        mime_type: raw_attachment.mime_type.clone(),
+        size_bytes: raw_attachment.size_bytes,
     };
 
     let Some(content) = raw_attachment.content.as_deref() else {

@@ -266,6 +266,8 @@ pub fn raw_attachments_to_meta(
                 .filename
                 .clone()
                 .unwrap_or_else(|| "unnamed".to_string()),
+            mime_type: raw.mime_type.clone(),
+            size_bytes: raw.size_bytes,
         })
         .collect()
 }

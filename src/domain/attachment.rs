@@ -10,6 +10,10 @@ pub struct AttachmentMeta {
     pub id: String,
     /// Filename of the attachment
     pub filename: String,
+    /// MIME type (e.g. `application/pdf`, `text/plain`)
+    pub mime_type: String,
+    /// Size of the attachment content in bytes
+    pub size_bytes: u64,
 }
 
 /// Format of the extracted attachment content.
@@ -70,12 +74,14 @@ mod tests {
         let meta = AttachmentMeta {
             id: "42:0".to_string(),
             filename: "test.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size_bytes: 1024,
         };
 
         let json = serde_json::to_string(&meta).unwrap();
         assert!(json.contains("test.pdf"));
-        assert!(!json.contains("mime_type"));
-        assert!(!json.contains("size_bytes"));
+        assert!(json.contains("mime_type"));
+        assert!(json.contains("size_bytes"));
     }
 
     #[test]
@@ -83,6 +89,8 @@ mod tests {
         let meta = AttachmentMeta {
             id: "42:0".to_string(),
             filename: "test.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            size_bytes: 13,
         };
 
         let content = AttachmentContent::extracted(meta.clone(), "Hello, World!", "direct_read");
@@ -100,6 +108,8 @@ mod tests {
         let meta = AttachmentMeta {
             id: "42:0".to_string(),
             filename: "image.png".to_string(),
+            mime_type: "image/png".to_string(),
+            size_bytes: 2048,
         };
 
         let content = AttachmentContent::not_available(

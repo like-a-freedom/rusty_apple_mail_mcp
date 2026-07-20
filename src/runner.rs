@@ -27,6 +27,14 @@ fn init_tracing() {
     });
 }
 
+/// Print a CLI error as a JSON envelope on stdout and log to stderr.
+fn print_error_envelope(err: &crate::error::MailMcpError) -> anyhow::Result<()> {
+    tracing::debug!("CLI error: {err}");
+    let envelope = crate::error::CliErrorResponse::from_error(err);
+    serde_json::to_writer_pretty(std::io::stdout(), &envelope)?;
+    Ok(())
+}
+
 /// Run the application.
 ///
 /// This is the main entry point called from `main.rs`.
@@ -35,20 +43,34 @@ pub async fn run() -> Result<()> {
     init_tracing();
 
     let cli = Cli::parse();
-    let config = build_config(&cli)?;
+    let config = match build_config(&cli) {
+        Ok(config) => config,
+        Err(err) => {
+            print_error_envelope(&err)?;
+            return Ok(());
+        }
+    };
 
     match cli.command {
         Some(Command::ListAccounts(args)) => {
-            crate::cli::commands::list_accounts(&config, args.include_mailboxes)?;
+            if let Err(err) = crate::cli::commands::list_accounts(&config, args.include_mailboxes) {
+                print_error_envelope(&err)?;
+            }
         }
         Some(Command::Search(args)) => {
-            crate::cli::commands::search_messages(&config, args)?;
+            if let Err(err) = crate::cli::commands::search_messages(&config, args) {
+                print_error_envelope(&err)?;
+            }
         }
         Some(Command::GetMessage(args)) => {
-            crate::cli::commands::get_message(&config, args)?;
+            if let Err(err) = crate::cli::commands::get_message(&config, args) {
+                print_error_envelope(&err)?;
+            }
         }
         Some(Command::GetAttachment(args)) => {
-            crate::cli::commands::get_attachment(&config, args)?;
+            if let Err(err) = crate::cli::commands::get_attachment(&config, args) {
+                print_error_envelope(&err)?;
+            }
         }
         None => {
             tracing::info!(

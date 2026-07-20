@@ -69,6 +69,8 @@ mod tests {
         let meta = AttachmentMeta {
             id: "1:0".to_string(),
             filename: "test.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            size_bytes: 11,
         };
         let content = AttachmentContent::extracted(meta, "Hello world", "text");
         store.insert(1, 0, content.clone());
