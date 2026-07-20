@@ -361,15 +361,11 @@ fn resolve_account_filter(
     };
 
     if account_metadata.is_empty() {
-        if let Some(allowed) = allowed_account_ids
-            && !allowed.iter().any(|a| a == value)
-        {
-            return Err(MailMcpError::Validation(format!(
-                "Account filter \"{value}\" is excluded by APPLE_MAIL_ACCOUNT. \
-                 Use list_accounts to see available account names, emails, or IDs."
-            )));
-        }
-        return Ok(Some(value.to_string()));
+        return Err(MailMcpError::Validation(format!(
+            "Account filter \"{value}\" cannot be resolved without account metadata. \
+             Set APPLE_MAIL_ACCOUNT to restrict access, or use a canonical account ID \
+             (e.g. ews://UUID). Run list_accounts to discover IDs."
+        )));
     }
 
     let resolved =
@@ -1089,32 +1085,34 @@ mod tests {
     }
 
     #[test]
-    fn resolve_account_filter_empty_metadata_passes_through() {
+    fn resolve_account_filter_empty_metadata_errors_with_guidance() {
         let metadata = make_metadata([]);
-        let result = resolve_account_filter(Some("ews://anything"), &metadata, None).unwrap();
-        assert_eq!(result.as_deref(), Some("ews://anything"));
-    }
-
-    #[test]
-    fn resolve_account_filter_empty_metadata_rejects_excluded_raw_id() {
-        let metadata = make_metadata([]);
-        let allowed = Some(vec!["ews://allowed".to_string()]);
-        let err =
-            resolve_account_filter(Some("ews://other"), &metadata, allowed.as_deref()).unwrap_err();
+        let err = resolve_account_filter(Some("Exchange"), &metadata, None).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("excluded"), "should mention exclusion: {msg}");
         assert!(
-            msg.contains("ews://other"),
-            "should include filter value: {msg}"
+            msg.contains("cannot be resolved without account metadata"),
+            "should explain the problem: {msg}"
+        );
+        assert!(
+            msg.contains("APPLE_MAIL_ACCOUNT"),
+            "should suggest env var: {msg}"
+        );
+        assert!(
+            msg.contains("list_accounts"),
+            "should suggest list_accounts: {msg}"
         );
     }
 
     #[test]
-    fn resolve_account_filter_empty_metadata_passes_matching_raw_id() {
+    fn resolve_account_filter_empty_metadata_with_scope_also_errors() {
         let metadata = make_metadata([]);
         let allowed = Some(vec!["ews://allowed".to_string()]);
-        let result =
-            resolve_account_filter(Some("ews://allowed"), &metadata, allowed.as_deref()).unwrap();
-        assert_eq!(result.as_deref(), Some("ews://allowed"));
+        let err =
+            resolve_account_filter(Some("Exchange"), &metadata, allowed.as_deref()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot be resolved without account metadata"),
+            "should explain the problem: {msg}"
+        );
     }
 }
