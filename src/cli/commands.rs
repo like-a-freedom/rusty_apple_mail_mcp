@@ -52,7 +52,7 @@ pub fn search_messages(config: &MailConfig, args: super::SearchArgs) -> Result<(
 
     if args.limit > 100 {
         return Err(MailMcpError::Validation(format!(
-            "limit must be between 1 and 100, got {}",
+            "limit must be between 1 and 100, got {}; use --offset to paginate beyond 100 results",
             args.limit
         )));
     }
