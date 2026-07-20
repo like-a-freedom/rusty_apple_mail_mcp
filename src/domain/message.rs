@@ -29,27 +29,60 @@ pub fn timestamp_to_iso(ts: i64, epoch_offset_s: i64) -> String {
     )
 }
 
-/// Extract mailbox name from a mailbox URL.
+/// Extract display name from a mailbox URL with percent-decoding.
 ///
-/// Extracts the last path component from URLs like:
+/// Extracts the last path component and decodes percent-encoded characters:
 /// - `imap://account-id/INBOX` → `INBOX`
-/// - `ews://account-id/Inbox` → `Inbox`
+/// - `ews://account-id/Sent%20Items` → `Sent Items`
 /// - `imap://account-id/folder.mbox` → `folder`
-///
-/// # Arguments
-///
-/// * `url` - Mailbox URL string
-///
-/// # Returns
-///
-/// Mailbox name extracted from the URL
 #[must_use]
 pub fn extract_mailbox_name(url: &str) -> String {
-    url.rsplit('/')
+    let raw = url
+        .rsplit('/')
         .next()
         .unwrap_or(url)
-        .trim_end_matches(".mbox")
-        .to_string()
+        .trim_end_matches(".mbox");
+    percent_decode(raw)
+}
+
+/// Minimal percent-decoder for URL path segments.
+///
+/// Decodes `%XX` sequences (case-insensitive hex) and `+` to space.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = hex_digit(bytes[i + 1]);
+                let lo = hex_digit(bytes[i + 2]);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    result.push(h * 16 + l);
+                    i += 3;
+                    continue;
+                }
+                result.push(bytes[i]);
+            }
+            b'+' => {
+                result.push(b' ');
+            }
+            byte => {
+                result.push(byte);
+            }
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&result).into_owned()
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Compact message representation for search result lists.
@@ -314,6 +347,8 @@ mod tests {
         let attachments = vec![AttachmentMeta {
             id: "42:0".to_string(),
             filename: "document.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size_bytes: 512,
         }];
 
         let full = MessageFull::from_row_with_recipients(&row, &[], COREDATA_EPOCH_OFFSET)
@@ -442,6 +477,8 @@ mod tests {
         let attachment = AttachmentMeta {
             id: "42:0".to_string(),
             filename: "test.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size_bytes: 1024,
         };
 
         let full = MessageFull::from_row_with_recipients(&row, &[], 0)
@@ -451,5 +488,68 @@ mod tests {
         assert_eq!(full.body, Some("Test body content".to_string()));
         assert_eq!(full.attachments.len(), 1);
         assert_eq!(full.attachments[0].filename, "test.pdf");
+    }
+
+    #[test]
+    fn extract_mailbox_name_plain_inbox() {
+        assert_eq!(extract_mailbox_name("imap://account-id/INBOX"), "INBOX");
+    }
+
+    #[test]
+    fn extract_mailbox_name_percent_encoded_spaces() {
+        assert_eq!(
+            extract_mailbox_name("ews://account-id/Sent%20Items"),
+            "Sent Items"
+        );
+    }
+
+    #[test]
+    fn extract_mailbox_name_plus_to_space() {
+        assert_eq!(
+            extract_mailbox_name("imap://account-id/Drafts+Folder"),
+            "Drafts Folder"
+        );
+    }
+
+    #[test]
+    fn extract_mailbox_name_mbox_suffix_stripped() {
+        assert_eq!(
+            extract_mailbox_name("imap://account-id/folder.mbox"),
+            "folder"
+        );
+    }
+
+    #[test]
+    fn extract_mailbox_name_nested_subfolder() {
+        assert_eq!(
+            extract_mailbox_name("ews://uuid/Parent/Sub%20Folder"),
+            "Sub Folder"
+        );
+    }
+
+    #[test]
+    fn extract_mailbox_name_no_path() {
+        assert_eq!(extract_mailbox_name("imap://account-id"), "account-id");
+    }
+
+    #[test]
+    fn percent_decode_leaves_malformed_percent_as_literal() {
+        // %2g — 'g' is not a valid hex digit, so %2g is left as literal bytes
+        assert_eq!(percent_decode("foo%2gbar"), "foo%2gbar");
+    }
+
+    #[test]
+    fn percent_decode_leaves_invalid_hex_as_literal() {
+        assert_eq!(percent_decode("foo%ZZbar"), "foo%ZZbar");
+    }
+
+    #[test]
+    fn percent_decode_handles_double_percent() {
+        assert_eq!(percent_decode("foo%%20bar"), "foo% bar");
+    }
+
+    #[test]
+    fn percent_decode_empty_string() {
+        assert_eq!(percent_decode(""), "");
     }
 }
