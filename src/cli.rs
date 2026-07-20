@@ -59,7 +59,7 @@ pub struct SearchArgs {
     /// End of date range (YYYY-MM-DD, inclusive)
     #[arg(long)]
     pub date_to: Option<String>,
-    /// Sender email address (exact match)
+    /// Sender email address (case-insensitive exact match)
     #[arg(long)]
     pub sender: Option<String>,
     /// Recipient email address (To/CC exact match)
@@ -68,7 +68,8 @@ pub struct SearchArgs {
     /// Account identifier
     #[arg(long)]
     pub account: Option<String>,
-    /// Mailbox name or fragment
+    /// Substring match against the mailbox URL path (subfolders included automatically;
+    /// percent-encode multi-word names, e.g. `Sent%20Items`)
     #[arg(long)]
     pub mailbox: Option<String>,
     /// Maximum number of results (default 20, max 100)

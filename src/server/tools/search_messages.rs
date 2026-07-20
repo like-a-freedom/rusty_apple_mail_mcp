@@ -140,11 +140,7 @@ impl SearchMessagesResponse {
     ) -> Self {
         Self {
             status: None,
-            total_count: if has_more {
-                Some(u32::try_from(messages.len()).unwrap_or(u32::MAX))
-            } else {
-                None
-            },
+            total_count: None,
             has_more,
             next_offset,
             guidance: None,
@@ -221,7 +217,7 @@ fn validate_params(params: &SearchMessagesParams) -> Result<(), String> {
 
     if params.limit > 100 {
         return Err(format!(
-            "limit must be between 1 and 100, got {}",
+            "limit must be between 1 and 100, got {}; use --offset to paginate beyond 100 results",
             params.limit
         ));
     }
@@ -348,19 +344,60 @@ fn load_search_metadata(
         .collect())
 }
 
-fn reject_disallowed_account_filter(
-    allowed_accounts: Option<&[String]>,
-    account: Option<&str>,
-) -> Option<String> {
-    let account = account?;
-    if let Some(allowed) = allowed_accounts
-        && !allowed.iter().any(|a| a == account)
-    {
-        return Some(format!(
-            "The requested account filter {account} is excluded by APPLE_MAIL_ACCOUNT."
-        ));
+/// Resolve a human-friendly account filter value to a canonical account ID,
+/// intersecting with the Scope (allowed accounts) when present.
+///
+/// Returns `Ok(None)` when no filter is provided (no restriction needed).
+/// Returns `Ok(Some(canonical_id))` when the filter resolves and passes the Scope.
+/// Returns `Err(MailMcpError::Validation)` with guidance when the filter cannot
+/// be resolved or falls outside the Scope.
+fn resolve_account_filter(
+    filter_value: Option<&str>,
+    account_metadata: &std::collections::HashMap<String, crate::accounts::AccountMetadata>,
+    allowed_account_ids: Option<&[String]>,
+) -> Result<Option<String>, MailMcpError> {
+    let Some(value) = filter_value else {
+        return Ok(None);
+    };
+
+    if account_metadata.is_empty() {
+        if let Some(allowed) = allowed_account_ids
+            && !allowed.iter().any(|a| a == value)
+        {
+            return Err(MailMcpError::Validation(format!(
+                "Account filter \"{value}\" is excluded by APPLE_MAIL_ACCOUNT. \
+                 Use list_accounts to see available account names, emails, or IDs."
+            )));
+        }
+        return Ok(Some(value.to_string()));
     }
-    None
+
+    let resolved =
+        crate::accounts::resolve_account_selectors(&[value.to_string()], account_metadata)
+            .map_err(|_| {
+                MailMcpError::Validation(format!(
+                    "Account filter \"{value}\" did not match any known account. \
+                     Use list_accounts to see available account names, emails, or IDs."
+                ))
+            })?;
+
+    let canonical = resolved.into_iter().next().ok_or_else(|| {
+        MailMcpError::Validation(format!(
+            "Account filter \"{value}\" did not match any known account. \
+             Use list_accounts to see available account names, emails, or IDs."
+        ))
+    })?;
+
+    if let Some(allowed) = allowed_account_ids
+        && !allowed.iter().any(|a| a == &canonical)
+    {
+        return Err(MailMcpError::Validation(format!(
+            "Account filter \"{value}\" resolved to {canonical}, which is excluded by APPLE_MAIL_ACCOUNT. \
+             Use list_accounts to see available account names, emails, or IDs."
+        )));
+    }
+
+    Ok(Some(canonical))
 }
 
 fn build_not_found_guidance(
@@ -395,6 +432,7 @@ fn search_rows_with_subject_fallback(
     date_to_ts: Option<i64>,
     allowed_accounts: Option<&[String]>,
 ) -> Result<Vec<MessageRow>, MailMcpError> {
+    let fetch_limit = params.limit.saturating_add(1);
     let mut search_params = SearchParams {
         subject_query: params.subject_query.clone(),
         date_from: date_from_ts,
@@ -404,7 +442,7 @@ fn search_rows_with_subject_fallback(
         account: params.account.clone(),
         allowed_accounts: allowed_accounts.map(|v| v.to_vec()),
         mailbox: params.mailbox.clone(),
-        limit: params.limit,
+        limit: fetch_limit,
         offset: params.offset,
     };
 
@@ -441,15 +479,18 @@ pub async fn search_messages_with_repo(
     let (date_from_ts, date_to_ts) = parse_date_range(&params).map_err(MailMcpError::Validation)?;
 
     let epoch_offset_s = repo.detect_epoch_offset()?;
-    if let Some(message) =
-        reject_disallowed_account_filter(config.allowed_account_ids(), params.account.as_deref())
-    {
-        return Err(MailMcpError::Validation(message));
-    }
+
+    let resolved_account = resolve_account_filter(
+        params.account.as_deref(),
+        &config.account_metadata,
+        config.allowed_account_ids(),
+    )?;
+    let mut params = params;
+    params.account = resolved_account;
 
     let sql_started = Instant::now();
 
-    let rows = search_rows_with_subject_fallback(
+    let mut rows = search_rows_with_subject_fallback(
         &*repo,
         &params,
         date_from_ts,
@@ -457,6 +498,11 @@ pub async fn search_messages_with_repo(
         config.allowed_account_ids(),
     )?;
     let sql_elapsed = sql_started.elapsed();
+
+    let has_more = rows.len() > params.limit as usize;
+    if has_more {
+        rows.truncate(params.limit as usize);
+    }
 
     let metadata_started = Instant::now();
     let message_ids = rows.iter().map(|row| row.rowid).collect::<Vec<_>>();
@@ -494,7 +540,6 @@ pub async fn search_messages_with_repo(
         .collect::<Vec<_>>();
     let hydration_elapsed = hydration_started.elapsed();
 
-    let has_more = u32::try_from(rows.len()).unwrap_or(u32::MAX) >= params.limit;
     tracing::debug!(
         "search_messages completed: {} result(s), sql={} ms, metadata={} ms, hydration={} ms, total={} ms; filters: {}",
         messages.len(),
@@ -784,5 +829,292 @@ mod tests {
         let result = search_messages(&config, params).expect("sync search inside tokio runtime");
         assert_eq!(result.messages.len(), 1);
         assert_eq!(result.messages[0].subject, "Test Subject");
+    }
+
+    #[tokio::test]
+    async fn has_more_false_when_results_fit_exactly_in_limit() {
+        let (_temp, config) = make_test_config();
+        let (repo, repo_arc) = make_fake_repo();
+        let store = Arc::new(crate::mail::FakeAttachmentStore::default());
+
+        for i in 1..=3 {
+            let msg = MessageRow {
+                rowid: i,
+                subject: Some(format!("Subject {i}")),
+                sender: Some("sender@example.com".to_string()),
+                mailbox_url: Some("imap://test/INBOX".to_string()),
+                date_sent: Some(1000 + i),
+                date_received: Some(1000 + i),
+                message_id: None,
+                global_message_id: None,
+                message_id_header: None,
+            };
+            repo.messages.lock().unwrap().insert(i, msg);
+        }
+
+        let params = SearchMessagesParams {
+            subject_query: Some("Subject".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 3,
+            offset: 0,
+            include_body_preview: false,
+        };
+        let result = search_messages_with_repo(&config, repo_arc, store, &test_locator(), params)
+            .await
+            .unwrap();
+        assert_eq!(result.messages.len(), 3);
+        assert!(
+            !result.has_more,
+            "has_more should be false when all results fit in limit"
+        );
+        assert!(result.next_offset.is_none());
+    }
+
+    #[tokio::test]
+    async fn has_more_true_when_more_results_exist() {
+        let (_temp, config) = make_test_config();
+        let (repo, repo_arc) = make_fake_repo();
+        let store = Arc::new(crate::mail::FakeAttachmentStore::default());
+
+        for i in 1..=5 {
+            let msg = MessageRow {
+                rowid: i,
+                subject: Some(format!("Subject {i}")),
+                sender: Some("sender@example.com".to_string()),
+                mailbox_url: Some("imap://test/INBOX".to_string()),
+                date_sent: Some(1000 + i),
+                date_received: Some(1000 + i),
+                message_id: None,
+                global_message_id: None,
+                message_id_header: None,
+            };
+            repo.messages.lock().unwrap().insert(i, msg);
+        }
+
+        let params = SearchMessagesParams {
+            subject_query: Some("Subject".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 3,
+            offset: 0,
+            include_body_preview: false,
+        };
+        let result = search_messages_with_repo(&config, repo_arc, store, &test_locator(), params)
+            .await
+            .unwrap();
+        assert_eq!(result.messages.len(), 3);
+        assert!(
+            result.has_more,
+            "has_more should be true when more results exist"
+        );
+        assert_eq!(result.next_offset, Some(3));
+    }
+
+    #[tokio::test]
+    async fn last_page_has_more_false() {
+        let (_temp, config) = make_test_config();
+        let (repo, repo_arc) = make_fake_repo();
+        let store = Arc::new(crate::mail::FakeAttachmentStore::default());
+
+        for i in 1..=5 {
+            let msg = MessageRow {
+                rowid: i,
+                subject: Some(format!("Subject {i}")),
+                sender: Some("sender@example.com".to_string()),
+                mailbox_url: Some("imap://test/INBOX".to_string()),
+                date_sent: Some(1000 + i),
+                date_received: Some(1000 + i),
+                message_id: None,
+                global_message_id: None,
+                message_id_header: None,
+            };
+            repo.messages.lock().unwrap().insert(i, msg);
+        }
+
+        // Page 2 (offset=3, limit=3) should return 2 results with has_more=false
+        let params = SearchMessagesParams {
+            subject_query: Some("Subject".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 3,
+            offset: 3,
+            include_body_preview: false,
+        };
+        let result = search_messages_with_repo(&config, repo_arc, store, &test_locator(), params)
+            .await
+            .unwrap();
+        assert_eq!(result.messages.len(), 2);
+        assert!(!result.has_more, "last page should have has_more=false");
+        assert!(result.next_offset.is_none());
+    }
+
+    #[tokio::test]
+    async fn offset_past_end_returns_not_found() {
+        let (_temp, config) = make_test_config();
+        let (repo, repo_arc) = make_fake_repo();
+        let store = Arc::new(crate::mail::FakeAttachmentStore::default());
+
+        for i in 1..=3 {
+            let msg = MessageRow {
+                rowid: i,
+                subject: Some(format!("Subject {i}")),
+                sender: Some("sender@example.com".to_string()),
+                mailbox_url: Some("imap://test/INBOX".to_string()),
+                date_sent: Some(1000 + i),
+                date_received: Some(1000 + i),
+                message_id: None,
+                global_message_id: None,
+                message_id_header: None,
+            };
+            repo.messages.lock().unwrap().insert(i, msg);
+        }
+
+        let params = SearchMessagesParams {
+            subject_query: Some("Subject".to_string()),
+            date_from: None,
+            date_to: None,
+            sender: None,
+            participant: None,
+            account: None,
+            mailbox: None,
+            limit: 3,
+            offset: 100,
+            include_body_preview: false,
+        };
+        let result = search_messages_with_repo(&config, repo_arc, store, &test_locator(), params)
+            .await
+            .unwrap();
+        assert!(result.messages.is_empty());
+        assert!(!result.has_more);
+        assert!(result.next_offset.is_none());
+    }
+
+    // --- resolve_account_filter unit tests ---
+
+    fn make_metadata(
+        accounts: impl IntoIterator<Item = (&'static str, &'static str, &'static str)>,
+    ) -> HashMap<String, crate::accounts::AccountMetadata> {
+        accounts
+            .into_iter()
+            .map(|(id, name, email)| {
+                (
+                    id.to_string(),
+                    crate::accounts::AccountMetadata {
+                        account_id: id.to_string(),
+                        account_name: Some(name.to_string()),
+                        email: Some(email.to_string()),
+                        username: None,
+                        source_identifier: id.trim_start_matches("ews://").to_string(),
+                        account_type: "ews".to_string(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resolve_account_filter_none_returns_none() {
+        let metadata = make_metadata([]);
+        let result = resolve_account_filter(None, &metadata, None).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_account_filter_resolves_by_name() {
+        let metadata = make_metadata([("ews://work", "Work Email", "user@work.example.com")]);
+        let result = resolve_account_filter(Some("Work Email"), &metadata, None).unwrap();
+        assert_eq!(result.as_deref(), Some("ews://work"));
+    }
+
+    #[test]
+    fn resolve_account_filter_resolves_by_email() {
+        let metadata = make_metadata([("ews://work", "Work Email", "user@work.example.com")]);
+        let result =
+            resolve_account_filter(Some("user@work.example.com"), &metadata, None).unwrap();
+        assert_eq!(result.as_deref(), Some("ews://work"));
+    }
+
+    #[test]
+    fn resolve_account_filter_resolves_by_canonical_id() {
+        let metadata = make_metadata([("ews://work", "Work Email", "user@work.example.com")]);
+        let result = resolve_account_filter(Some("ews://work"), &metadata, None).unwrap();
+        assert_eq!(result.as_deref(), Some("ews://work"));
+    }
+
+    #[test]
+    fn resolve_account_filter_unresolvable_returns_validation_error() {
+        let metadata = make_metadata([("ews://work", "Work Email", "user@work.example.com")]);
+        let err = resolve_account_filter(Some("NoSuchAccount"), &metadata, None).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("did not match"), "unexpected error: {msg}");
+        assert!(msg.contains("list_accounts"), "should guide user: {msg}");
+    }
+
+    #[test]
+    fn resolve_account_filter_outside_scope_returns_validation_error() {
+        let metadata = make_metadata([
+            ("ews://work", "Work Email", "user@work.example.com"),
+            ("imap://personal", "Gmail", "me@gmail.com"),
+        ]);
+        let allowed = Some(vec!["ews://work".to_string()]);
+        let err = resolve_account_filter(Some("Gmail"), &metadata, allowed.as_deref()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("excluded"), "should mention exclusion: {msg}");
+        assert!(msg.contains("list_accounts"), "should guide user: {msg}");
+    }
+
+    #[test]
+    fn resolve_account_filter_in_scope_passes() {
+        let metadata = make_metadata([
+            ("ews://work", "Work Email", "user@work.example.com"),
+            ("imap://personal", "Gmail", "me@gmail.com"),
+        ]);
+        let allowed = Some(vec!["ews://work".to_string()]);
+        let result =
+            resolve_account_filter(Some("Work Email"), &metadata, allowed.as_deref()).unwrap();
+        assert_eq!(result.as_deref(), Some("ews://work"));
+    }
+
+    #[test]
+    fn resolve_account_filter_empty_metadata_passes_through() {
+        let metadata = make_metadata([]);
+        let result = resolve_account_filter(Some("ews://anything"), &metadata, None).unwrap();
+        assert_eq!(result.as_deref(), Some("ews://anything"));
+    }
+
+    #[test]
+    fn resolve_account_filter_empty_metadata_rejects_excluded_raw_id() {
+        let metadata = make_metadata([]);
+        let allowed = Some(vec!["ews://allowed".to_string()]);
+        let err =
+            resolve_account_filter(Some("ews://other"), &metadata, allowed.as_deref()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("excluded"), "should mention exclusion: {msg}");
+        assert!(
+            msg.contains("ews://other"),
+            "should include filter value: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_account_filter_empty_metadata_passes_matching_raw_id() {
+        let metadata = make_metadata([]);
+        let allowed = Some(vec!["ews://allowed".to_string()]);
+        let result =
+            resolve_account_filter(Some("ews://allowed"), &metadata, allowed.as_deref()).unwrap();
+        assert_eq!(result.as_deref(), Some("ews://allowed"));
     }
 }
