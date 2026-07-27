@@ -3,6 +3,7 @@ mod builder;
 mod parser;
 mod paths;
 mod validator;
+mod yaml_config;
 
 pub use accounts::load_account_metadata_for_selectors;
 pub use builder::MailConfigBuilder;
@@ -11,6 +12,7 @@ pub use paths::{
     default_mail_directory, envelope_db_path, expand_mail_directory, normalize_mail_directory,
 };
 pub use validator::validate_config;
+pub use yaml_config::YamlConfig;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,6 +28,7 @@ pub struct MailConfig {
     pub mail_version: String,
     pub allowed_account_ids: Option<Vec<String>>,
     pub account_metadata: HashMap<String, AccountMetadata>,
+    pub log_level: Option<String>,
 }
 
 impl MailConfig {
@@ -34,12 +37,14 @@ impl MailConfig {
         mail_version: String,
         allowed_account_ids: Option<Vec<String>>,
         account_metadata: HashMap<String, AccountMetadata>,
+        log_level: Option<String>,
     ) -> Result<Self, MailMcpError> {
         let config = Self {
             mail_directory,
             mail_version,
             allowed_account_ids,
             account_metadata,
+            log_level,
         };
         validate_config(&config)?;
         Ok(config)
@@ -94,7 +99,8 @@ mod tests {
     #[test]
     fn default_mail_version_is_v10() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::new(mail_directory, mail_version, None, HashMap::new()).unwrap();
+        let cfg =
+            MailConfig::new(mail_directory, mail_version, None, HashMap::new(), None).unwrap();
         let db = cfg.envelope_db_path();
         assert!(db.ends_with("Envelope Index"));
         assert!(db.to_str().unwrap().contains("V10"));
@@ -192,6 +198,7 @@ mod tests {
             mail_version,
             Some(vec!["ews://work".to_string()]),
             metadata,
+            None,
         )
         .expect("config with allowlist");
 
@@ -209,7 +216,7 @@ mod tests {
     #[test]
     fn validate_requires_non_empty_mail_version() {
         let (_temp_dir, mail_directory, _mail_version) = make_valid_config_inputs();
-        let error = MailConfig::new(mail_directory, String::new(), None, HashMap::new())
+        let error = MailConfig::new(mail_directory, String::new(), None, HashMap::new(), None)
             .expect_err("missing mail version should fail");
         assert!(error.to_string().contains("APPLE_MAIL_VERSION"));
     }
@@ -217,8 +224,14 @@ mod tests {
     #[test]
     fn validate_passes_with_valid_config() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg =
-            MailConfig::new(mail_directory.clone(), mail_version, None, HashMap::new()).unwrap();
+        let cfg = MailConfig::new(
+            mail_directory.clone(),
+            mail_version,
+            None,
+            HashMap::new(),
+            None,
+        )
+        .unwrap();
         assert!(validate_config(&cfg).is_ok());
     }
 
@@ -226,8 +239,14 @@ mod tests {
     fn validate_fails_when_db_missing() {
         let temp_dir = TempDir::new().expect("temp dir");
         let mail_directory = temp_dir.path().to_path_buf();
-        let error = MailConfig::new(mail_directory, "V10".to_string(), None, HashMap::new())
-            .expect_err("missing db should fail");
+        let error = MailConfig::new(
+            mail_directory,
+            "V10".to_string(),
+            None,
+            HashMap::new(),
+            None,
+        )
+        .expect_err("missing db should fail");
         assert!(
             error.to_string().contains("not found") || error.to_string().contains("Envelope Index")
         );
@@ -236,15 +255,22 @@ mod tests {
     #[test]
     fn validate_fails_on_whitespace_only_mail_version() {
         let (_temp_dir, mail_directory, _mail_version) = make_valid_config_inputs();
-        let error = MailConfig::new(mail_directory, "   ".to_string(), None, HashMap::new())
-            .expect_err("whitespace version should fail");
+        let error = MailConfig::new(
+            mail_directory,
+            "   ".to_string(),
+            None,
+            HashMap::new(),
+            None,
+        )
+        .expect_err("whitespace version should fail");
         assert!(error.to_string().contains("APPLE_MAIL_VERSION"));
     }
 
     #[test]
     fn is_account_allowed_none_means_all_allowed() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::new(mail_directory, mail_version, None, HashMap::new()).unwrap();
+        let cfg =
+            MailConfig::new(mail_directory, mail_version, None, HashMap::new(), None).unwrap();
         assert!(cfg.allowed_account_ids().is_none());
         assert!(cfg.is_account_allowed("any-account"));
     }
@@ -257,6 +283,7 @@ mod tests {
             mail_version,
             Some(vec!["account1".to_string(), "account2".to_string()]),
             HashMap::new(),
+            None,
         )
         .unwrap();
         assert!(cfg.is_account_allowed("account1"));
@@ -268,7 +295,8 @@ mod tests {
     #[test]
     fn is_mailbox_allowed_none_means_all_allowed() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::new(mail_directory, mail_version, None, HashMap::new()).unwrap();
+        let cfg =
+            MailConfig::new(mail_directory, mail_version, None, HashMap::new(), None).unwrap();
         assert!(cfg.is_mailbox_allowed("imap://any/INBOX"));
         assert!(cfg.is_mailbox_allowed("ews://any/Inbox"));
     }
@@ -281,6 +309,7 @@ mod tests {
             mail_version,
             Some(vec!["ews://work".to_string()]),
             HashMap::new(),
+            None,
         )
         .unwrap();
         assert!(cfg.is_mailbox_allowed("ews://work/Inbox"));
@@ -291,7 +320,8 @@ mod tests {
     #[test]
     fn account_metadata_returns_none_for_unknown() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::new(mail_directory, mail_version, None, HashMap::new()).unwrap();
+        let cfg =
+            MailConfig::new(mail_directory, mail_version, None, HashMap::new(), None).unwrap();
         assert!(cfg.account_metadata("unknown").is_none());
     }
 
@@ -309,7 +339,7 @@ mod tests {
                 account_type: "test".to_string(),
             },
         )]);
-        let cfg = MailConfig::new(mail_directory, mail_version, None, metadata).unwrap();
+        let cfg = MailConfig::new(mail_directory, mail_version, None, metadata, None).unwrap();
 
         let meta = cfg.account_metadata("test-account");
         assert!(meta.is_some());
@@ -324,6 +354,7 @@ mod tests {
             "V10".to_string(),
             None,
             HashMap::new(),
+            None,
         )
         .unwrap();
         let db_path = cfg.envelope_db_path();
@@ -335,7 +366,7 @@ mod tests {
     #[test]
     fn from_parts_fails_on_empty_version() {
         let (_temp_dir, mail_directory, _mail_version) = make_valid_config_inputs();
-        let error = MailConfig::new(mail_directory, "".to_string(), None, HashMap::new())
+        let error = MailConfig::new(mail_directory, "".to_string(), None, HashMap::new(), None)
             .expect_err("empty version fails");
         assert!(error.to_string().contains("APPLE_MAIL_VERSION"));
     }
@@ -343,7 +374,8 @@ mod tests {
     #[test]
     fn from_parts_creates_config_without_accounts() {
         let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
-        let cfg = MailConfig::new(mail_directory, mail_version, None, HashMap::new()).unwrap();
+        let cfg =
+            MailConfig::new(mail_directory, mail_version, None, HashMap::new(), None).unwrap();
         assert_eq!(cfg.allowed_account_ids(), None);
         assert!(cfg.account_metadata("any").is_none());
     }

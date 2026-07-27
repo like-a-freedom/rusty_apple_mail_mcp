@@ -85,8 +85,14 @@ pub fn make_test_config() -> (TempDir, MailConfig) {
     let db_path = db_dir.join("Envelope Index");
     let _conn = make_test_db(&db_path);
 
-    let config = MailConfig::new(mail_directory, mail_version, None, make_account_metadata())
-        .expect("config");
+    let config = MailConfig::new(
+        mail_directory,
+        mail_version,
+        None,
+        make_account_metadata(),
+        None,
+    )
+    .expect("config");
     (temp_dir, config)
 }
 
@@ -105,6 +111,7 @@ pub fn make_restricted_test_config(allowed_account_id: &str) -> (TempDir, MailCo
         mail_version,
         Some(vec![allowed_account_id.to_string()]),
         make_account_metadata(),
+        None,
     )
     .expect("restricted config");
     (temp_dir, config)
