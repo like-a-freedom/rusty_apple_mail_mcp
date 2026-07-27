@@ -7,6 +7,7 @@ use super::MailConfig;
 use super::accounts::load_account_metadata_for_selectors;
 use super::parser::{MailConfigOverrides, parse_account_selectors};
 use super::paths::{default_mail_directory, normalize_mail_directory};
+use super::yaml_config::YamlConfig;
 
 /// Builder for MailConfig with automatic env var and default resolution.
 #[derive(Debug, Default)]
@@ -43,24 +44,41 @@ impl MailConfigBuilder {
     }
 
     pub fn build(self) -> Result<MailConfig, MailMcpError> {
+        let yaml = YamlConfig::load().unwrap_or_default();
+
         let mail_directory = match self.mail_directory {
             Some(path) => path,
             None => match std::env::var("APPLE_MAIL_DIR").ok() {
                 Some(dir) => PathBuf::from(dir),
-                None => default_mail_directory(),
+                None => match yaml.apple_mail_dir {
+                    Some(dir) => super::yaml_config::expand_tilde(&dir),
+                    None => default_mail_directory(),
+                },
             },
         };
         let mail_directory = normalize_mail_directory(mail_directory);
 
         let mail_version = match self.mail_version {
             Some(v) => v,
-            None => std::env::var("APPLE_MAIL_VERSION").unwrap_or_else(|_| "V10".to_string()),
+            None => std::env::var("APPLE_MAIL_VERSION")
+                .ok()
+                .or(yaml.apple_mail_version)
+                .unwrap_or_else(|| "V10".to_string()),
         };
 
         let account_selectors: Vec<String> = match self.allowed_accounts {
             Some(accounts) => accounts,
-            None => parse_account_selectors(std::env::var("APPLE_MAIL_ACCOUNT").ok().as_deref())?,
+            None => {
+                let from_env = std::env::var("APPLE_MAIL_ACCOUNT").ok();
+                let from_yaml = yaml.apple_mail_account;
+                let raw = from_env.as_deref().or(from_yaml.as_deref());
+                parse_account_selectors(raw)?
+            }
         };
+
+        let log_level = std::env::var("APPLE_MAIL_LOG_LEVEL")
+            .ok()
+            .or(yaml.log_level);
 
         let account_metadata = if self.load_metadata && !account_selectors.is_empty() {
             load_account_metadata_for_selectors(&account_selectors)?
@@ -83,6 +101,7 @@ impl MailConfigBuilder {
             mail_version,
             allowed_account_ids,
             account_metadata,
+            log_level,
         )
     }
 

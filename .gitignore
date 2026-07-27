@@ -13,6 +13,7 @@ docs/
 **/*.rs.bk
 **/Cargo.lock
 .env
+config.yaml
 .DS_Store
 AGENTS.md
 

@@ -1,0 +1,16 @@
+# rusty_apple_mail_mcp configuration
+# Copy this to config.yaml next to the binary or to ~/.config/rusty_apple_mail_mcp/config.yaml
+# Priority: CLI flags > environment variables > config.yaml > defaults
+
+# Optional: Mail directory path (default: ~/Library/Mail)
+# apple_mail_dir: "~/Library/Mail"
+
+# Optional: Apple Mail database version (default: V10)
+# apple_mail_version: "V10"
+
+# Optional: Account filter — comma-separated account identifiers or email addresses
+# apple_mail_account: "Work Email, user@work.example.com"
+
+# Optional: Log level (RUST_LOG overrides this)
+# Possible values: error, warn, info, debug, trace
+# log_level: "warn"
