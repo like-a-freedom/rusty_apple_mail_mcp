@@ -380,6 +380,7 @@ mod tests {
             mail_version,
             allowed_account_ids,
             HashMap::new(),
+            None,
         )
         .expect("valid config")
     }

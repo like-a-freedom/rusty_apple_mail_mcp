@@ -15,13 +15,20 @@ use crate::server::MailMcpServer;
 static TRACING_INIT: Once = Once::new();
 
 /// Initialize tracing subscribers for the application.
-fn init_tracing() {
+fn init_tracing(log_level: Option<&str>) {
     TRACING_INIT.call_once(|| {
+        let filter = std::env::var("RUST_LOG")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| log_level.map(String::from))
+            .unwrap_or_else(|| "warn".to_owned());
         let _ = tracing_subscriber::fmt()
             .compact()
             .with_ansi(false)
             .with_target(false)
-            .with_env_filter(EnvFilter::from_default_env())
+            .with_env_filter(
+                EnvFilter::try_new(&filter).unwrap_or_else(|_| EnvFilter::from_default_env()),
+            )
             .with_writer(std::io::stderr)
             .try_init();
     });
@@ -40,16 +47,17 @@ fn print_error_envelope(err: &crate::error::MailMcpError) -> anyhow::Result<()> 
 /// This is the main entry point called from `main.rs`.
 /// All startup logic is centralized here for testability.
 pub async fn run() -> Result<()> {
-    init_tracing();
-
     let cli = Cli::parse();
     let config = match build_config(&cli) {
         Ok(config) => config,
         Err(err) => {
+            init_tracing(None);
             print_error_envelope(&err)?;
             return Ok(());
         }
     };
+
+    init_tracing(config.log_level.as_deref());
 
     match cli.command {
         Some(Command::ListAccounts(args)) => {
