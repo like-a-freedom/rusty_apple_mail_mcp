@@ -192,23 +192,55 @@ rusty_apple_mail_mcp search --date-from "2024-12-01" --date-to "2024-12-31" | \
 
 ## Configuration
 
-The server is configured **only** through environment variables:
+The server supports configuration via **environment variables**, **CLI flags**, and a **YAML config file**. Values are resolved with this priority chain:
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `APPLE_MAIL_DIR` | no | `~/Library/Mail` | Root folder of the Mail data |
-| `APPLE_MAIL_VERSION` | no | `V10` | Envelope Index version subdirectory |
-| `APPLE_MAIL_ACCOUNT` | no | unset | Comma-separated account selectors (account name, email, or account ID); restricts all tools to matched accounts (see [Account scoping](#account-scoping)) |
-| `RUST_LOG` | no | unset | Standard Rust tracing filter used by `tracing_subscriber`; controls server logs written to stderr |
+```
+CLI flags > environment variables > config.yaml > defaults
+```
 
-Example setup:
+### Config file locations
+
+The server looks for `config.yaml` in two locations (first found wins):
+
+1. **Next to the binary** — same directory as the executable
+2. **Home config** — `~/.config/rusty_apple_mail_mcp/config.yaml`
+
+Copy `config.example.yaml` to one of these locations and fill in your values:
 
 ```bash
-export APPLE_MAIL_DIR="$HOME/Library/Mail"
-export APPLE_MAIL_VERSION="V10"
-export APPLE_MAIL_ACCOUNT="Work Email"
-export RUST_LOG="warn"
+cp config.example.yaml ~/.config/rusty_apple_mail_mcp/config.yaml
 ```
+
+### Configuration fields
+
+| Config Key | Env Variable | CLI Flag | Default | Description |
+|---|---|---|---|---|
+| `apple_mail_dir` | `APPLE_MAIL_DIR` | `--mail-directory` | `~/Library/Mail` | Root folder of the Mail data |
+| `apple_mail_version` | `APPLE_MAIL_VERSION` | `--mail-version` | `V10` | Envelope Index version subdirectory |
+| `apple_mail_account` | `APPLE_MAIL_ACCOUNT` | `--account` | unset | Comma-separated account selectors (see [Account scoping](#account-scoping)) |
+| `log_level` | `APPLE_MAIL_LOG_LEVEL` | — | `warn` | Log level; `RUST_LOG` takes precedence |
+
+### Priority chain examples
+
+```yaml
+# ~/.config/rusty_apple_mail_mcp/config.yaml
+apple_mail_dir: "~/Library/Mail"
+apple_mail_version: "V10"
+apple_mail_account: "Work Email"
+log_level: "info"
+```
+
+```bash
+# Environment variables override config.yaml
+export APPLE_MAIL_VERSION="V9"
+
+# CLI flags override everything
+rusty_apple_mail_mcp --mail-version V8 search --subject-query "invoice"
+```
+
+### Security note
+
+`config.yaml` may contain account selectors and other configuration. It is added to `.gitignore` to prevent accidental commits. Never commit real configuration to version control.
 
 ### `RUST_LOG` values
 

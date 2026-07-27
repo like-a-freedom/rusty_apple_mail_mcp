@@ -123,6 +123,7 @@ mod cli_validation_tests {
             "V10".to_string(),
             None,
             std::collections::HashMap::new(),
+            None,
         )
         .expect("valid dummy config");
         (temp_dir, config)

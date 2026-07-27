@@ -219,8 +219,8 @@ mod tests {
         std::fs::create_dir_all(&db_dir).expect("mail data dir");
         std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder").expect("db file");
 
-        let config =
-            MailConfig::new(mail_directory, mail_version, None, HashMap::new()).expect("config");
+        let config = MailConfig::new(mail_directory, mail_version, None, HashMap::new(), None)
+            .expect("config");
         (temp_dir, config)
     }
 
@@ -254,6 +254,7 @@ mod tests {
             "V10".to_string(),
             Some(vec!["ews://account-b".to_string()]),
             HashMap::new(),
+            None,
         )
         .expect("valid config");
         let response = list_accounts_with_conn(&config, &repo, default_params()).unwrap();
@@ -314,6 +315,7 @@ mod tests {
             "V10".to_string(),
             None,
             metadata,
+            None,
         )
         .expect("valid config");
         let response = list_accounts_with_conn(&config, &repo, default_params()).unwrap();

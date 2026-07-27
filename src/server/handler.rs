@@ -376,8 +376,8 @@ mod tests {
         .expect("create schema");
         drop(conn);
 
-        let config =
-            MailConfig::new(mail_directory, mail_version, None, HashMap::new()).expect("config");
+        let config = MailConfig::new(mail_directory, mail_version, None, HashMap::new(), None)
+            .expect("config");
         (temp_dir, config)
     }
 
@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn server_new_with_invalid_config() {
         // Create invalid config (empty mail version)
-        let config = MailConfig::new("/nonexistent".into(), "".into(), None, HashMap::new());
+        let config = MailConfig::new("/nonexistent".into(), "".into(), None, HashMap::new(), None);
         assert!(config.is_err());
     }
 
