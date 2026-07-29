@@ -14,6 +14,7 @@ pub mod server;
 pub use config::MailConfig;
 pub use error::MailMcpError;
 pub use runner::run;
+pub use server::content_delivery::DEFAULT_WINDOW_BYTES;
 
 // Domain types
 pub use domain::{

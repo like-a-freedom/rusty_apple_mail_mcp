@@ -35,8 +35,8 @@ The current tool set is intentionally compact:
 |---|---|
 | `search_messages` | Search by subject, dates, sender, participant, account, or mailbox |
 | `list_accounts` | Discover account identifiers; set `include_mailboxes=true` for combined account+mailbox discovery |
-| `get_message` | Read one message in full; recipients omitted by default (`include_recipients=true` to include) |
-| `get_attachment_content` | Extract readable attachment content |
+| `get_message` | Read one message through a bounded content window; recipients omitted by default (`include_recipients=true` to include) |
+| `get_attachment_content` | Extract readable attachment text through a bounded content window |
 
 ## Installation
 
@@ -122,10 +122,12 @@ rusty_apple_mail_mcp search --mailbox "INBOX" --include-body-preview
 
 # Get a specific message
 rusty_apple_mail_mcp get-message --message-id "12345"
-rusty_apple_mail_mcp get-message --message-id "12345" --body-format html
+rusty_apple_mail_mcp get-message --message-id "12345" --include-recipients
+rusty_apple_mail_mcp get-message --message-id "12345" --offset 8192 --source-revision "..."
 
 # Get attachment content
 rusty_apple_mail_mcp get-attachment --message-id "12345" --attachment-id "12345:0"
+rusty_apple_mail_mcp get-attachment --message-id "12345" --attachment-id "12345:0" --offset 8192 --source-revision "..."
 ```
 
 #### CLI Configuration
@@ -136,7 +138,7 @@ CLI mode supports the same configuration options as MCP mode:
 |---|---|---|
 | `--mail-directory` | `APPLE_MAIL_DIR` | Mail data directory (default: `~/Library/Mail`) |
 | `--mail-version` | `APPLE_MAIL_VERSION` | Envelope Index version (default: `V10`) |
-| `--account` | `APPLE_MAIL_ACCOUNT` | Account selector(s); comma-separated account names, emails, or IDs (see [Account scoping](#account-scoping)) |
+| `--scope-account` | `APPLE_MAIL_ACCOUNT` | Startup Scope selector(s); comma-separated account names, emails, or IDs (see [Account scoping](#account-scoping)). The legacy top-level `--account` spelling is a compatibility alias; `search --account` remains a per-call Filter. |
 
 Example:
 
@@ -159,7 +161,7 @@ rusty_apple_mail_mcp list-accounts
 | **Protocol** | stdin/stdout (MCP) | Direct command execution |
 | **Use case** | AI agents, IDE integration | Scripting, debugging, one-off queries |
 | **Persistent process** | Yes | No (per-command spawn) |
-| **Output format** | JSON-RPC messages | JSON (human-readable) |
+| **Output format** | JSON-RPC messages | Compact JSON by default; `--pretty` opts into formatted JSON |
 | **Real-time streaming** | Yes | No (batch output) |
 | **Error handling** | MCP error codes | Exit codes + stderr |
 
@@ -217,7 +219,7 @@ cp config.example.yaml ~/.config/rusty_apple_mail_mcp/config.yaml
 |---|---|---|---|---|
 | `apple_mail_dir` | `APPLE_MAIL_DIR` | `--mail-directory` | `~/Library/Mail` | Root folder of the Mail data |
 | `apple_mail_version` | `APPLE_MAIL_VERSION` | `--mail-version` | `V10` | Envelope Index version subdirectory |
-| `apple_mail_account` | `APPLE_MAIL_ACCOUNT` | `--account` | unset | Comma-separated account selectors (see [Account scoping](#account-scoping)) |
+| `apple_mail_account` | `APPLE_MAIL_ACCOUNT` | `--scope-account` | unset | Startup Scope selector(s); legacy top-level `--account` remains a compatibility alias |
 | `log_level` | `APPLE_MAIL_LOG_LEVEL` | — | `warn` | Log level; `RUST_LOG` takes precedence |
 
 ### Priority chain examples
@@ -363,7 +365,7 @@ The server is optimized to minimize token consumption:
 
 - **Compact tool descriptions** — routing hints live in `ServerInfo.instructions` (loaded once), not repeated per-tool on every request.
 - **HTML → plain text** — HTML email bodies are converted to clean text via DOM parsing (using `scraper`), typically 10–20× smaller than raw HTML.
-- **`status: "success"` omitted** — the status field only appears on error/not_found/partial responses.
+- **Explicit completed outcomes** — successful MCP/tool payloads carry `outcome: "success"`, `outcome: "partial"`, or `outcome: "not_found"`; protocol errors stay native errors.
 - **Recipients omitted by default** — `get_message` skips To/CC lists unless `include_recipients=true`.
 - **Compact dates** — ISO 8601 without seconds (`2024-09-15T00:00Z`).
 - **`has_body` removed** — always true for indexed messages; no longer wasting tokens.
@@ -385,12 +387,13 @@ The server is optimized to minimize token consumption:
     "message_id": "12345",
     "include_body": true,
     "include_attachments_summary": true,
-    "body_format": "text",
-    "include_recipients": false
+    "include_recipients": false,
+    "offset": 0,
+    "limit": 8192
 }
 ```
 
-`include_recipients` defaults to `false` — set it to `true` when you need the To/CC lists (saves tokens on corporate mail with 50+ recipients).
+`include_recipients` defaults to `false` — set it to `true` when you need the To/CC lists (saves tokens on corporate mail with 50+ recipients). If a response returns `outcome: "partial"`, continue with the returned `window.next_offset` and `window.source_revision`.
 
 ### Combined account + mailbox discovery
 

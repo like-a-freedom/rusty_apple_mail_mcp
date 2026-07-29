@@ -11,7 +11,7 @@ use crate::mail::AttachmentStore;
 use crate::mail::EmlxLocator;
 use crate::mail::extract::extract_text;
 use crate::mail::parse_emlx;
-use crate::server::tools::ResponseStatus;
+use crate::server::tools::ResponseOutcome;
 use crate::server::tools::message_lookup::{
     AccessibleMessage, load_accessible_message, locate_message_file,
 };
@@ -24,35 +24,41 @@ pub struct GetAttachmentParams {
     pub attachment_id: String,
     /// Parent message identifier (needed to locate the attachment file)
     pub message_id: String,
+    /// Byte offset for content window continuation. Use 0 for the initial call.
+    #[serde(default)]
+    pub offset: usize,
+    /// Maximum bytes per content window (default 8192, max 65536).
+    #[serde(default = "default_window_limit")]
+    pub limit: usize,
+    /// Source revision from a previous window. Pass to continue from where you left off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_revision: Option<String>,
+}
+
+fn default_window_limit() -> usize {
+    crate::server::content_delivery::DEFAULT_WINDOW_BYTES
 }
 
 /// Response for `get_attachment_content` tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[must_use]
 pub struct GetAttachmentResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<ResponseStatus>,
+    pub outcome: ResponseOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachment: Option<GetAttachmentResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<crate::server::content_delivery::ContentWindow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guidance: Option<String>,
 }
 
 impl GetAttachmentResponse {
-    /// Create an error response with a guidance message.
-    pub fn error(guidance: impl Into<String>) -> Self {
-        Self {
-            status: Some(ResponseStatus::Error),
-            attachment: None,
-            guidance: Some(guidance.into()),
-        }
-    }
-
-    /// Create a not found response with a guidance message.
+    /// Create a not-found response with a guidance message.
     pub fn not_found(guidance: impl Into<String>) -> Self {
         Self {
-            status: Some(ResponseStatus::NotFound),
+            outcome: ResponseOutcome::NotFound,
             attachment: None,
+            window: None,
             guidance: Some(guidance.into()),
         }
     }
@@ -60,17 +66,36 @@ impl GetAttachmentResponse {
     /// Create a partial response with a result and guidance.
     pub fn partial(result: GetAttachmentResult, guidance: impl Into<String>) -> Self {
         Self {
-            status: Some(ResponseStatus::Partial),
+            outcome: ResponseOutcome::Partial,
             attachment: Some(result),
+            window: None,
             guidance: Some(guidance.into()),
         }
     }
 
-    /// Create a success response with a result.
-    pub fn success(result: GetAttachmentResult) -> Self {
+    /// Create a partial response with a result, window, and guidance.
+    pub fn partial_with_window(
+        result: GetAttachmentResult,
+        window: crate::server::content_delivery::ContentWindow,
+        guidance: impl Into<String>,
+    ) -> Self {
         Self {
-            status: None,
+            outcome: ResponseOutcome::Partial,
             attachment: Some(result),
+            window: Some(window),
+            guidance: Some(guidance.into()),
+        }
+    }
+
+    /// Create a success response with a result and window.
+    pub fn success(
+        result: GetAttachmentResult,
+        window: crate::server::content_delivery::ContentWindow,
+    ) -> Self {
+        Self {
+            outcome: ResponseOutcome::Success,
+            attachment: Some(result),
+            window: Some(window),
             guidance: None,
         }
     }
@@ -205,13 +230,42 @@ pub fn get_attachment_content_with_conn(
 
     match extract_text(content, &raw_attachment.mime_type) {
         Ok(text) => {
+            let text_bytes = text.as_bytes();
+            let revision = crate::server::content_delivery::file_source_revision(&emlx_path, "v1");
+            let limit = params
+                .limit
+                .min(crate::server::content_delivery::MAX_WINDOW_BYTES);
+            let window = crate::server::content_delivery::slice_content(
+                text_bytes,
+                params.offset,
+                limit,
+                &revision,
+                params.source_revision.as_deref().unwrap_or(&revision),
+                &format!("extracted_{}", raw_attachment.mime_type),
+                None,
+            )?;
+            let window_text = std::str::from_utf8(
+                &text_bytes[window.offset..window.offset + window.bytes_returned],
+            )
+            .unwrap_or("");
             let result = GetAttachmentResult {
                 content_format: ContentFormat::ExtractedText,
-                content: Some(text),
+                content: Some(window_text.to_string()),
                 extraction_method: Some("extracted".to_string()),
                 ..base_result
             };
-            Ok(GetAttachmentResponse::success(result))
+            if window.complete {
+                Ok(GetAttachmentResponse::success(result, window))
+            } else {
+                let guidance = format!(
+                    "Content window is partial. Pass offset={} and source_revision=\"{}\" to continue.",
+                    window.next_offset.unwrap_or(0),
+                    window.source_revision,
+                );
+                Ok(GetAttachmentResponse::partial_with_window(
+                    result, window, guidance,
+                ))
+            }
         }
         Err(e) => {
             let reason = e.to_string();
@@ -385,6 +439,9 @@ mod tests {
         let params = GetAttachmentParams {
             attachment_id: "invalid".to_string(),
             message_id: "1".to_string(),
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         let err =
@@ -401,6 +458,9 @@ mod tests {
         let params = GetAttachmentParams {
             attachment_id: "999:0".to_string(),
             message_id: "999".to_string(),
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         let err =
@@ -417,6 +477,9 @@ mod tests {
         let params = GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         let err =
@@ -434,6 +497,9 @@ mod tests {
         let params = GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         // Create a fake .emlx file without attachments
@@ -471,6 +537,9 @@ mod tests {
         let params = GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         // Create a fake .emlx file with a text attachment
@@ -506,7 +575,7 @@ mod tests {
         let response =
             get_attachment_content_with_conn(&config, &repo, &test_locator(), params).unwrap();
 
-        assert_eq!(response.status, None);
+        assert_eq!(response.outcome, ResponseOutcome::Success);
         assert!(response.attachment.is_some());
         let attachment = response.attachment.unwrap();
         assert_eq!(attachment.filename, "notes.txt");
@@ -523,6 +592,9 @@ mod tests {
         let params = GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         // Create a fake .emlx file with a binary attachment (image)
@@ -559,7 +631,7 @@ mod tests {
             get_attachment_content_with_conn(&config, &repo, &test_locator(), params).unwrap();
 
         // Should return partial status with guidance about OCR
-        assert_eq!(response.status, Some(ResponseStatus::Partial));
+        assert_eq!(response.outcome, ResponseOutcome::Partial);
         assert!(response.attachment.is_some());
         let attachment = response.attachment.unwrap();
         assert_eq!(attachment.filename, "image.png");
@@ -591,6 +663,9 @@ mod tests {
         let params = GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         let docx_bytes = create_minimal_docx();
@@ -638,7 +713,7 @@ mod tests {
         let response =
             get_attachment_content_with_conn(&config, &repo, &test_locator(), params).unwrap();
 
-        assert_eq!(response.status, None);
+        assert_eq!(response.outcome, ResponseOutcome::Success);
         let attachment = response.attachment.expect("attachment result");
         assert_eq!(attachment.content_format, ContentFormat::ExtractedText);
         assert_eq!(attachment.extraction_method.as_deref(), Some("extracted"));

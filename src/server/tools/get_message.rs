@@ -15,7 +15,7 @@ use crate::error::MailMcpError;
 use crate::mail::AttachmentStore;
 use crate::mail::EmlxLocator;
 use crate::mail::{parse_emlx_without_attachment_content, raw_attachments_to_meta};
-use crate::server::tools::ResponseStatus;
+use crate::server::tools::ResponseOutcome;
 use crate::server::tools::message_lookup::{
     AccessibleMessage, load_accessible_message, locate_message_file,
 };
@@ -26,6 +26,7 @@ static BODY_CACHE: LazyLock<Mutex<LruCache<std::path::PathBuf, CachedMessage>>> 
 
 #[derive(Clone)]
 struct CachedMessage {
+    source_revision: String,
     body_text: Option<String>,
     body_html: Option<String>,
     attachments: Vec<AttachmentMeta>,
@@ -47,39 +48,45 @@ pub struct GetMessageParams {
     /// Enable when you need to check who received the message.
     #[serde(default)]
     pub include_recipients: bool,
+    /// Byte offset for content window continuation. Use 0 for the initial call.
+    #[serde(default)]
+    pub offset: usize,
+    /// Maximum bytes per content window (default 8192, max 65536).
+    #[serde(default = "default_window_limit")]
+    pub limit: usize,
+    /// Source revision from a previous window. Pass to continue from where you left off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_revision: Option<String>,
 }
 
 fn default_true() -> bool {
     true
 }
 
+fn default_window_limit() -> usize {
+    crate::server::content_delivery::DEFAULT_WINDOW_BYTES
+}
+
 /// Response for `get_message` tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[must_use]
 pub struct GetMessageResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<ResponseStatus>,
+    pub outcome: ResponseOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<GetMessageResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<crate::server::content_delivery::ContentWindow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guidance: Option<String>,
 }
 
 impl GetMessageResponse {
-    /// Create an error response with a guidance message.
-    pub fn error(guidance: impl Into<String>) -> Self {
-        Self {
-            status: Some(ResponseStatus::Error),
-            message: None,
-            guidance: Some(guidance.into()),
-        }
-    }
-
-    /// Create a not found response with a guidance message.
+    /// Create a not-found response with a guidance message.
     pub fn not_found(guidance: impl Into<String>) -> Self {
         Self {
-            status: Some(ResponseStatus::NotFound),
+            outcome: ResponseOutcome::NotFound,
             message: None,
+            window: None,
             guidance: Some(guidance.into()),
         }
     }
@@ -87,17 +94,36 @@ impl GetMessageResponse {
     /// Create a partial response with a result and guidance.
     pub fn partial(result: GetMessageResult, guidance: impl Into<String>) -> Self {
         Self {
-            status: Some(ResponseStatus::Partial),
+            outcome: ResponseOutcome::Partial,
             message: Some(result),
+            window: None,
             guidance: Some(guidance.into()),
         }
     }
 
-    /// Create a success response with a result.
-    pub fn success(result: GetMessageResult) -> Self {
+    /// Create a partial response with a result, window, and guidance.
+    pub fn partial_with_window(
+        result: GetMessageResult,
+        window: crate::server::content_delivery::ContentWindow,
+        guidance: impl Into<String>,
+    ) -> Self {
         Self {
-            status: None,
+            outcome: ResponseOutcome::Partial,
             message: Some(result),
+            window: Some(window),
+            guidance: Some(guidance.into()),
+        }
+    }
+
+    /// Create a success response with a result and window.
+    pub fn success(
+        result: GetMessageResult,
+        window: crate::server::content_delivery::ContentWindow,
+    ) -> Self {
+        Self {
+            outcome: ResponseOutcome::Success,
+            message: Some(result),
+            window: Some(window),
             guidance: None,
         }
     }
@@ -208,20 +234,25 @@ pub fn get_message_with_conn(
         let emlx_path = locate_message_file(locator, config, &row);
         let locator_elapsed = locator_started.elapsed();
 
-        if let Some(path) = emlx_path {
+        if let Some(ref path) = emlx_path {
             let parse_started = Instant::now();
+            let revision = crate::server::content_delivery::file_source_revision(path, "v1");
             let cached = {
                 let mut cache = BODY_CACHE.lock().expect("body cache lock");
-                cache.get(&path).cloned()
+                cache
+                    .get(path)
+                    .filter(|cached| cached.source_revision == revision)
+                    .cloned()
             };
 
             let (body_text, body_html, attachments) = if let Some(cached) = cached {
                 (cached.body_text, cached.body_html, cached.attachments)
             } else {
-                match parse_emlx_without_attachment_content(&path) {
+                match parse_emlx_without_attachment_content(path) {
                     Ok(parsed) => {
                         let attachments = raw_attachments_to_meta(row.rowid, &parsed.attachments);
                         let cached = CachedMessage {
+                            source_revision: revision.clone(),
                             body_text: parsed.body_text,
                             body_html: parsed.body_html,
                             attachments,
@@ -252,12 +283,54 @@ pub fn get_message_with_conn(
             };
 
             if params.include_body {
-                result.body = body_text
-                    .or_else(|| body_html.as_deref().map(crate::mail::html_to_markdown))
-                    .map(|text| {
-                        let stripped = crate::mail::strip_quoted_replies(&text);
-                        stripped.to_string()
-                    });
+                let normalized_body =
+                    body_text.or_else(|| body_html.as_deref().map(crate::mail::html_to_markdown));
+                if let Some(body) = normalized_body {
+                    let body_bytes = body.as_bytes();
+                    let limit = params
+                        .limit
+                        .min(crate::server::content_delivery::MAX_WINDOW_BYTES);
+                    let window = crate::server::content_delivery::slice_content(
+                        body_bytes,
+                        params.offset,
+                        limit,
+                        &revision,
+                        params.source_revision.as_deref().unwrap_or(&revision),
+                        "plain_text",
+                        None,
+                    )?;
+                    let window_text = std::str::from_utf8(
+                        &body_bytes[window.offset..window.offset + window.bytes_returned],
+                    )
+                    .unwrap_or("");
+                    result.body = Some(window_text.to_string());
+                    // Populate attachments before returning the windowed response
+                    if params.include_attachments_summary {
+                        result.attachments = attachments;
+                    }
+                    tracing::debug!(
+                        "get_message completed: message_id={}, db={} ms, locator={} ms, parse={} ms, total={} ms, include_body={}, include_attachments_summary={}",
+                        row.rowid,
+                        db_elapsed.as_millis(),
+                        locator_elapsed.as_millis(),
+                        parse_started.elapsed().as_millis(),
+                        total_started.elapsed().as_millis(),
+                        params.include_body,
+                        params.include_attachments_summary,
+                    );
+                    return if window.complete {
+                        Ok(GetMessageResponse::success(result, window))
+                    } else {
+                        let guidance = format!(
+                            "Content window is partial. Pass offset={} and source_revision=\"{}\" to continue.",
+                            window.next_offset.unwrap_or(0),
+                            window.source_revision,
+                        );
+                        Ok(GetMessageResponse::partial_with_window(
+                            result, window, guidance,
+                        ))
+                    };
+                }
             }
 
             if params.include_attachments_summary {
@@ -291,7 +364,12 @@ pub fn get_message_with_conn(
         params.include_attachments_summary,
     );
 
-    Ok(GetMessageResponse::success(result))
+    Ok(GetMessageResponse {
+        outcome: ResponseOutcome::Success,
+        message: Some(result),
+        window: None,
+        guidance: None,
+    })
 }
 
 /// Execute the `get_message` tool.
@@ -401,6 +479,9 @@ mod tests {
             include_attachments_summary: false,
 
             include_recipients: false,
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         let err = get_message_with_conn(&config, &repo, &test_locator(), params).unwrap_err();
@@ -419,6 +500,9 @@ mod tests {
             include_attachments_summary: false,
 
             include_recipients: false,
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         let err = get_message_with_conn(&config, &repo, &test_locator(), params).unwrap_err();
@@ -437,6 +521,9 @@ mod tests {
             include_attachments_summary: false,
 
             include_recipients: false,
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         let err = get_message_with_conn(&config, &repo, &test_locator(), params).unwrap_err();
@@ -455,11 +542,14 @@ mod tests {
             include_attachments_summary: false,
 
             include_recipients: false,
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         let response = get_message_with_conn(&config, &repo, &test_locator(), params).unwrap();
 
-        assert_eq!(response.status, None);
+        assert_eq!(response.outcome, ResponseOutcome::Success);
         assert!(response.message.is_some());
         let msg = response.message.unwrap();
         assert_eq!(msg.id, "1");
@@ -502,11 +592,14 @@ mod tests {
             include_attachments_summary: false,
 
             include_recipients: true,
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         let response = get_message_with_conn(&config, &repo, &test_locator(), params).unwrap();
 
-        assert_eq!(response.status, None);
+        assert_eq!(response.outcome, ResponseOutcome::Success);
         let message = response.message.expect("message response");
         assert_eq!(message.to, vec!["recipient@example.com".to_string()]);
         assert_eq!(message.cc, vec!["cc@example.com".to_string()]);
@@ -544,11 +637,14 @@ mod tests {
             include_attachments_summary: false,
 
             include_recipients: false,
+            offset: 0,
+            limit: crate::server::content_delivery::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         };
 
         let response = get_message_with_conn(&config, &repo, &test_locator(), params).unwrap();
 
-        assert_eq!(response.status, None);
+        assert_eq!(response.outcome, ResponseOutcome::Success);
         assert!(response.message.is_some());
         let msg = response.message.unwrap();
         assert!(msg.body.is_some());
@@ -561,6 +657,7 @@ mod tests {
 
         let test_path = std::path::PathBuf::from("/tmp/test.emlx");
         let cached = CachedMessage {
+            source_revision: "test-revision".to_string(),
             body_text: Some("cached text".to_string()),
             body_html: Some("<html>cached</html>".to_string()),
             attachments: vec![],

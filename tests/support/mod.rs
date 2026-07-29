@@ -97,6 +97,7 @@ pub fn make_test_config() -> (TempDir, MailConfig) {
 }
 
 /// Build a temporary Apple Mail-like directory and a config restricted to one account.
+#[allow(dead_code)]
 pub fn make_restricted_test_config(allowed_account_id: &str) -> (TempDir, MailConfig) {
     let temp_dir = TempDir::new().expect("temp dir");
     let mail_directory = temp_dir.path().to_path_buf();
@@ -168,6 +169,7 @@ pub fn seed_emlx_in_account(
 }
 
 /// Write an `.emlx` file into a nested mailbox tree with optional UUID/Data fanout.
+#[allow(dead_code)]
 pub fn seed_emlx_in_nested_mailbox(
     config: &MailConfig,
     account_dir: &str,
