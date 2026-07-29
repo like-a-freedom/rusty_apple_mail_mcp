@@ -5,7 +5,8 @@ use crate::db::SqliteMailRepository;
 use crate::error::MailMcpError;
 use crate::mail::{CacheRegistry, EmlxLocator, FilesystemAttachmentStore};
 use crate::server::tools::{
-    GetAttachmentParams, GetMessageParams, ListAccountsParams, SearchMessagesParams,
+    GetAttachmentParams, GetAttachmentResponse, GetMessageParams, GetMessageResponse,
+    ListAccountsParams, ListAccountsResponse, SearchMessagesParams, SearchMessagesResponse,
 };
 use crate::server::tools::{
     get_attachment_content as server_get_attachment, get_message as server_get_message,
@@ -22,18 +23,22 @@ fn open_repo_store(
 }
 
 /// Execute list_accounts command.
-pub fn list_accounts(config: &MailConfig, include_mailboxes: bool) -> Result<(), MailMcpError> {
+pub fn list_accounts(
+    config: &MailConfig,
+    include_mailboxes: bool,
+) -> Result<ListAccountsResponse, MailMcpError> {
     let params = ListAccountsParams { include_mailboxes };
     let (repo, store) = open_repo_store(config)?;
     let registry = CacheRegistry::new();
     let locator = EmlxLocator::new(&registry);
-    let result = server_list_accounts(&repo, &store, config, &locator, params)?;
-    serde_json::to_writer_pretty(std::io::stdout(), &result)?;
-    Ok(())
+    server_list_accounts(&repo, &store, config, &locator, params)
 }
 
 /// Execute search_messages command.
-pub fn search_messages(config: &MailConfig, args: super::SearchArgs) -> Result<(), MailMcpError> {
+pub fn search_messages(
+    config: &MailConfig,
+    args: super::SearchArgs,
+) -> Result<SearchMessagesResponse, MailMcpError> {
     let has_any_filter = args.subject_query.is_some()
         || args.date_from.is_some()
         || args.date_to.is_some()
@@ -69,42 +74,45 @@ pub fn search_messages(config: &MailConfig, args: super::SearchArgs) -> Result<(
         offset: args.offset,
         include_body_preview: args.include_body_preview,
     };
-    let result = server_search_messages(config, params)?;
-    serde_json::to_writer_pretty(std::io::stdout(), &result)?;
-    Ok(())
+    server_search_messages(config, params)
 }
 
 /// Execute get_message command.
-pub fn get_message(config: &MailConfig, args: super::GetMessageArgs) -> Result<(), MailMcpError> {
+pub fn get_message(
+    config: &MailConfig,
+    args: super::GetMessageArgs,
+) -> Result<GetMessageResponse, MailMcpError> {
     let params = GetMessageParams {
         message_id: args.message_id,
         include_body: args.include_body,
         include_attachments_summary: args.include_attachments_summary,
         include_recipients: args.include_recipients,
+        offset: args.offset,
+        limit: args.limit,
+        source_revision: args.source_revision,
     };
     let (repo, store) = open_repo_store(config)?;
     let registry = CacheRegistry::new();
     let locator = EmlxLocator::new(&registry);
-    let result = server_get_message(&repo, &store, config, &locator, params)?;
-    serde_json::to_writer_pretty(std::io::stdout(), &result)?;
-    Ok(())
+    server_get_message(&repo, &store, config, &locator, params)
 }
 
 /// Execute get_attachment command.
 pub fn get_attachment(
     config: &MailConfig,
     args: super::GetAttachmentArgs,
-) -> Result<(), MailMcpError> {
+) -> Result<GetAttachmentResponse, MailMcpError> {
     let params = GetAttachmentParams {
         attachment_id: args.attachment_id,
         message_id: args.message_id,
+        offset: args.offset,
+        limit: args.limit,
+        source_revision: args.source_revision,
     };
     let (repo, store) = open_repo_store(config)?;
     let registry = CacheRegistry::new();
     let locator = EmlxLocator::new(&registry);
-    let result = server_get_attachment(&repo, &store, config, &locator, params)?;
-    serde_json::to_writer_pretty(std::io::stdout(), &result)?;
-    Ok(())
+    server_get_attachment(&repo, &store, config, &locator, params)
 }
 
 #[cfg(test)]

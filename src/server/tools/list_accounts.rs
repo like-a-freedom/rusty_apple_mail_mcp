@@ -7,7 +7,7 @@ use crate::config::MailConfig;
 use crate::db::MailRepository;
 use crate::error::MailMcpError;
 use crate::mail::AttachmentStore;
-use crate::server::tools::ResponseStatus;
+use crate::server::tools::ResponseOutcome;
 
 /// Parameters for the `list_accounts` tool.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -23,33 +23,28 @@ pub struct ListAccountsParams {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[must_use]
 pub struct ListAccountsResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<ResponseStatus>,
+    pub outcome: ResponseOutcome,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountResult>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guidance: Option<String>,
 }
 
 impl ListAccountsResponse {
-    /// Create a not found response with a guidance message.
+    /// Create a not-found response with a guidance message.
     pub fn not_found(guidance: impl Into<String>) -> Self {
         Self {
-            status: Some(ResponseStatus::NotFound),
+            outcome: ResponseOutcome::NotFound,
             accounts: Vec::new(),
-            total_count: Some(0),
             guidance: Some(guidance.into()),
         }
     }
 
     /// Create a success response with accounts.
-    pub fn success(accounts: Vec<AccountResult>, total_count: u32) -> Self {
+    pub fn success(accounts: Vec<AccountResult>) -> Self {
         Self {
-            status: None,
+            outcome: ResponseOutcome::Success,
             accounts,
-            total_count: Some(total_count),
             guidance: None,
         }
     }
@@ -121,7 +116,6 @@ pub fn list_accounts_with_conn(
         std::collections::BTreeMap::new()
     };
 
-    let total_count = u32::try_from(accounts.len()).unwrap_or(u32::MAX);
     let accounts: Vec<AccountResult> = accounts
         .into_iter()
         .map(|account| {
@@ -154,7 +148,7 @@ pub fn list_accounts_with_conn(
             }
         })
         .collect();
-    Ok(ListAccountsResponse::success(accounts, total_count))
+    Ok(ListAccountsResponse::success(accounts))
 }
 
 /// Execute the `list_accounts` tool.
@@ -177,6 +171,7 @@ mod tests {
     use super::*;
     use crate::accounts::AccountMetadata;
     use crate::db::SqliteMailRepository;
+    use crate::server::tools::ResponseOutcome;
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -236,8 +231,7 @@ mod tests {
         let (_temp_dir2, config) = make_test_config();
         let response = list_accounts_with_conn(&config, &repo, default_params()).unwrap();
 
-        assert_eq!(response.status, None);
-        assert_eq!(response.total_count, Some(2));
+        assert_eq!(response.outcome, ResponseOutcome::Success);
         assert_eq!(response.accounts.len(), 2);
         // Verify account IDs
         let account_ids: Vec<_> = response.accounts.iter().map(|a| &a.account_id).collect();
@@ -259,8 +253,7 @@ mod tests {
         .expect("valid config");
         let response = list_accounts_with_conn(&config, &repo, default_params()).unwrap();
 
-        assert_eq!(response.status, None);
-        assert_eq!(response.total_count, Some(1));
+        assert_eq!(response.outcome, ResponseOutcome::Success);
         assert_eq!(response.accounts.len(), 1);
         assert_eq!(response.accounts[0].account_id, "ews://account-b");
     }
@@ -289,8 +282,7 @@ mod tests {
         let (_temp_dir2, config) = make_test_config();
         let response = list_accounts_with_conn(&config, &repo, default_params()).unwrap();
 
-        assert_eq!(response.status, Some(ResponseStatus::NotFound));
-        assert_eq!(response.total_count, Some(0));
+        assert_eq!(response.outcome, ResponseOutcome::NotFound);
         assert!(response.guidance.is_some());
     }
 
@@ -320,7 +312,7 @@ mod tests {
         .expect("valid config");
         let response = list_accounts_with_conn(&config, &repo, default_params()).unwrap();
 
-        assert_eq!(response.status, None);
+        assert_eq!(response.outcome, ResponseOutcome::Success);
         let account_a = response
             .accounts
             .iter()
@@ -339,7 +331,7 @@ mod tests {
         };
         let response = list_accounts_with_conn(&config, &repo, params).unwrap();
 
-        assert_eq!(response.status, None);
+        assert_eq!(response.outcome, ResponseOutcome::Success);
         assert_eq!(response.accounts.len(), 2);
 
         // Account A should have mailboxes
@@ -360,7 +352,7 @@ mod tests {
         let (_temp_dir2, config) = make_test_config();
         let response = list_accounts_with_conn(&config, &repo, default_params()).unwrap();
 
-        assert_eq!(response.status, None);
+        assert_eq!(response.outcome, ResponseOutcome::Success);
         assert!(
             response.guidance.is_none(),
             "guidance should be None on success"

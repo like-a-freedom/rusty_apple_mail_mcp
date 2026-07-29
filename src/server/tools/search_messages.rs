@@ -7,7 +7,7 @@ use crate::db::{MailRepository, MessageRow, SearchParams, tokenize};
 use crate::error::MailMcpError;
 use crate::mail::EmlxLocator;
 use crate::mail::parse_emlx_without_attachment_content;
-use crate::server::tools::ResponseStatus;
+use crate::server::tools::ResponseOutcome;
 use crate::{MailConfig, MessageMeta};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -83,37 +83,22 @@ const fn is_zero(n: &u32) -> bool {
 /// Response for `search_messages` tool.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SearchMessagesResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<ResponseStatus>,
+    pub outcome: ResponseOutcome,
     pub messages: Vec<SearchMessageResult>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_count: Option<u32>,
     pub has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next_offset: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guidance: Option<String>,
 }
 
 impl SearchMessagesResponse {
-    /// Create an error response with a guidance message.
-    pub fn error(guidance: impl Into<String>) -> Self {
-        Self {
-            status: Some(ResponseStatus::Error),
-            guidance: Some(guidance.into()),
-            messages: Vec::new(),
-            total_count: None,
-            has_more: false,
-            next_offset: None,
-        }
-    }
-
-    /// Create a not found response with a guidance message.
+    /// Create a not-found response with a guidance message.
     pub fn not_found(guidance: impl Into<String>) -> Self {
         Self {
-            status: Some(ResponseStatus::NotFound),
+            outcome: ResponseOutcome::NotFound,
             guidance: Some(guidance.into()),
             messages: Vec::new(),
-            total_count: None,
             has_more: false,
             next_offset: None,
         }
@@ -123,8 +108,7 @@ impl SearchMessagesResponse {
     pub fn partial(messages: Vec<SearchMessageResult>, guidance: impl Into<String>) -> Self {
         let has_more = messages.len() >= 100;
         Self {
-            status: Some(ResponseStatus::Partial),
-            total_count: None,
+            outcome: ResponseOutcome::Partial,
             has_more,
             next_offset: None,
             guidance: Some(guidance.into()),
@@ -139,8 +123,7 @@ impl SearchMessagesResponse {
         next_offset: Option<u32>,
     ) -> Self {
         Self {
-            status: None,
-            total_count: None,
+            outcome: ResponseOutcome::Success,
             has_more,
             next_offset,
             guidance: None,

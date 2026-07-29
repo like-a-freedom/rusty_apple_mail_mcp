@@ -5,7 +5,8 @@ use crate::db::{MailRepository, SqliteMailRepository};
 use crate::error::MailMcpError;
 use crate::mail::{AttachmentStore, CacheRegistry, EmlxLocator, FilesystemAttachmentStore};
 use crate::server::tools::{
-    GetAttachmentParams, GetMessageParams, ListAccountsParams, SearchMessagesParams,
+    GetAttachmentParams, GetAttachmentResponse, GetMessageParams, GetMessageResponse,
+    ListAccountsParams, ListAccountsResponse, SearchMessagesParams, SearchMessagesResponse,
     get_attachment_content as tool_get_attachment, get_message as tool_get_message,
     list_accounts as tool_list_accounts, search_messages_async as tool_search_messages,
 };
@@ -86,10 +87,15 @@ impl MailMcpServer {
         )
     }
 
-    /// Create a read-only tool definition backed by a typed params schema.
-    fn read_only_tool<T: JsonSchema>(name: &'static str, description: &'static str) -> Tool {
-        Tool::new(name, description, Self::tool_schema::<T>())
+    /// Create a read-only tool definition with typed input and output schemas.
+    fn read_only_tool<TParams, TResponse>(name: &'static str, description: &'static str) -> Tool
+    where
+        TParams: JsonSchema,
+        TResponse: JsonSchema + 'static,
+    {
+        Tool::new(name, description, Self::tool_schema::<TParams>())
             .with_annotations(ToolAnnotations::new().read_only(true))
+            .with_output_schema::<TResponse>()
     }
 
     /// Format an elapsed duration as fractional seconds with millisecond precision.
@@ -147,25 +153,25 @@ impl MailMcpServer {
     #[must_use]
     pub fn tool_definitions() -> Vec<Tool> {
         vec![
-            Self::read_only_tool::<SearchMessagesParams>(
+            Self::read_only_tool::<SearchMessagesParams, SearchMessagesResponse>(
                 "search_messages",
                 "Search Apple Mail by subject, date, sender, participant, account, or mailbox. \
                  Returns id/subject/from/date/mailbox per result. At least one filter required.",
             ),
-            Self::read_only_tool::<ListAccountsParams>(
+            Self::read_only_tool::<ListAccountsParams, ListAccountsResponse>(
                 "list_accounts",
                 "List available mail accounts for search_messages. \
                  Set include_mailboxes=true to get mailboxes grouped by account.",
             ),
-            Self::read_only_tool::<GetMessageParams>(
+            Self::read_only_tool::<GetMessageParams, GetMessageResponse>(
                 "get_message",
-                "Get full email by message_id: body, recipients, attachments. \
-                 Recipients omitted by default; set include_recipients=true if needed.",
+                "Get email by message_id with body, recipients, attachments. \
+                 Body delivered via bounded content window. Recipients omitted by default.",
             ),
-            Self::read_only_tool::<GetAttachmentParams>(
+            Self::read_only_tool::<GetAttachmentParams, GetAttachmentResponse>(
                 "get_attachment_content",
-                "Extract text content from an attachment. \
-                 attachment_id format: \"{message_id}:{index}\" from get_message attachments list.",
+                "Extract text content from an attachment via bounded content window. \
+                 attachment_id format: \"{message_id}:{index}\" from get_message.",
             ),
         ]
     }
@@ -215,13 +221,12 @@ impl ServerHandler for MailMcpServer {
                 "name": "apple-mail-mcp",
                 "version": env!("CARGO_PKG_VERSION")
             },
-            "instructions": "Read-only access to Apple Mail. \
-             Workflow: 1) list_accounts for discovery. \
-             Use account_id as the `account` filter in search_messages. \
-             2) search_messages to find emails — use message_id from results. \
-             3) get_message to read full email. \
-             4) get_attachment_content for attachment text. \
-             Skip search if message_id already known."
+            "instructions": "Read-only Apple Mail access. Four tools: list_accounts, search_messages, get_message, get_attachment_content. \
+             Workflow: list_accounts → search_messages (shortlist) → get_message (body/attachments) → get_attachment_content. \
+             Skip search if message_id is already known. \
+             All content delivered via bounded windows. Pass offset and source_revision to continue. \
+             Scope = startup account allowlist (--scope-account). Filter = per-call search constraint (search --account). \
+             Partial/not_found responses include guidance. Restart at offset 0 on revision mismatch."
         });
         serde_json::from_value(json).expect("valid ServerInfo")
     }
@@ -404,11 +409,38 @@ mod tests {
         for tool in &tools {
             let desc = tool.description.as_deref().unwrap_or("");
             assert!(
-                desc.len() < 200,
-                "Tool '{}' description is {} chars (max 200): {}",
+                desc.len() <= 320,
+                "Tool '{}' description is {} bytes (max 320): {}",
                 tool.name,
                 desc.len(),
                 desc
+            );
+        }
+    }
+
+    #[test]
+    fn server_info_instructions_within_budget() {
+        let (_temp_dir, config) = create_temp_config();
+        let server = MailMcpServer::new(config).expect("server creation");
+        let info = server.get_info();
+        let json = serde_json::to_value(&info).expect("serialize server info");
+        let instructions = json["instructions"].as_str().expect("instructions string");
+        assert!(
+            instructions.len() <= 900,
+            "ServerInfo instructions is {} bytes (max 900): {}",
+            instructions.len(),
+            instructions
+        );
+    }
+
+    #[test]
+    fn all_tools_have_output_schema() {
+        let tools = MailMcpServer::tool_definitions();
+        for tool in &tools {
+            assert!(
+                tool.output_schema.is_some(),
+                "Tool '{}' should have outputSchema",
+                tool.name
             );
         }
     }

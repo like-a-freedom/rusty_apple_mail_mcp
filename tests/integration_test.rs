@@ -5,6 +5,7 @@ mod support;
 use rusty_apple_mail_mcp::db::SqliteMailRepository;
 use rusty_apple_mail_mcp::error::MailMcpError;
 use rusty_apple_mail_mcp::mail::{CacheRegistry, EmlxLocator, FilesystemAttachmentStore};
+use rusty_apple_mail_mcp::server::tools::ResponseOutcome;
 use rusty_apple_mail_mcp::server::{MailMcpServer, tools::*};
 use support::{
     make_restricted_test_config, make_test_config, make_test_db, seed_emlx_in_account,
@@ -51,8 +52,8 @@ fn list_accounts_returns_distinct_accounts() {
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
-    assert_eq!(response.total_count, Some(2));
+    assert_eq!(response.outcome, ResponseOutcome::Success);
+    // total_count removed per ADR-0008
     assert_eq!(response.accounts[0].account_id, "ews://account-b");
     assert_eq!(response.accounts[1].account_id, "imap://account-a");
     assert_eq!(
@@ -81,8 +82,8 @@ fn list_accounts_hides_disallowed_accounts() {
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
-    assert_eq!(response.total_count, Some(1));
+    assert_eq!(response.outcome, ResponseOutcome::Success);
+    // total_count removed per ADR-0008
     assert_eq!(response.accounts[0].account_id, "ews://account-b");
 }
 
@@ -107,8 +108,8 @@ fn search_by_subject_returns_matching_messages() {
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
-    assert_eq!(response.total_count, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
+    // total_count removed per ADR-0008
     assert_eq!(response.messages[0].subject, "Q3 Review");
 }
 
@@ -152,7 +153,7 @@ fn search_by_subject_falls_back_to_full_string_when_token_search_returns_nothing
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
     assert!(
         !response.messages.is_empty(),
         "Should find message via fallback"
@@ -184,8 +185,8 @@ fn search_by_account_returns_only_matching_messages() {
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
-    assert_eq!(response.total_count, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
+    // total_count removed per ADR-0008
     assert_eq!(response.messages[0].mailbox, "Inbox");
     assert_eq!(response.messages[0].subject, "Budget Planning");
 }
@@ -213,8 +214,8 @@ fn search_messages_defaults_to_allowed_accounts_only() {
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
-    assert_eq!(response.total_count, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
+    // total_count removed per ADR-0008
     assert_eq!(response.messages[0].id, "2");
 }
 
@@ -297,8 +298,8 @@ fn search_messages_reports_attachment_count_without_body_preview() {
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
-    assert_eq!(response.total_count, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
+    // total_count removed per ADR-0008
     assert_eq!(response.messages[0].attachment_count, 1);
     assert_eq!(response.messages[0].body_preview, None);
 }
@@ -334,8 +335,8 @@ fn search_messages_prefers_database_summary_and_attachment_metadata() {
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
-    assert_eq!(response.total_count, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
+    // total_count removed per ADR-0008
     assert_eq!(response.messages[0].attachment_count, 2);
     assert_eq!(
         response.messages[0].body_preview.as_deref(),
@@ -380,8 +381,8 @@ fn search_messages_falls_back_to_emlx_preview_when_database_summary_is_missing()
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
-    assert_eq!(response.total_count, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
+    // total_count removed per ADR-0008
     assert_eq!(
         response.messages[0].body_preview.as_deref(),
         Some("Fallback preview from emlx body")
@@ -441,8 +442,8 @@ fn search_messages_counts_attachments_from_database_for_nested_mailbox_results()
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
-    assert_eq!(response.total_count, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
+    // total_count removed per ADR-0008
     assert_eq!(response.messages[0].attachment_count, 1);
 }
 
@@ -513,11 +514,14 @@ fn get_message_returns_body_and_attachment_summary() {
             include_attachments_summary: true,
 
             include_recipients: false,
+            offset: 0,
+            limit: 8192,
+            source_revision: None,
         },
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
     let message = response.message.expect("message payload");
     assert_eq!(message.subject, "Q3 Review");
     assert!(message.body.expect("body").contains("Hello from emlx body"));
@@ -564,11 +568,14 @@ fn get_attachment_content_returns_text_for_text_attachment() {
         GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
+            offset: 0,
+            limit: rusty_apple_mail_mcp::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         },
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
     let attachment = response.attachment.expect("attachment payload");
     assert_eq!(attachment.content.expect("content"), "Attached text");
 }
@@ -591,6 +598,9 @@ fn get_message_blocks_disallowed_accounts() {
             include_attachments_summary: false,
 
             include_recipients: false,
+            offset: 0,
+            limit: 8192,
+            source_revision: None,
         },
     )
     .unwrap_err();
@@ -638,6 +648,9 @@ fn get_attachment_blocks_disallowed_accounts() {
         GetAttachmentParams {
             attachment_id: "1:0".to_string(),
             message_id: "1".to_string(),
+            offset: 0,
+            limit: rusty_apple_mail_mcp::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         },
     )
     .unwrap_err();
@@ -685,11 +698,14 @@ fn get_message_reads_body_from_nested_mailbox_uuid_data_layout() {
             include_attachments_summary: true,
 
             include_recipients: false,
+            offset: 0,
+            limit: 8192,
+            source_revision: None,
         },
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
     let message = response.message.expect("message payload");
     assert_eq!(message.body.as_deref(), Some("Nested mailbox body\n"));
 }
@@ -740,11 +756,14 @@ fn get_attachment_reads_attachment_from_nested_mailbox_uuid_data_layout() {
         GetAttachmentParams {
             attachment_id: "2:0".to_string(),
             message_id: "2".to_string(),
+            offset: 0,
+            limit: rusty_apple_mail_mcp::DEFAULT_WINDOW_BYTES,
+            source_revision: None,
         },
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
     let attachment = response.attachment.expect("attachment payload");
     assert_eq!(attachment.filename, "agenda.txt");
     assert_eq!(attachment.content.as_deref(), Some("Agenda attachment"));
@@ -810,11 +829,14 @@ fn get_message_prefers_message_id_match_over_wrong_numeric_hint() {
             include_attachments_summary: false,
 
             include_recipients: false,
+            offset: 0,
+            limit: 8192,
+            source_revision: None,
         },
     )
     .unwrap();
 
-    assert_eq!(response.status, None);
+    assert_eq!(response.outcome, ResponseOutcome::Success);
     let message = response.message.expect("message payload");
     assert_eq!(message.body.as_deref(), Some("Correct Message-ID body\n"));
 }
@@ -854,11 +876,14 @@ fn get_message_uses_cache_for_repeated_calls() {
         include_body: true,
         include_attachments_summary: true,
         include_recipients: false,
+        offset: 0,
+        limit: 8192,
+        source_revision: None,
     };
 
     let (repo, store) = open_repo_store(&config);
     let first = get_message(&repo, &store, &config, &test_locator(), params.clone()).unwrap();
-    assert_eq!(first.status, None);
+    assert_eq!(first.outcome, ResponseOutcome::Success);
     let first_message = first.message.expect("first message");
     assert!(
         first_message
@@ -868,7 +893,7 @@ fn get_message_uses_cache_for_repeated_calls() {
     );
 
     let second = get_message(&repo, &store, &config, &test_locator(), params).unwrap();
-    assert_eq!(second.status, None);
+    assert_eq!(second.outcome, ResponseOutcome::Success);
     let second_message = second.message.expect("second message");
     assert!(
         second_message

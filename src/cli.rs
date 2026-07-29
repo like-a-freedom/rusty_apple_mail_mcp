@@ -1,6 +1,7 @@
 //! CLI interface for Apple Mail MCP tools.
 
 pub mod commands;
+pub mod execution;
 
 use clap::Parser;
 
@@ -18,8 +19,13 @@ pub struct Cli {
     pub mail_version: Option<String>,
 
     /// Account selector(s) - comma-separated account identifiers or email addresses
-    #[arg(long, env = "APPLE_MAIL_ACCOUNT")]
-    pub account: Option<String>,
+    /// Defines the startup Scope (allowlist). All queries are intersected with this.
+    #[arg(long, env = "APPLE_MAIL_ACCOUNT", alias = "account")]
+    pub scope_account: Option<String>,
+
+    /// Pretty-print JSON output (default: compact)
+    #[arg(long, default_value = "false")]
+    pub pretty: bool,
 
     /// Run as MCP server (stdin/stdout protocol)
     #[command(subcommand)]
@@ -98,6 +104,15 @@ pub struct GetMessageArgs {
     /// Include To/CC recipients (default: false)
     #[arg(long, default_value = "false")]
     pub include_recipients: bool,
+    /// Byte offset for content window continuation
+    #[arg(long, default_value = "0")]
+    pub offset: usize,
+    /// Maximum bytes per content window
+    #[arg(long, default_value_t = crate::server::content_delivery::DEFAULT_WINDOW_BYTES)]
+    pub limit: usize,
+    /// Source revision from a previous content window
+    #[arg(long)]
+    pub source_revision: Option<String>,
 }
 
 /// Arguments for get_attachment command.
@@ -109,6 +124,15 @@ pub struct GetAttachmentArgs {
     /// Parent message ID (needed to locate the attachment file)
     #[arg(long, required = true)]
     pub message_id: String,
+    /// Byte offset for content window continuation
+    #[arg(long, default_value = "0")]
+    pub offset: usize,
+    /// Maximum bytes per content window
+    #[arg(long, default_value_t = crate::server::content_delivery::DEFAULT_WINDOW_BYTES)]
+    pub limit: usize,
+    /// Source revision from a previous content window
+    #[arg(long)]
+    pub source_revision: Option<String>,
 }
 
 pub use commands::{get_attachment, get_message, list_accounts, search_messages};

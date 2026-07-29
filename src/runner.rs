@@ -7,6 +7,7 @@ use clap::Parser;
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
+use crate::cli::execution;
 use crate::cli::{Cli, Command};
 use crate::config::{MailConfig, MailConfigBuilder, MailConfigOverrides};
 use crate::error::MailMcpError;
@@ -34,51 +35,54 @@ fn init_tracing(log_level: Option<&str>) {
     });
 }
 
-/// Print a CLI error as a JSON envelope on stdout and log to stderr.
-fn print_error_envelope(err: &crate::error::MailMcpError) -> anyhow::Result<()> {
-    tracing::debug!("CLI error: {err}");
-    let envelope = crate::error::CliErrorResponse::from_error(err);
-    serde_json::to_writer_pretty(std::io::stdout(), &envelope)?;
-    Ok(())
-}
-
 /// Run the application.
 ///
 /// This is the main entry point called from `main.rs`.
 /// All startup logic is centralized here for testability.
 pub async fn run() -> Result<()> {
+    let used_legacy_scope_account = legacy_scope_account_used(std::env::args_os());
     let cli = Cli::parse();
     let config = match build_config(&cli) {
         Ok(config) => config,
         Err(err) => {
             init_tracing(None);
-            print_error_envelope(&err)?;
-            return Ok(());
+            warn_legacy_scope_account(used_legacy_scope_account);
+            execution::write_error(&err);
+            std::process::exit(i32::from(execution::exit_code::CONFIG));
         }
     };
 
     init_tracing(config.log_level.as_deref());
+    warn_legacy_scope_account(used_legacy_scope_account);
 
     match cli.command {
         Some(Command::ListAccounts(args)) => {
-            if let Err(err) = crate::cli::commands::list_accounts(&config, args.include_mailboxes) {
-                print_error_envelope(&err)?;
-            }
+            let exit = execution::execute(
+                || crate::cli::commands::list_accounts(&config, args.include_mailboxes),
+                cli.pretty,
+            );
+            std::process::exit(i32::from(exit));
         }
         Some(Command::Search(args)) => {
-            if let Err(err) = crate::cli::commands::search_messages(&config, args) {
-                print_error_envelope(&err)?;
-            }
+            let exit = execution::execute(
+                || crate::cli::commands::search_messages(&config, args),
+                cli.pretty,
+            );
+            std::process::exit(i32::from(exit));
         }
         Some(Command::GetMessage(args)) => {
-            if let Err(err) = crate::cli::commands::get_message(&config, args) {
-                print_error_envelope(&err)?;
-            }
+            let exit = execution::execute(
+                || crate::cli::commands::get_message(&config, args),
+                cli.pretty,
+            );
+            std::process::exit(i32::from(exit));
         }
         Some(Command::GetAttachment(args)) => {
-            if let Err(err) = crate::cli::commands::get_attachment(&config, args) {
-                print_error_envelope(&err)?;
-            }
+            let exit = execution::execute(
+                || crate::cli::commands::get_attachment(&config, args),
+                cli.pretty,
+            );
+            std::process::exit(i32::from(exit));
         }
         None => {
             tracing::info!(
@@ -100,8 +104,31 @@ fn build_config(cli: &Cli) -> Result<MailConfig, MailMcpError> {
     MailConfigBuilder::from_overrides(MailConfigOverrides {
         mail_directory: cli.mail_directory.clone(),
         mail_version: cli.mail_version.clone(),
-        account: cli.account.clone(),
+        account: cli.scope_account.clone(),
     })
+}
+
+fn legacy_scope_account_used(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
+    const SUBCOMMANDS: [&str; 4] = ["list-accounts", "search", "get-message", "get-attachment"];
+
+    for arg in args.into_iter().skip(1) {
+        let arg = arg.to_string_lossy();
+        if arg == "--" || SUBCOMMANDS.contains(&arg.as_ref()) {
+            break;
+        }
+        if arg == "--account" || arg.starts_with("--account=") {
+            return true;
+        }
+    }
+    false
+}
+
+fn warn_legacy_scope_account(used_legacy_scope_account: bool) {
+    if used_legacy_scope_account {
+        eprintln!(
+            "warning: top-level --account is deprecated for startup Scope; use --scope-account. search --account remains the per-call Filter."
+        );
+    }
 }
 
 #[cfg(test)]
@@ -109,6 +136,7 @@ mod tests {
     use super::*;
     use crate::cli::Cli;
     use crate::error::MailMcpError;
+    use std::ffi::OsString;
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -117,6 +145,42 @@ mod tests {
         std::fs::create_dir_all(&db_dir).expect("mail data dir");
         std::fs::write(db_dir.join("Envelope Index"), b"sqlite placeholder")
             .expect("db placeholder");
+    }
+
+    fn args(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn legacy_scope_account_used_detects_top_level_alias() {
+        assert!(legacy_scope_account_used(args(&[
+            "test",
+            "--account",
+            "Work",
+            "search",
+            "--sender",
+            "a@example.com",
+        ])));
+    }
+
+    #[test]
+    fn legacy_scope_account_used_ignores_search_filter() {
+        assert!(!legacy_scope_account_used(args(&[
+            "test",
+            "search",
+            "--account",
+            "Work",
+        ])));
+    }
+
+    #[test]
+    fn legacy_scope_account_used_ignores_canonical_scope_flag() {
+        assert!(!legacy_scope_account_used(args(&[
+            "test",
+            "--scope-account",
+            "Work",
+            "list-accounts",
+        ])));
     }
 
     #[test]

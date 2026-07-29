@@ -9,13 +9,18 @@ mod search_messages;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-/// Response status enum. Wrapped in Option — None means success (skipped in JSON).
+/// Explicit completed outcome for every non-error response.
+/// Errors are native rmcp errors, not successful response bodies.
+/// See ADR-0008.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum ResponseStatus {
-    Error,
-    NotFound,
+pub enum ResponseOutcome {
+    /// Requested data is complete for this call.
+    Success,
+    /// Data is valid but continuation or a declared extraction limitation remains.
     Partial,
+    /// A search/discovery request was processed but its corpus was empty.
+    NotFound,
 }
 
 pub use get_attachment::{
