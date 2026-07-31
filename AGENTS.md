@@ -34,7 +34,7 @@ WORKFLOW for any task:
 - **Do NOT introduce new dependencies without approval.**
 - **Do NOT use `unsafe` unless explicitly requested and justified in comments.**
 - **Do NOT fix formatting issues — `rustfmt` handles that automatically.**
-- **Every change must compile cleanly:** `cargo check && cargo clippy -- -D warnings`
+- **Every change must compile cleanly:** `cargo check && cargo clippy --all-targets --all-features -- -D warnings`
 - **Preserve behavior.** Refactoring must not change observable output or semantics.
 - **Always use `#[serde(deny_unknown_fields)]` on all tool param structs** so the JSON Schema shows `additionalProperties: false` — unknown fields are caught by serde, not silently ignored.
 - **Map ALL errors to native rmcp error types** via `From<MailMcpError> for McpError` in `error.rs`:
@@ -52,8 +52,8 @@ WORKFLOW for any task:
 # 1. Format — MUST pass before anything else
 cargo fmt --all -- --check
 
-# 2. Lint — zero warnings tolerated
-cargo clippy -- -D warnings
+# 2. Lint — zero warnings tolerated (all-targets covers test code, matching CI)
+cargo clippy --all-targets --all-features -- -D warnings
 
 # 3. Test — all tests must pass, no exceptions
 cargo test
@@ -90,7 +90,7 @@ resolver = "3"
 ```bash
 # Before every commit
 cargo fmt            # Format all code
-cargo clippy -- -D warnings  # Treat all warnings as errors
+cargo clippy --all-targets --all-features -- -D warnings  # Treat all warnings as errors (incl. test code)
 cargo test           # All tests must pass
 cargo doc --no-deps  # Docs must build without warnings
 ```
