@@ -144,7 +144,31 @@ fn parse_docx_xml(xml: &str) -> Result<String, ExtractionError> {
                         in_cell = true;
                         current_cell.clear();
                     }
+                    "br" => {
+                        // Word stores intra-paragraph line breaks as <w:br/>.
+                        // Emit a newline so text on either side does not get glued.
+                        if in_cell {
+                            current_cell.push('\n');
+                        } else {
+                            current_paragraph.push('\n');
+                        }
+                    }
                     _ => {}
+                }
+            }
+            Ok(Event::Empty(e)) => {
+                // <w:br/> is self-closing, so it arrives as Event::Empty.
+                let binding = e.name();
+                let name = binding.as_ref();
+                let local_name = String::from_utf8_lossy(name);
+                let local_name = local_name.split(':').next_back().unwrap_or(&local_name);
+
+                if local_name == "br" {
+                    if in_cell {
+                        current_cell.push('\n');
+                    } else {
+                        current_paragraph.push('\n');
+                    }
                 }
             }
             Ok(Event::Text(e)) => {
@@ -163,7 +187,7 @@ fn parse_docx_xml(xml: &str) -> Result<String, ExtractionError> {
                 match local_name {
                     "t" => {
                         in_text = false;
-                        // Apply formatting and add to current paragraph or cell
+                        // Apply formatting and add to current paragraph or cell.
                         let formatted = apply_formatting(&text_content, run_bold, run_italic);
                         if in_cell {
                             current_cell.push_str(&formatted);
@@ -306,6 +330,7 @@ fn format_table(rows: &[Vec<String>]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn create_minimal_docx() -> Vec<u8> {
         use std::io::Write;
@@ -677,5 +702,328 @@ mod tests {
         let result = docx_to_markdown(&buf.into_inner());
         // Should return an error (either Utf8Error or XmlParse depending on how it fails)
         assert!(result.is_err());
+    }
+
+    /// Extracts text correctly when a paragraph contains an intra-paragraph line break
+    /// (`<w:br/>`): text on either side must not be glued together.
+    #[test]
+    fn docx_to_markdown_when_paragraph_has_line_break_then_text_not_glued() {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+
+            // [Content_Types].xml
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#,
+            ).unwrap();
+
+            // _rels/.rels
+            zip.start_file("_rels/.rels", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#,
+            ).unwrap();
+
+            // word/_rels/document.xml.rels
+            zip.start_file("word/_rels/document.xml.rels", options)
+                .unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#,
+            )
+            .unwrap();
+
+            // word/document.xml — "in the table" <br/> "to access"
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>Open an asset in the table</w:t></w:r>
+      <w:r><w:br/><w:t>to access the AI Asset Score.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"#,
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let result = docx_to_markdown(&buf.into_inner()).unwrap();
+        // The <w:br/> must separate the two lines, not glue them.
+        assert!(
+            result.contains("table\nto access"),
+            "Expected line break between lines but got: {}",
+            result
+        );
+        assert!(
+            !result.contains("tableto"),
+            "Should not have glued 'tableto': {}",
+            result
+        );
+    }
+
+    /// Numbers split across multiple `<w:t>` runs (e.g. timestamps like "06,000"
+    /// as "00:00:0" + "6" + ",000") must stay glued — no space inserted between runs.
+    #[test]
+    fn docx_to_markdown_when_number_split_across_runs_then_stays_glued() {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#,
+            ).unwrap();
+
+            zip.start_file("_rels/.rels", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#,
+            ).unwrap();
+
+            zip.start_file("word/_rels/document.xml.rels", options)
+                .unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#,
+            )
+            .unwrap();
+
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>00:00:0</w:t></w:r>
+      <w:r><w:t>6</w:t></w:r>
+      <w:r><w:t>,000</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"#,
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let result = docx_to_markdown(&buf.into_inner()).unwrap();
+        assert!(
+            result.contains("00:00:06,000"),
+            "Timestamp must stay intact, got: {}",
+            result
+        );
+        assert!(
+            !result.contains("00:00:0 6"),
+            "No space must be inserted inside the number: {}",
+            result
+        );
+    }
+
+    /// Extracts text correctly when a table cell's content contains a line break
+    /// (`<w:br/>`): text on either side must not be glued together.
+    #[test]
+    fn docx_to_markdown_when_table_cell_has_line_break_then_text_not_glued() {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#,
+            ).unwrap();
+
+            zip.start_file("_rels/.rels", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#,
+            ).unwrap();
+
+            zip.start_file("word/_rels/document.xml.rels", options)
+                .unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#,
+            )
+            .unwrap();
+
+            // word/document.xml — cell with "Hello" <br/> "World"
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Value</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Hello</w:t></w:r><w:r><w:br/><w:t>World</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Test</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>"#,
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let result = docx_to_markdown(&buf.into_inner()).unwrap();
+        assert!(
+            result.contains("Hello\nWorld"),
+            "Table cell should contain 'Hello\nWorld' but got: {}",
+            result
+        );
+        assert!(
+            !result.contains("HelloWorld"),
+            "Table cell words should not be glued: {}",
+            result
+        );
+    }
+
+    /// Regression test for the real-world bug: subtitle DOCX files with glued words.
+    /// Reproduces the structure from "All subtitles for TechDive videos" DOCX where
+    /// words like "00:00:06,000Open" and "tableto" were glued because `<w:br/>`
+    /// elements were ignored. Also verifies timestamps split across runs stay intact.
+    #[test]
+    fn docx_to_markdown_when_subtitle_content_with_line_breaks_then_words_separated() {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#,
+            ).unwrap();
+
+            zip.start_file("_rels/.rels", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#,
+            ).unwrap();
+
+            zip.start_file("word/_rels/document.xml.rels", options)
+                .unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#,
+            )
+            .unwrap();
+
+            // word/document.xml — realistic subtitle content:
+            // timestamps split across runs + <w:br/> between lines.
+            zip.start_file("word/document.xml", options).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>All subtitles for TechDive videos</w:t></w:r></w:p>
+    <w:p><w:r><w:t>00:00:0</w:t></w:r><w:r><w:t>6</w:t></w:r><w:r><w:t>,000</w:t></w:r><w:r><w:br/></w:r><w:r><w:t>Open an asset in the table</w:t></w:r><w:r><w:br/></w:r><w:r><w:t>to access the AI Asset Score.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>00:00:13,000</w:t></w:r><w:r><w:br/></w:r><w:r><w:t>The AI Asset Score provides</w:t></w:r><w:r><w:br/></w:r><w:r><w:t>an instant security overview.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>00:00:18,000</w:t></w:r><w:r><w:br/></w:r><w:r><w:t>Expand the score</w:t></w:r><w:r><w:t> block</w:t></w:r><w:r><w:br/></w:r><w:r><w:t>to explore the details.</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#,
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let result = docx_to_markdown(&buf.into_inner()).unwrap();
+
+        // Timestamps split across runs stay intact
+        assert!(
+            result.contains("00:00:06,000"),
+            "Timestamp must stay intact: {}",
+            result
+        );
+        assert!(
+            result.contains("00:00:13,000"),
+            "Timestamp must stay intact: {}",
+            result
+        );
+
+        // Line breaks are preserved, words not glued
+        assert!(
+            result.contains("table\nto access"),
+            "Line break must be preserved: {}",
+            result
+        );
+        assert!(
+            result.contains("provides\nan instant"),
+            "Line break must be preserved: {}",
+            result
+        );
+        assert!(
+            result.contains("score block\nto explore"),
+            "Line break must be preserved: {}",
+            result
+        );
+
+        // Negative assertions — the exact bug patterns are gone
+        assert!(
+            !result.contains("tableto"),
+            "Should not have glued 'tableto': {}",
+            result
+        );
+        assert!(
+            !result.contains("providesan"),
+            "Should not have glued 'providesan': {}",
+            result
+        );
+        assert!(
+            !result.contains("blockto"),
+            "Should not have glued 'blockto': {}",
+            result
+        );
+        assert!(
+            !result.contains("00:00:06,000Open"),
+            "Should not have glued timestamp+text: {}",
+            result
+        );
+        assert!(
+            !result.contains("00:00:0 6"),
+            "No space inside timestamp: {}",
+            result
+        );
     }
 }
