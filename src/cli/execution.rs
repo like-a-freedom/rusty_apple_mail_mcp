@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn exit_code_mapping_io_is_internal() {
-        let err = MailMcpError::Io(std::io::Error::new(std::io::ErrorKind::Other, "fail"));
+        let err = MailMcpError::Io(std::io::Error::other("fail"));
         assert_eq!(u8::from(&err), exit_code::INTERNAL);
     }
 

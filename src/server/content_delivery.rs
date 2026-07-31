@@ -341,8 +341,7 @@ mod tests {
         // which is at byte 18, rather than in the middle of "Second paragraph..."
         // The search region is [30-64..30] which is [0..30], finding "\n\n" at position 16
         assert!(w.bytes_returned <= 30);
-        let slice = std::str::from_utf8(&content.as_bytes()[w.offset..w.offset + w.bytes_returned])
-            .unwrap();
+        let slice = &content[w.offset..w.offset + w.bytes_returned];
         // Should end at or near the paragraph boundary
         assert!(
             slice.ends_with("\n\n") || !w.complete && w.bytes_returned > 0,
