@@ -13,8 +13,8 @@ use crate::server::tools::{
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams, ServerInfo,
-        Tool, ToolAnnotations,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ListToolsResult,
+        PaginatedRequestParams, ServerInfo, Tool, ToolAnnotations,
     },
     service::{RequestContext, RoleServer},
 };
@@ -237,18 +237,14 @@ impl ServerHandler for MailMcpServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         let tools = Self::tool_definitions();
-        Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-            meta: None,
-        })
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         let name = request.name;
         let args = request.arguments.unwrap_or_default();
         let started = Instant::now();
@@ -257,7 +253,7 @@ impl ServerHandler for MailMcpServer {
 
         Self::log_tool_completion(&name, started.elapsed(), outcome);
 
-        result
+        result.map(CallToolResponse::from)
     }
 }
 
