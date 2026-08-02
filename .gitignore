@@ -31,3 +31,4 @@ cobertura.xml
 .vscode/
 CONTEXT.md
 .agents/prompts/
+/.worktrees/
