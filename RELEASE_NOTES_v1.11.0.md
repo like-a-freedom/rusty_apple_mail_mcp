@@ -12,4 +12,4 @@
 - Local clippy gate aligned with CI (`--all-targets --all-features`).
 - `.worktrees/` directories added to `.gitignore`.
 
-Full quality gate green on this release: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` (411 tests), `cargo doc --no-deps`. Stdio smoke test (`initialize` + `tools/list`) returns 2 results, 0 errors.
+Full quality gate green on this release: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-targets --all-features` (406 tests), `cargo doc --no-deps`. Stdio smoke test (`initialize` + `tools/list`) returns 2 results, 0 errors.
