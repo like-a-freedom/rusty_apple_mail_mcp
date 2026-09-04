@@ -13,8 +13,8 @@ use crate::server::tools::{
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ListToolsResult,
-        PaginatedRequestParams, ServerInfo, Tool, ToolAnnotations,
+        CallToolRequestParams, CallToolResponse, CallToolResult, Implementation, ListToolsResult,
+        PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
     },
     service::{RequestContext, RoleServer},
 };
@@ -212,23 +212,24 @@ impl MailMcpServer {
 
 impl ServerHandler for MailMcpServer {
     fn get_info(&self) -> ServerInfo {
-        let json = json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {
-                "tools": {}
-            },
-            "serverInfo": {
-                "name": "apple-mail-mcp",
-                "version": env!("CARGO_PKG_VERSION")
-            },
-            "instructions": "Read-only Apple Mail access. Four tools: list_accounts, search_messages, get_message, get_attachment_content. \
-             Workflow: list_accounts → search_messages (shortlist) → get_message (body/attachments) → get_attachment_content. \
-             Skip search if message_id is already known. \
-             All content delivered via bounded windows. Pass offset and source_revision to continue. \
-             Scope = startup account allowlist (--scope-account). Filter = per-call search constraint (search --account). \
-             Partial/not_found responses include guidance. Restart at offset 0 on revision mismatch."
-        });
-        serde_json::from_value(json).expect("valid ServerInfo")
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new(
+                "apple-mail-mcp",
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_instructions(
+                "Read-only Apple Mail access. Four tools: list_accounts, search_messages, \
+                 get_message, get_attachment_content. \
+                 Workflow: list_accounts → search_messages (shortlist) → get_message \
+                 (body/attachments) → get_attachment_content. \
+                 Skip search if message_id is already known. \
+                 All content delivered via bounded windows. Pass offset and source_revision \
+                 to continue. \
+                 Scope = startup account allowlist (--scope-account). \
+                 Filter = per-call search constraint (search --account). \
+                 Partial/not_found responses include guidance. \
+                 Restart at offset 0 on revision mismatch.",
+            )
     }
 
     async fn list_tools(
@@ -387,8 +388,7 @@ mod tests {
         let (_temp_dir, config) = create_temp_config();
         let server = MailMcpServer::new(config).expect("server creation");
         let info = server.get_info();
-        // Just check that info is created, protocol_version type is ProtocolVersion enum
-        assert!(info.server_info.name.contains("apple-mail"));
+        assert_eq!(info.server_info.name, "apple-mail-mcp");
     }
 
     #[test]
