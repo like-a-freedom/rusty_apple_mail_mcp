@@ -6,6 +6,8 @@
 
 use std::io::{Cursor, Read};
 
+use quick_xml::XmlVersion;
+
 use crate::mail::extract::ExtractionError;
 
 /// Convert DOCX bytes to Markdown string.
@@ -58,6 +60,22 @@ pub fn docx_to_markdown(bytes: &[u8]) -> Result<String, ExtractionError> {
 
 /// Parse DOCX XML and convert to Markdown.
 #[allow(clippy::too_many_lines)]
+fn resolve_xml_reference(
+    reference: &quick_xml::events::BytesRef<'_>,
+) -> Result<String, ExtractionError> {
+    if let Some(character) = reference
+        .resolve_char_ref()
+        .map_err(|error| ExtractionError::XmlParse(error.to_string()))?
+    {
+        return Ok(character.to_string());
+    }
+
+    let name = reference.as_ref();
+    quick_xml::escape::resolve_predefined_entity(name)
+        .map(str::to_owned)
+        .ok_or_else(|| ExtractionError::XmlParse(format!("Unrecognized XML entity: &{name};")))
+}
+
 fn parse_docx_xml(xml: &str) -> Result<String, ExtractionError> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
@@ -83,9 +101,11 @@ fn parse_docx_xml(xml: &str) -> Result<String, ExtractionError> {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
                 let binding = e.name();
-                let name = binding.as_ref();
-                let local_name = String::from_utf8_lossy(name);
-                let local_name = local_name.split(':').next_back().unwrap_or(&local_name);
+                let local_name = binding
+                    .as_ref()
+                    .rsplit(':')
+                    .next()
+                    .unwrap_or(binding.as_ref());
 
                 match local_name {
                     "p" => {
@@ -111,10 +131,9 @@ fn parse_docx_xml(xml: &str) -> Result<String, ExtractionError> {
                     "pStyle" => {
                         // Check for style attributes
                         for attr in e.attributes().flatten() {
-                            let key = String::from_utf8_lossy(attr.key.as_ref());
+                            let key = attr.key.as_ref();
                             if key.ends_with("val") {
-                                let value = String::from_utf8_lossy(&attr.value);
-                                paragraph_style = parse_paragraph_style(&value);
+                                paragraph_style = parse_paragraph_style(&attr.value);
                             }
                         }
                     }
@@ -125,9 +144,9 @@ fn parse_docx_xml(xml: &str) -> Result<String, ExtractionError> {
                     "ilvl" => {
                         // List level
                         for attr in e.attributes().flatten() {
-                            let key = String::from_utf8_lossy(attr.key.as_ref());
+                            let key = attr.key.as_ref();
                             if key.ends_with("val")
-                                && let Ok(val) = String::from_utf8_lossy(&attr.value).parse::<u8>()
+                                && let Ok(val) = attr.value.parse::<u8>()
                             {
                                 list_level = Some(val);
                             }
@@ -159,9 +178,11 @@ fn parse_docx_xml(xml: &str) -> Result<String, ExtractionError> {
             Ok(Event::Empty(e)) => {
                 // <w:br/> is self-closing, so it arrives as Event::Empty.
                 let binding = e.name();
-                let name = binding.as_ref();
-                let local_name = String::from_utf8_lossy(name);
-                let local_name = local_name.split(':').next_back().unwrap_or(&local_name);
+                let local_name = binding
+                    .as_ref()
+                    .rsplit(':')
+                    .next()
+                    .unwrap_or(binding.as_ref());
 
                 if local_name == "br" {
                     if in_cell {
@@ -173,16 +194,28 @@ fn parse_docx_xml(xml: &str) -> Result<String, ExtractionError> {
             }
             Ok(Event::Text(e)) => {
                 if in_text {
-                    text_content.push_str(&String::from_utf8_lossy(e.as_ref()));
+                    let text = e.xml_content(XmlVersion::Implicit1_0);
+                    text_content.push_str(&text);
                 } else if in_cell {
-                    current_cell.push_str(&String::from_utf8_lossy(e.as_ref()));
+                    let text = e.xml_content(XmlVersion::Implicit1_0);
+                    current_cell.push_str(&text);
+                }
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                let resolved = resolve_xml_reference(&reference)?;
+                if in_text {
+                    text_content.push_str(&resolved);
+                } else if in_cell {
+                    current_cell.push_str(&resolved);
                 }
             }
             Ok(Event::End(e)) => {
                 let binding = e.name();
-                let name = binding.as_ref();
-                let local_name = String::from_utf8_lossy(name);
-                let local_name = local_name.split(':').next_back().unwrap_or(&local_name);
+                let local_name = binding
+                    .as_ref()
+                    .rsplit(':')
+                    .next()
+                    .unwrap_or(binding.as_ref());
 
                 match local_name {
                     "t" => {
@@ -400,6 +433,27 @@ mod tests {
         }
 
         buf.into_inner()
+    }
+
+    #[test]
+    fn docx_to_markdown_decodes_xml_references_in_paragraph_text() {
+        let mut archive = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut archive);
+            zip.start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(
+                br#"<w:document xmlns:w="urn:word"><w:body><w:p><w:r><w:t>Tom &amp; Jerry &#x2122;</w:t></w:r></w:p></w:body></w:document>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let markdown = docx_to_markdown(&archive.into_inner()).unwrap();
+        assert_eq!(markdown, "Tom & Jerry ™");
     }
 
     #[test]
