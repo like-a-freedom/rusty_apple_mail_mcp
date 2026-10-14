@@ -8,6 +8,26 @@ use std::io::{Cursor, Read};
 
 use crate::mail::extract::ExtractionError;
 
+fn local_name(name: &str) -> &str {
+    name.rsplit(':').next().unwrap_or(name)
+}
+
+fn resolve_xml_reference(
+    reference: &quick_xml::events::BytesRef<'_>,
+) -> Result<String, ExtractionError> {
+    if let Some(character) = reference
+        .resolve_char_ref()
+        .map_err(|error| ExtractionError::XmlParse(error.to_string()))?
+    {
+        return Ok(character.to_string());
+    }
+
+    let name = reference.as_ref();
+    quick_xml::escape::resolve_predefined_entity(name)
+        .map(str::to_owned)
+        .ok_or_else(|| ExtractionError::XmlParse(format!("Unrecognized XML entity: &{name};")))
+}
+
 /// Convert XLSX bytes to CSV string.
 ///
 /// # Arguments
@@ -85,10 +105,8 @@ fn parse_shared_strings(xml: &str) -> Result<Vec<String>, ExtractionError> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
-                let binding = e.name();
-                let name = binding.as_ref();
-                let local_name = String::from_utf8_lossy(name);
-                let local_name = local_name.split(':').next_back().unwrap_or(&local_name);
+                let name = e.name();
+                let local_name = local_name(name.as_ref());
 
                 match local_name {
                     "si" => {
@@ -102,13 +120,16 @@ fn parse_shared_strings(xml: &str) -> Result<Vec<String>, ExtractionError> {
                 }
             }
             Ok(Event::Text(e)) if in_t => {
-                current_text.push_str(&String::from_utf8_lossy(e.as_ref()));
+                let text = quick_xml::escape::unescape(e.as_ref())
+                    .map_err(|error| ExtractionError::XmlParse(error.to_string()))?;
+                current_text.push_str(&text);
+            }
+            Ok(Event::GeneralRef(reference)) if in_t => {
+                current_text.push_str(&resolve_xml_reference(&reference)?);
             }
             Ok(Event::End(e)) => {
-                let binding = e.name();
-                let name = binding.as_ref();
-                let local_name = String::from_utf8_lossy(name);
-                let local_name = local_name.split(':').next_back().unwrap_or(&local_name);
+                let name = e.name();
+                let local_name = local_name(name.as_ref());
 
                 match local_name {
                     "t" => {
@@ -170,10 +191,8 @@ fn parse_worksheet_to_csv(xml: &str, shared_strings: &[String]) -> Result<String
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
-                let binding = e.name();
-                let name = binding.as_ref();
-                let local_name = String::from_utf8_lossy(name);
-                let local_name = local_name.split(':').next_back().unwrap_or(&local_name);
+                let name = e.name();
+                let local_name = local_name(name.as_ref());
 
                 match local_name {
                     "row" => {
@@ -186,10 +205,8 @@ fn parse_worksheet_to_csv(xml: &str, shared_strings: &[String]) -> Result<String
 
                         // Check for cell type attribute
                         for attr in e.attributes().flatten() {
-                            let key = String::from_utf8_lossy(attr.key.as_ref());
-                            if key.ends_with('t') {
-                                let value = String::from_utf8_lossy(&attr.value);
-                                cell_type = Some(value.to_string());
+                            if attr.key.as_ref().ends_with("t") {
+                                cell_type = Some(attr.value.to_string());
                             }
                         }
                     }
@@ -208,13 +225,16 @@ fn parse_worksheet_to_csv(xml: &str, shared_strings: &[String]) -> Result<String
                 }
             }
             Ok(Event::Text(e)) if in_value => {
-                current_cell.push_str(&String::from_utf8_lossy(e.as_ref()));
+                let text = quick_xml::escape::unescape(e.as_ref())
+                    .map_err(|error| ExtractionError::XmlParse(error.to_string()))?;
+                current_cell.push_str(&text);
+            }
+            Ok(Event::GeneralRef(reference)) if in_value => {
+                current_cell.push_str(&resolve_xml_reference(&reference)?);
             }
             Ok(Event::End(e)) => {
-                let binding = e.name();
-                let name = binding.as_ref();
-                let local_name = String::from_utf8_lossy(name);
-                let local_name = local_name.split(':').next_back().unwrap_or(&local_name);
+                let name = e.name();
+                let local_name = local_name(name.as_ref());
 
                 match local_name {
                     "v" | "t" => {
@@ -609,6 +629,33 @@ mod tests {
 
         let result = xlsx_to_csv(&buf.into_inner()).unwrap();
         assert!(result.contains("Inline Text"));
+    }
+
+    #[test]
+    fn xlsx_to_csv_decodes_xml_references_in_shared_strings() {
+        use std::io::Write;
+
+        let mut archive = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut archive);
+            let options = zip::write::SimpleFileOptions::default();
+
+            zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+            zip.write_all(
+                br#"<x:worksheet xmlns:x="urn:sheet"><x:sheetData><x:row><x:c t="s"><x:v>0</x:v></x:c><x:c t="inlineStr"><x:is><x:t>Sheet &amp; XML &#x2122;</x:t></x:is></x:c></x:row></x:sheetData></x:worksheet>"#,
+            )
+            .unwrap();
+
+            zip.start_file("xl/sharedStrings.xml", options).unwrap();
+            zip.write_all(
+                br#"<x:sst xmlns:x="urn:strings"><x:si><x:t>Tom &amp; Jerry &#x2122;</x:t></x:si></x:sst>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let csv = xlsx_to_csv(&archive.into_inner()).unwrap();
+        assert_eq!(csv, "Tom & Jerry ™,Sheet & XML ™");
     }
 
     #[test]
