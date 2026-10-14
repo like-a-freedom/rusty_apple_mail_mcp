@@ -6,6 +6,8 @@
 
 use std::io::{Cursor, Read};
 
+use quick_xml::XmlVersion;
+
 use crate::mail::extract::ExtractionError;
 
 /// Convert PPTX bytes to plain text string.
@@ -91,9 +93,11 @@ fn parse_presentation(xml: &str) -> Result<Vec<String>, ExtractionError> {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
                 let binding = e.name();
-                let name = binding.as_ref();
-                let local_name = String::from_utf8_lossy(name);
-                let local_name = local_name.split(':').next_back().unwrap_or(&local_name);
+                let local_name = binding
+                    .as_ref()
+                    .rsplit(':')
+                    .next()
+                    .unwrap_or(binding.as_ref());
 
                 if local_name == "sldId" {
                     // Extract r:id attribute to find slide relationship
@@ -124,6 +128,22 @@ fn parse_presentation(xml: &str) -> Result<Vec<String>, ExtractionError> {
     Ok(slide_paths)
 }
 
+fn resolve_xml_reference(
+    reference: &quick_xml::events::BytesRef<'_>,
+) -> Result<String, ExtractionError> {
+    if let Some(character) = reference
+        .resolve_char_ref()
+        .map_err(|error| ExtractionError::XmlParse(error.to_string()))?
+    {
+        return Ok(character.to_string());
+    }
+
+    let name = reference.as_ref();
+    quick_xml::escape::resolve_predefined_entity(name)
+        .map(str::to_owned)
+        .ok_or_else(|| ExtractionError::XmlParse(format!("Unrecognized XML entity: &{name};")))
+}
+
 /// Extract text content from a slide XML.
 fn extract_slide_text(xml: &str) -> Result<String, ExtractionError> {
     use quick_xml::Reader;
@@ -131,31 +151,42 @@ fn extract_slide_text(xml: &str) -> Result<String, ExtractionError> {
 
     let mut reader = Reader::from_str(xml);
     let mut text_parts = Vec::new();
+    let mut current_text = String::new();
     let mut in_text = false;
 
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
                 let binding = e.name();
-                let name = binding.as_ref();
-                let local_name = String::from_utf8_lossy(name);
-                let local_name = local_name.split(':').next_back().unwrap_or(&local_name);
+                let local_name = binding
+                    .as_ref()
+                    .rsplit(':')
+                    .next()
+                    .unwrap_or(binding.as_ref());
 
                 if local_name == "t" {
                     in_text = true;
+                    current_text.clear();
                 }
             }
             Ok(Event::Text(e)) if in_text => {
-                text_parts.push(String::from_utf8_lossy(e.as_ref()).to_string());
+                let text = e.xml_content(XmlVersion::Implicit1_0);
+                current_text.push_str(&text);
+            }
+            Ok(Event::GeneralRef(reference)) if in_text => {
+                current_text.push_str(&resolve_xml_reference(&reference)?);
             }
             Ok(Event::End(e)) => {
                 let binding = e.name();
-                let name = binding.as_ref();
-                let local_name = String::from_utf8_lossy(name);
-                let local_name = local_name.split(':').next_back().unwrap_or(&local_name);
+                let local_name = binding
+                    .as_ref()
+                    .rsplit(':')
+                    .next()
+                    .unwrap_or(binding.as_ref());
 
                 if local_name == "t" {
                     in_text = false;
+                    text_parts.push(std::mem::take(&mut current_text));
                 }
             }
             Ok(Event::Eof) => break,
@@ -263,6 +294,34 @@ mod tests {
         }
 
         buf.into_inner()
+    }
+
+    #[test]
+    fn pptx_to_text_decodes_xml_references_in_slide_text() {
+        use std::io::Write;
+
+        let mut archive = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut archive);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("ppt/presentation.xml", options).unwrap();
+            zip.write_all(
+                br#"<p:presentation xmlns:p="urn:presentation"><p:sldIdLst><p:sldId id="1"/></p:sldIdLst></p:presentation>"#,
+            )
+            .unwrap();
+            zip.start_file("ppt/slides/slide1.xml", options).unwrap();
+            zip.write_all(
+                br#"<p:sld xmlns:p="urn:presentation" xmlns:a="urn:drawing"><a:t>Tom &amp; Jerry &#x2122;</a:t></p:sld>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let text = pptx_to_text(&archive.into_inner()).unwrap();
+        assert!(
+            text.contains("Tom & Jerry ™"),
+            "unexpected slide text: {text:?}"
+        );
     }
 
     #[test]
