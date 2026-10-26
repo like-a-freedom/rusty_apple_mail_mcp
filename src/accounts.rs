@@ -356,10 +356,7 @@ mod tests {
         let accounts = load_account_metadata_with_conn(&conn).expect("accounts metadata");
 
         let resolved = resolve_account_selectors(
-            &[
-                "Work Email".to_string(),
-                "personal@example.com".to_string(),
-            ],
+            &["Work Email".to_string(), "personal@example.com".to_string()],
             &accounts,
         )
         .expect("selectors should resolve");
