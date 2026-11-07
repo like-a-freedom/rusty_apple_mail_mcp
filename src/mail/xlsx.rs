@@ -4,7 +4,7 @@
 //! XLSX files are ZIP archives containing XML. This module extracts the first worksheet
 //! and converts it to CSV, handling shared strings and various cell types.
 
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use crate::mail::extract::ExtractionError;
 
@@ -78,14 +78,8 @@ fn read_shared_strings(
         return Ok(Vec::new());
     }
 
-    let mut content = String::new();
-    {
-        let mut file = archive.by_name("xl/sharedStrings.xml").map_err(|e| {
-            ExtractionError::Other(format!("Failed to open sharedStrings.xml: {e}"))
-        })?;
-        file.read_to_string(&mut content)
-            .map_err(|_| ExtractionError::Utf8Error)?;
-    }
+    let content = crate::mail::extract::read_zip_entry_bounded(archive, "xl/sharedStrings.xml")
+        .map_err(|e| ExtractionError::Other(format!("Failed to open sharedStrings.xml: {e}")))?;
 
     parse_shared_strings(&content)
 }
@@ -162,14 +156,8 @@ fn read_worksheet(
     sheet_path: &str,
     shared_strings: &[String],
 ) -> Result<String, ExtractionError> {
-    let mut content = String::new();
-    {
-        let mut file = archive.by_name(sheet_path).map_err(|_| {
-            ExtractionError::InvalidFormat(format!("missing worksheet: {sheet_path}"))
-        })?;
-        file.read_to_string(&mut content)
-            .map_err(|_| ExtractionError::Utf8Error)?;
-    }
+    let content = crate::mail::extract::read_zip_entry_bounded(archive, sheet_path)
+        .map_err(|_| ExtractionError::InvalidFormat(format!("missing worksheet: {sheet_path}")))?;
 
     parse_worksheet_to_csv(&content, shared_strings)
 }

@@ -2,6 +2,12 @@
 
 use std::fmt;
 
+/// Hard cap on the decompressed size of a single archive entry (32 MiB).
+///
+/// Bounds memory use when extracting text from attacker-controlled
+/// .docx/.xlsx/.pptx attachments (decompression bombs).
+pub(crate) const MAX_DECOMPRESSED_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Errors that can occur during attachment text extraction.
 #[derive(Debug)]
 pub enum ExtractionError {

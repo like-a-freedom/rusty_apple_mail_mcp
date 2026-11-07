@@ -65,9 +65,12 @@ impl MailConfig {
     }
 
     pub fn is_mailbox_allowed(&self, mailbox_url: &str) -> bool {
-        mailbox_account_id(mailbox_url)
-            .as_deref()
-            .is_none_or(|account_id| self.is_account_allowed(account_id))
+        // Fail closed: while an allowlist is active, a mailbox URL that cannot
+        // be resolved to an account must not bypass the scope.
+        match mailbox_account_id(mailbox_url) {
+            Some(account_id) => self.is_account_allowed(&account_id),
+            None => self.allowed_account_ids.is_none(),
+        }
     }
 
     pub fn account_metadata(&self, account_id: &str) -> Option<&AccountMetadata> {
@@ -315,6 +318,32 @@ mod tests {
         assert!(cfg.is_mailbox_allowed("ews://work/Inbox"));
         assert!(cfg.is_mailbox_allowed("ews://work/Sent"));
         assert!(!cfg.is_mailbox_allowed("imap://personal/INBOX"));
+    }
+
+    #[test]
+    fn is_mailbox_allowed_fails_closed_for_unparseable_url_when_scope_set() {
+        let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
+        let cfg = MailConfig::new(
+            mail_directory,
+            mail_version,
+            Some(vec!["ews://work".to_string()]),
+            HashMap::new(),
+            None,
+        )
+        .unwrap();
+        // An allowlist is active, so a mailbox whose URL cannot be resolved to
+        // an account must not be treated as in scope.
+        assert!(!cfg.is_mailbox_allowed("no-scheme"));
+        assert!(!cfg.is_mailbox_allowed("ews://nopath"));
+    }
+
+    #[test]
+    fn is_mailbox_allowed_allows_unparseable_url_when_no_scope() {
+        let (_temp_dir, mail_directory, mail_version) = make_valid_config_inputs();
+        let cfg =
+            MailConfig::new(mail_directory, mail_version, None, HashMap::new(), None).unwrap();
+        assert!(cfg.is_mailbox_allowed("no-scheme"));
+        assert!(cfg.is_mailbox_allowed("ews://nopath"));
     }
 
     #[test]

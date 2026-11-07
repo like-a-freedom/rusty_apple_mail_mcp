@@ -4,7 +4,7 @@
 //! DOCX files are ZIP archives containing XML. This module extracts word/document.xml
 //! and converts it to Markdown, preserving headings, lists, tables, and basic formatting.
 
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use quick_xml::XmlVersion;
 
@@ -39,14 +39,9 @@ pub fn docx_to_markdown(bytes: &[u8]) -> Result<String, ExtractionError> {
         zip::read::ZipArchive::new(cursor).map_err(|_| ExtractionError::InvalidZip)?;
 
     // Extract document.xml
-    let mut document_xml = String::new();
-    {
-        let mut file = archive
-            .by_name("word/document.xml")
+    let document_xml =
+        crate::mail::extract::read_zip_entry_bounded(&mut archive, "word/document.xml")
             .map_err(|_| ExtractionError::InvalidFormat("missing word/document.xml".into()))?;
-        file.read_to_string(&mut document_xml)
-            .map_err(|_| ExtractionError::Utf8Error)?;
-    }
 
     // Parse and convert
     let markdown = parse_docx_xml(&document_xml)?;

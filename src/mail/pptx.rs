@@ -4,7 +4,7 @@
 //! `.pptx` files are `ZIP` archives containing `XML`. This module extracts text from slides
 //! and concatenates them with slide separators.
 
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use quick_xml::XmlVersion;
 
@@ -65,20 +65,12 @@ pub fn pptx_to_text(bytes: &[u8]) -> Result<String, ExtractionError> {
     Ok(result.trim().to_string())
 }
 
-/// Read a file from the ZIP archive.
+/// Read a file from the ZIP archive with a decompression-size cap.
 fn read_file_from_archive(
     archive: &mut zip::read::ZipArchive<Cursor<&[u8]>>,
     path: &str,
 ) -> Result<String, ExtractionError> {
-    let mut content = String::new();
-    {
-        let mut file = archive.by_name(path).map_err(|_| {
-            ExtractionError::InvalidFormat(format!("missing file in archive: {path}"))
-        })?;
-        file.read_to_string(&mut content)
-            .map_err(|_| ExtractionError::Utf8Error)?;
-    }
-    Ok(content)
+    crate::mail::extract::read_zip_entry_bounded(archive, path)
 }
 
 /// Parse presentation.xml to get slide paths in order.

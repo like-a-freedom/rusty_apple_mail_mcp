@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use mail_parser::{MessageParser, MimeHeaders};
+use mail_parser::MessageParser;
 use walkdir::WalkDir;
 
 use crate::domain::AttachmentMeta;
@@ -68,19 +68,52 @@ pub fn parse_emlx_without_attachment_content(path: &Path) -> Result<ParsedEmail,
     parse_emlx_internal(path, false)
 }
 
+/// Hard cap on .emlx file size read into memory (256 MiB).
+pub(crate) const MAX_EMLX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Hard cap on external attachment file size read into memory (256 MiB).
+pub(crate) const MAX_EXTERNAL_ATTACHMENT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Read a file into memory after enforcing a hard size cap.
+///
+/// Mail content is attacker-controlled; the cap keeps a multi-gigabyte
+/// message file (e.g. Mail Drop) from exhausting server memory.
+///
+/// # Errors
+///
+/// Returns [`MailMcpError::BodyFileNotFound`] when the file is missing and
+/// [`MailMcpError::Validation`] when the file exceeds `max_bytes`.
+fn read_file_bounded(path: &Path, max_bytes: u64) -> Result<Vec<u8>, MailMcpError> {
+    let len = match std::fs::metadata(path) {
+        Ok(meta) => meta.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(MailMcpError::BodyFileNotFound {
+                path: path.to_path_buf(),
+            });
+        }
+        Err(e) => return Err(MailMcpError::Io(e)),
+    };
+    if len > max_bytes {
+        return Err(MailMcpError::Validation(format!(
+            "File {} is too large to read into memory ({} bytes, limit {max_bytes} bytes).",
+            path.display(),
+            len
+        )));
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(MailMcpError::BodyFileNotFound {
+            path: path.to_path_buf(),
+        }),
+        Err(e) => Err(MailMcpError::Io(e)),
+    }
+}
+
 fn parse_emlx_internal(
     path: &Path,
     include_attachment_content: bool,
 ) -> Result<ParsedEmail, MailMcpError> {
-    let file_bytes = std::fs::read(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            MailMcpError::BodyFileNotFound {
-                path: path.to_path_buf(),
-            }
-        } else {
-            MailMcpError::Io(e)
-        }
-    })?;
+    let file_bytes = read_file_bounded(path, MAX_EMLX_BYTES)?;
 
     let header_end = file_bytes.iter().position(|b| *b == b'\n').ok_or_else(|| {
         MailMcpError::BodyFileNotFound {
@@ -128,14 +161,14 @@ fn parse_emlx_internal(
         // Get MIME type as string
         let mime_type = attachment.content_type().map_or_else(
             || "application/octet-stream".to_string(),
-            content_type_to_mime,
+            |content_type| content_type_to_mime(&content_type),
         );
 
         let (size_bytes, content) = resolve_attachment_payload(
             path,
             filename.as_deref(),
             attachment_index,
-            attachment.contents(),
+            attachment.decoded().as_ref(),
             include_attachment_content,
         );
 
@@ -181,7 +214,16 @@ fn resolve_attachment_payload(
             .map(|meta| meta.len())
             .unwrap_or(0);
         let content = if include_attachment_content {
-            fs::read(&external_path).ok()
+            // Fail soft like the previous `fs::read(..).ok()`, but bounded: an
+            // oversized external file is reported as size without content.
+            match read_file_bounded(&external_path, MAX_EXTERNAL_ATTACHMENT_BYTES) {
+                Ok(bytes) => Some(bytes),
+                Err(MailMcpError::Validation(msg)) => {
+                    tracing::warn!("attachment content skipped: {msg}");
+                    None
+                }
+                Err(_) => None,
+            }
         } else {
             None
         };
@@ -203,6 +245,9 @@ fn find_external_attachment_file(
     attachment_index: usize,
 ) -> Option<PathBuf> {
     let filename = filename?;
+    // Attachment filenames come from MIME headers and are attacker-controlled;
+    // only a single plain path component may be used for the lookup.
+    let filename = sanitize_attachment_filename(filename)?;
     let attachments_dir = external_attachments_message_dir(emlx_path)?;
 
     let direct_candidate = attachments_dir
@@ -244,10 +289,28 @@ fn emlx_message_storage_id(emlx_path: &Path) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
+/// Return the filename only when it is a single, plain path component.
+///
+/// Rejecting separators, `.`/`..` components, and NUL keeps the external
+/// attachment lookup confined to the message's own attachment directory.
+fn sanitize_attachment_filename(name: &str) -> Option<&str> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains('\0')
+    {
+        return None;
+    }
+    Some(trimmed)
+}
+
 fn content_type_to_mime(content_type: &mail_parser::ContentType<'_>) -> String {
-    match content_type.c_subtype.as_deref() {
-        Some(subtype) => format!("{}/{}", content_type.c_type, subtype),
-        None => content_type.c_type.to_string(),
+    match content_type.subtype() {
+        Some(subtype) => format!("{}/{}", content_type.ctype(), subtype),
+        None => content_type.ctype().to_string(),
     }
 }
 
@@ -530,6 +593,87 @@ Hello, World!
             result.attachments[0].content.as_deref(),
             Some(b"external payload".as_slice())
         );
+    }
+
+    #[test]
+    fn parse_emlx_rejects_path_traversal_in_external_attachment_filename() {
+        let temp_dir = TempDir::new().unwrap();
+        let messages_dir = temp_dir.path().join("Inbox.mbox").join("Messages");
+        fs::create_dir_all(&messages_dir).unwrap();
+        let emlx_path = messages_dir.join("777.emlx");
+
+        let email_content = concat!(
+            "From: attacker@example.com\n",
+            "To: victim@example.com\n",
+            "Subject: Traversal attachment\n",
+            "MIME-Version: 1.0\n",
+            "Content-Type: multipart/mixed; boundary=\"boundary\"\n",
+            "\n",
+            "--boundary\n",
+            "Content-Type: text/plain; charset=utf-8\n",
+            "\n",
+            "Body text\n",
+            "--boundary\n",
+            "Content-Transfer-Encoding: base64\n",
+            "Content-Disposition: attachment; filename=\"../../secret.txt\"\n",
+            "Content-Type: text/plain; name=\"../../secret.txt\"\n",
+            "X-Apple-Content-Length: 9\n",
+            "\n",
+            "\n",
+            "--boundary--\n"
+        );
+        let emlx_content = format!("{}\n{}", email_content.len(), email_content);
+        fs::write(&emlx_path, emlx_content).unwrap();
+
+        let attachments_root = temp_dir.path().join("Inbox.mbox").join("Attachments");
+        let attachment_dir = attachments_root.join("777").join("1");
+        fs::create_dir_all(&attachment_dir).unwrap();
+        // A file one level above the message's own attachment directory. A
+        // naive join of the attacker-controlled filename resolves here.
+        fs::write(attachments_root.join("secret.txt"), b"TOPSECRET").unwrap();
+
+        let result = parse_emlx(&emlx_path).unwrap();
+        assert_eq!(result.attachments.len(), 1);
+        assert!(
+            result.attachments[0].content.is_none(),
+            "attachment content must not be read outside the message attachment directory, got: {:?}",
+            result.attachments[0].content
+        );
+    }
+
+    #[test]
+    fn read_file_bounded_reads_file_within_limit() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("small.bin");
+        fs::write(&path, b"0123456789ABCDEF").unwrap();
+
+        let bytes = read_file_bounded(&path, 16).unwrap();
+
+        assert_eq!(bytes, b"0123456789ABCDEF");
+    }
+
+    #[test]
+    fn read_file_bounded_rejects_file_larger_than_limit() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("big.bin");
+        fs::write(&path, vec![0u8; 32]).unwrap();
+
+        let err = read_file_bounded(&path, 16).unwrap_err();
+
+        assert!(
+            matches!(err, MailMcpError::Validation(ref msg) if msg.contains("too large")),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn read_file_bounded_missing_file_returns_body_file_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("missing.bin");
+
+        let err = read_file_bounded(&path, 16).unwrap_err();
+
+        assert!(matches!(err, MailMcpError::BodyFileNotFound { .. }));
     }
 
     #[test]

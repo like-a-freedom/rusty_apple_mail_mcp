@@ -3,9 +3,11 @@
 //! Provides a unified `TextExtractor` trait, a registry of extractors indexed
 //! by MIME type, and concrete implementations for each supported format.
 
+mod archive;
 mod registry;
 mod traits;
 
+pub(crate) use archive::read_zip_entry_bounded;
 pub use registry::ExtractorRegistry;
 pub use traits::{ExtractionError, TextExtractor};
 
