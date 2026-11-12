@@ -56,6 +56,27 @@ fn skills_get_unknown_skill_exits_two_with_a_json_error() {
 }
 
 #[test]
+fn skills_get_unknown_reference_exits_two_with_a_json_error() {
+    let output = cli()
+        .args(["skills", "get", "apple-mail-cli", "--ref", "nope"])
+        .output()
+        .expect("run cli");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let last = stderr.lines().last().expect("error line");
+    let envelope: serde_json::Value = serde_json::from_str(last).expect("json error");
+    assert_eq!(envelope["error_kind"], "usage_error");
+    let message = envelope["message"].as_str().expect("message");
+    assert!(message.contains("references/cli-recipes.md"));
+    let guidance = envelope["guidance"].as_str().expect("guidance");
+    assert!(
+        !guidance.contains("bug"),
+        "a wrong reference must not be reported as a bug: {guidance}"
+    );
+}
+
+#[test]
 fn skills_works_without_a_configured_mail_directory() {
     let output = cli()
         .args([

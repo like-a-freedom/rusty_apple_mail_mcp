@@ -54,7 +54,6 @@ pub enum SkillsAction {
 /// Arguments of `skills list`.
 #[derive(Debug, Parser)]
 pub struct ListSkillsArgs {}
-
 /// Arguments of `skills get`.
 #[derive(Debug, Parser)]
 pub struct GetSkillArgs {
@@ -212,7 +211,7 @@ fn render_text(documents: &[&SkillDocument]) -> String {
             }
         })
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n")
 }
 
 /// Serialize a payload as JSON.
@@ -318,6 +317,10 @@ mod tests {
         assert!(text.contains("<!-- reference: references/cli-recipes.md -->"));
         assert!(text.contains("<!-- reference: references/process-contract.md -->"));
         assert!(text.starts_with("---"));
+        assert!(
+            !text.contains("\n\n\n"),
+            "documents must be separated by a single blank line"
+        );
     }
 
     #[test]

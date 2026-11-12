@@ -80,33 +80,35 @@ pub fn find(name: &str) -> Result<Option<&'static Skill>, MailMcpError> {
 
 /// Resolve a reference of a skill by path, file name, or stem.
 ///
-/// Matching order is exact path, then file name, then stem. The error message
-/// names the available references so a caller can correct itself.
+/// Matching order is exact path, then file name, then stem. A query that
+/// matches more than one reference at the same tier is ambiguous and is
+/// reported with its candidates rather than resolved arbitrarily.
 pub fn resolve_reference<'a>(
     skill: &'a Skill,
     query: &str,
 ) -> Result<&'a SkillDocument, MailMcpError> {
-    let matched = skill
+    let mut candidates = matching(skill, |document| document.path == query);
+    if candidates.is_empty() {
+        candidates = matching(skill, |document| file_name(&document.path) == query);
+    }
+    if candidates.is_empty() {
+        candidates = matching(skill, |document| file_stem(&document.path) == query);
+    }
+
+    match candidates.len() {
+        0 => Err(unknown_reference(skill, query)),
+        1 => Ok(candidates[0]),
+        _ => Err(ambiguous_reference(skill, query, &candidates)),
+    }
+}
+
+/// Collect the references of a skill that satisfy a matcher.
+fn matching(skill: &Skill, matcher: impl Fn(&SkillDocument) -> bool) -> Vec<&SkillDocument> {
+    skill
         .references
         .iter()
-        .find(|reference| reference.path == query)
-        .or_else(|| {
-            skill
-                .references
-                .iter()
-                .find(|reference| file_name(&reference.path) == query)
-        })
-        .or_else(|| {
-            skill
-                .references
-                .iter()
-                .find(|reference| file_stem(&reference.path) == query)
-        });
-
-    match matched {
-        Some(reference) => Ok(reference),
-        None => Err(unknown_reference(skill, query)),
-    }
+        .filter(|document| matcher(document))
+        .collect()
 }
 
 /// Build the catalog from the embedded documents.
@@ -173,6 +175,19 @@ fn unknown_reference(skill: &Skill, query: &str) -> MailMcpError {
     ))
 }
 
+/// Build the error for a reference query that matches more than one document.
+fn ambiguous_reference(skill: &Skill, query: &str, matches: &[&SkillDocument]) -> MailMcpError {
+    let candidates = matches
+        .iter()
+        .map(|reference| reference.path.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    MailMcpError::Validation(format!(
+        "Ambiguous reference '{query}' in skill '{}'. Matching references: {candidates}",
+        skill.name
+    ))
+}
+
 /// File name of a document path.
 fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
@@ -231,6 +246,32 @@ mod tests {
         let err = resolve_reference(skill(), "nope").expect_err("unknown reference");
         assert!(matches!(err, MailMcpError::Validation(_)));
         assert!(err.to_string().contains("references/cli-recipes.md"));
+    }
+
+    #[test]
+    fn resolve_reference_rejects_an_ambiguous_reference() {
+        let skill = Skill {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            document: SkillDocument {
+                path: "SKILL.md".to_string(),
+                content: "document".to_string(),
+            },
+            references: vec![
+                SkillDocument {
+                    path: "references/a/notes.md".to_string(),
+                    content: "a".to_string(),
+                },
+                SkillDocument {
+                    path: "references/b/notes.md".to_string(),
+                    content: "b".to_string(),
+                },
+            ],
+        };
+        let err = resolve_reference(&skill, "notes.md").expect_err("ambiguous reference");
+        assert!(err.to_string().contains("Ambiguous"));
+        assert!(err.to_string().contains("references/a/notes.md"));
+        assert!(err.to_string().contains("references/b/notes.md"));
     }
 
     #[test]

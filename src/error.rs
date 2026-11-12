@@ -59,8 +59,12 @@ fn classify_validation(msg: &str) -> ErrorKind {
         ErrorKind::MissingFilter
     } else if msg.contains("limit must be") || msg.contains("limit must") {
         ErrorKind::BadLimit
-    } else if msg.contains("Account filter") {
+    } else if msg.contains("Account filter") || msg.contains("excluded by APPLE_MAIL_ACCOUNT") {
         ErrorKind::AccountFilterInvalid
+    } else if msg.contains("body file not found") {
+        ErrorKind::IoFailure
+    } else if msg.contains("Failed to parse message body file") {
+        ErrorKind::InternalError
     } else if msg.contains("date") || msg.contains("YYYY-MM-DD") {
         ErrorKind::BadDate
     } else if msg.contains("message_id") || msg.contains("message id") {
@@ -468,6 +472,44 @@ mod tests {
         let json = serde_json::to_value(&envelope).unwrap();
         assert_eq!(json["error_kind"], "usage_error");
         assert_eq!(json["guidance"], "Fix the request parameters and retry.");
+    }
+
+    #[test]
+    fn error_kind_excluded_account_is_account_filter_invalid() {
+        let err = MailMcpError::Validation(
+            "This message belongs to an account excluded by APPLE_MAIL_ACCOUNT.".to_string(),
+        );
+        assert_eq!(ErrorKind::from(&err), ErrorKind::AccountFilterInvalid);
+    }
+
+    #[test]
+    fn error_kind_missing_body_file_is_io_failure() {
+        let err = MailMcpError::Validation(
+            "Message body file not found on disk (emlx missing). The message may not be downloaded \
+             yet or the local file was deleted."
+                .to_string(),
+        );
+        assert_eq!(ErrorKind::from(&err), ErrorKind::IoFailure);
+    }
+
+    #[test]
+    fn error_kind_corrupt_body_file_is_internal_error() {
+        let err = MailMcpError::Validation(
+            "Failed to parse message body file. The file may be corrupt or in an unexpected format."
+                .to_string(),
+        );
+        assert_eq!(ErrorKind::from(&err), ErrorKind::InternalError);
+    }
+
+    #[test]
+    fn guidance_for_excluded_account_points_at_the_scope() {
+        let err = MailMcpError::Validation(
+            "This message belongs to an account excluded by APPLE_MAIL_ACCOUNT.".to_string(),
+        );
+        let envelope = CliErrorResponse::from_error(&err);
+        let json = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(json["error_kind"], "account_filter_invalid");
+        assert!(json["guidance"].as_str().unwrap().contains("scope"));
     }
 
     #[test]
