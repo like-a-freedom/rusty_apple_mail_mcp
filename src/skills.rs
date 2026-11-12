@@ -19,7 +19,7 @@ const PROCESS_CONTRACT: &str =
     include_str!("../skills/apple-mail-cli/references/process-contract.md");
 
 /// Path of the skill document inside the skill.
-const SKILL_DOCUMENT_PATH: &str = "SKILL.md";
+pub const SKILL_DOCUMENT_PATH: &str = "SKILL.md";
 
 /// Path of the CLI recipes reference inside the skill.
 const CLI_RECIPES_PATH: &str = "references/cli-recipes.md";
