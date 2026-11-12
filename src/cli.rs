@@ -3,6 +3,8 @@
 pub mod commands;
 pub mod execution;
 
+pub mod skills;
+
 use clap::Parser;
 
 /// CLI arguments for the Apple Mail tool.
