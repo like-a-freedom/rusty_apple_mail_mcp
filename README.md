@@ -130,6 +130,30 @@ rusty_apple_mail_mcp get-attachment --message-id "12345" --attachment-id "12345:
 rusty_apple_mail_mcp get-attachment --message-id "12345" --attachment-id "12345:0" --offset 8192 --source-revision "..."
 ```
 
+#### Agent skills
+
+The binary serves its own usage guidance, so an agent always reads instructions that match the
+installed version. The command works without a configured mail directory.
+
+```bash
+# List the bundled skills
+rusty_apple_mail_mcp skills list
+
+# Read the skill
+rusty_apple_mail_mcp skills get apple-mail-cli
+
+# Read one reference only, or every reference at once
+rusty_apple_mail_mcp skills get apple-mail-cli --ref cli-recipes
+rusty_apple_mail_mcp skills get apple-mail-cli --full
+
+# Machine-readable output
+rusty_apple_mail_mcp skills list --json
+```
+
+`skills get` prints markdown, so the output can be piped straight into a context window. `--json`
+wraps the same documents in an envelope with `name`, `description`, and `documents`. An unknown skill
+name exits `2` with the structured error envelope on stderr.
+
 #### CLI Configuration
 
 CLI mode supports the same configuration options as MCP mode:

@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+- `skills` subcommand that serves the bundled agent skill, so an installed CLI can tell an agent how to use itself.
+
+### Changed
+- Unclassified validation failures now report `error_kind: "usage_error"` instead of `"internal_error"`.
+
 ## [1.13.0] - 2026-11-08
 
 ### Security
