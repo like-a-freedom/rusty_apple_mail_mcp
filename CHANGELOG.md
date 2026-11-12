@@ -9,6 +9,8 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 - Unclassified validation failures now report `error_kind: "usage_error"` instead of `"internal_error"`.
+- The bundled agent skill now loads its references by command, so an agent that received the skill from the CLI can reach them without the repository.
+- The `mcp-design` project skill moved its output template and worked example into `references/`, leaving only the doctrine and workflow in the main file.
 
 ## [1.13.0] - 2026-11-08
 

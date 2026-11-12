@@ -1,35 +1,40 @@
 # Process contract
 
-Use this reference when a CLI command fails, returns partial data, or the user asks how stdout, stderr, and exit codes should be interpreted.
+Read this when a command fails, returns partial data, or you need to know how stdout, stderr, and
+exit codes fit together.
 
-## Output streams
+## Streams
 
-Success writes one JSON document to stdout and exits `0`.
+A successful command writes one JSON document to stdout and exits `0`. A failed command writes
+nothing to stdout, writes diagnostics to stderr, and writes a structured JSON error as the final
+stderr line.
 
-Failures leave stdout empty, write diagnostics to stderr, write a structured JSON error as the final stderr line, and exit non-zero.
+Done when: you parse stdout only for a successful command, and the last stderr line for a failed
+one.
 
-Completion criterion: parse stdout only for successful commands; parse the final stderr JSON object for failed commands.
+## Exit codes and error kinds
 
-## Exit categories
+Branch on `error_kind`. The exit code is the coarse category.
 
-| Code | Meaning |
-|---:|---|
-| `0` | Command executed, including empty search/list outcomes |
-| `1` | Internal or unclassified failure |
-| `2` | Usage or invalid input |
-| `3` | Requested message or attachment not found |
-| `4` | Retryable or temporarily unavailable failure |
-| `5` | Configuration, environment, or Scope failure |
+| `error_kind` | Exit | Agent action |
+|---|---:|---|
+| `missing_filter`, `bad_limit`, `bad_date`, `bad_message_id`, `bad_attachment_id`, `account_filter_invalid`, `usage_error` | `2` | Fix the request and call again |
+| `message_not_found`, `attachment_not_found` | `3` | Give up, or ask the user for a valid ID |
+| `database_locked` | `4` | Retry after a short delay |
+| `database_not_found`, `config_error` | `5` | Fix the configuration, including Full Disk Access |
+| `io_failure` | `1` or `5` | Retry once, then check the file and its permissions |
+| `internal_error` | `1` | Report a bug |
 
-Completion criterion: command handling branches by category instead of treating every non-zero exit as the same failure.
+Done when: you branch on the category instead of treating every non-zero exit as the same failure.
 
 ## Error handling
 
-On a structured error, branch by `error_kind` and `guidance`:
+A structured error carries `error_kind`, `message`, and `guidance`.
 
-- Fix bad parameters directly when the failure is usage or validation.
+- Fix bad parameters directly when the kind says the arguments are wrong.
 - Broaden the query only after `outcome: "not_found"` or a not-found exit proves the current evidence path failed.
 - Retry only retryable or unavailable failures.
-- Ask for access or configuration when Full Disk Access, mail path, mail version, account selector, or Scope is missing.
+- Ask for access or configuration when Full Disk Access, the mail path, the mail version, the account selector, or the Scope is missing.
 
-Completion criterion: the final answer distinguishes retrieved evidence from missing data, partial delivery, extraction limitations, and configuration or access failures.
+Done when: your answer separates retrieved evidence from missing data, partial delivery, extraction
+limitations, and configuration or access failures.

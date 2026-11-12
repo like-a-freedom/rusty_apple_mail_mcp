@@ -5,59 +5,81 @@ description: Use when an AI agent must run rusty_apple_mail_mcp CLI to discover 
 
 # Apple Mail CLI SOP
 
-Use the CLI as a read-only evidence retriever. Keep the loop tight: resolve the installed command, set Scope, discover identifiers, search a bounded shortlist, retrieve selected content windows, then stop with an explicit evidence boundary.
+The CLI reads Apple Mail and returns evidence. It never writes. Your answer must separate what the
+mail said from what you could not retrieve.
 
-Load extra files only for the branch that needs them:
+Treat audit, legal, financial, and whole-thread work as exhaustive: close every page and every
+window before you answer.
 
-- For exact commands, flags, and shell examples, read [CLI recipes](references/cli-recipes.md).
-- For non-zero exits, stderr parsing, and retry/access decisions, read [process contract](references/process-contract.md).
+Load a reference only when you reach that branch. Both ship inside the CLI:
 
-## 1. Resolve the CLI contract
+```bash
+rusty_apple_mail_mcp skills get apple-mail-cli --ref cli-recipes
+rusty_apple_mail_mcp skills get apple-mail-cli --ref process-contract
+```
 
-Use the installed command from the user's environment. Prefer `rusty_apple_mail_mcp` from `PATH`; if absent, use the user-supplied installed binary path. Do not assume a repository build artifact.
+- `cli-recipes` gives exact commands, flags, and shell examples.
+- `process-contract` gives stdout and stderr, exit codes, and what to do with each failure.
 
-Run local help before relying on remembered examples. Read [CLI recipes](references/cli-recipes.md) when exact help commands or common command forms are needed.
+## 1. Resolve the CLI
 
-Completion criterion: the executable path and available global/subcommand flags are known from the user's environment.
+Use the command installed in the user's environment: `rusty_apple_mail_mcp` from `PATH`, or the
+installed binary path the user gave you. Do not assume a repository build artifact.
 
-## 2. Set Scope deliberately
+Run `rusty_apple_mail_mcp --help` before you rely on a remembered flag.
 
-Scope is the startup allowlist. Prefer `--scope-account <selector>` or `APPLE_MAIL_ACCOUNT=<selector>` when the task names an account. The legacy top-level `--account` is a compatibility alias. `search --account` is a per-call Filter.
+Done when: you know the executable path and the flags it accepts.
 
-Use `list-accounts` before guessing account IDs or mailbox names. Read [CLI recipes](references/cli-recipes.md) for account and mailbox discovery commands.
+## 2. Set Scope
 
-Completion criterion: Scope and Filter are kept distinct, and any account/mailbox selector used later came from the CLI output or the user.
+Scope is the startup allowlist and applies to every later call. Pass it with
+`--scope-account <selector>` or `APPLE_MAIL_ACCOUNT=<selector>` when the task names an account. The
+top-level `--account` is a deprecated alias of the same thing. The `--account` flag on `search`
+filters a single call; Scope applies to all of them.
 
-## 3. Search a shortlist
+Run `list-accounts` before you use any account ID or mailbox name.
 
-Search requires at least one Filter. Use the narrowest truthful filter first, then broaden only when `outcome: "not_found"` or the evidence is insufficient.
+Done when: Scope and Filter stay distinct, and every account or mailbox selector came from
+`list-accounts` output or from the user.
 
-Read [CLI recipes](references/cli-recipes.md) for common search commands.
+## 3. Search
 
-Close pagination when the task needs exhaustive evidence. Continue with `--offset <next_offset>` while `has_more` is true. Stop only when `has_more` is false.
+`search` needs at least one filter: `--subject-query`, `--date-from`, `--date-to`, `--sender`,
+`--participant`, `--account`, or `--mailbox`. Start with the narrowest filter that can answer the
+question. Broaden it only after the result is `not_found` or the evidence is too thin.
 
-Completion criterion: for narrow lookups, the selected message IDs are justified by the shortlist; for audit, legal, financial, or whole-thread work, every relevant page is closed.
+For exhaustive work, continue with `--offset <next_offset>` while `has_more` is true, and stop when
+`has_more` is false.
 
-## 4. Retrieve message windows
+Done when: a narrow lookup names only message IDs the result list justifies, and an exhaustive
+lookup ends with `has_more` false.
 
-Read selected messages with `get-message`. Recipients are omitted unless requested.
+## 4. Read message windows
 
-If `outcome` is `partial`, continue the same message with the returned `window.next_offset` and `window.source_revision`. Read [CLI recipes](references/cli-recipes.md) for exact continuation commands.
+`get-message` returns one message. Recipients come only when you ask for them.
 
-Completion criterion: partial content remains incomplete until required continuations are closed. For audit, legal, financial, or whole-thread claims, retrieve every required window.
+When `outcome` is `partial`, continue the same message with the returned `window.next_offset` and
+`window.source_revision`. For exhaustive work, close every required window.
 
-## 5. Retrieve attachment windows
+Done when: no claim rests on a partial window you have not closed.
 
-Use attachment IDs from `get-message` output. Attachment IDs have the shape `{message_id}:{index}`.
+## 5. Read attachment windows
 
-Read `window.extraction_limitations` separately from `window.complete`. A complete window can still be complete delivery of partially extracted source text.
+Attachment IDs come from `get-message` output and look like `{message_id}:{index}`. Pass one to
+`get-attachment`.
 
-Completion criterion: every attachment used as evidence is either complete for delivery, explicitly partial with continuation closed as needed, or reported with its extraction limitation.
+`window.complete` describes delivery. The extracted text can still be lossy, so read
+`window.extraction_limitations` separately.
 
-## 6. Interpret process results
+Done when: every attachment you cite is complete for delivery, partial with its continuation
+closed, or reported with its extraction limitation.
 
-Success writes one JSON document to stdout and exits `0`. Failures leave stdout empty, write a structured JSON error as the final stderr line, and exit non-zero.
+## 6. Interpret failures
 
-For any non-zero exit, read [process contract](references/process-contract.md), branch by `error_kind` and `guidance`, and separate bad parameters, missing resources, retryable failures, and access/configuration failures.
+Success prints one JSON document on stdout and exits `0`. A failure prints nothing on stdout, writes
+a JSON error as the last stderr line, and exits non-zero.
 
-Completion criterion: final answer separates retrieved evidence from missing data, partial delivery, extraction limitations, and configuration/access failures.
+Read the process contract before you decide whether to retry, fix the request, or report a gap.
+
+Done when: your answer separates retrieved evidence from missing data, partial delivery, extraction
+limitations, and configuration or access failures.
