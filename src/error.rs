@@ -92,6 +92,9 @@ fn classify_validation(msg: &str) -> ErrorKind {
 }
 
 /// JSON envelope for error responses on the CLI.
+///
+/// The not-found outcome is not an error: it is carried by the typed response
+/// as `outcome: "not_found"` with its guidance, on stdout with exit `0`.
 #[derive(Debug, serde::Serialize)]
 pub struct CliErrorResponse {
     pub status: &'static str,
@@ -111,22 +114,6 @@ impl CliErrorResponse {
             error_kind,
             message,
             guidance,
-        }
-    }
-}
-
-/// JSON envelope for not-found responses on the CLI.
-#[derive(Debug, serde::Serialize)]
-pub struct CliNotFoundResponse {
-    pub status: &'static str,
-    pub guidance: String,
-}
-
-impl CliNotFoundResponse {
-    pub fn new(guidance: impl Into<String>) -> Self {
-        Self {
-            status: "not_found",
-            guidance: guidance.into(),
         }
     }
 }
@@ -562,19 +549,5 @@ mod tests {
         let json = serde_json::to_value(&envelope).unwrap();
         assert_eq!(json["error_kind"], "account_filter_invalid");
         assert!(json["guidance"].as_str().unwrap().contains("scope"));
-    }
-
-    #[test]
-    fn cli_not_found_response_serializes_correctly() {
-        let envelope = CliNotFoundResponse::new("No messages match".to_string());
-        let json = serde_json::to_value(&envelope).unwrap();
-        assert_eq!(json["status"], "not_found");
-        assert!(
-            json["guidance"]
-                .as_str()
-                .unwrap()
-                .contains("No messages match")
-        );
-        assert!(json.get("error_kind").is_none());
     }
 }

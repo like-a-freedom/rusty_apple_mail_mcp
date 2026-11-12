@@ -97,6 +97,32 @@ fn search_prints_json_on_stdout_and_exits_zero() {
 }
 
 #[test]
+fn search_without_matches_reports_not_found_with_guidance() {
+    let (_temp_dir, mail_directory, mail_version) = seed_mail();
+    let output = cli()
+        .args([
+            "--mail-directory",
+            &mail_directory,
+            "--mail-version",
+            &mail_version,
+            "search",
+            "--subject-query",
+            "no such subject",
+        ])
+        .output()
+        .expect("run cli");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json output");
+    assert_eq!(value["outcome"], "not_found");
+    let guidance = value["guidance"].as_str().expect("guidance");
+    assert!(
+        !guidance.is_empty(),
+        "a not-found outcome must guide the caller"
+    );
+}
+
+#[test]
 fn list_accounts_without_a_mail_directory_exits_five() {
     let output = cli()
         .args(["--mail-directory", "/nonexistent/mail/dir", "list-accounts"])
