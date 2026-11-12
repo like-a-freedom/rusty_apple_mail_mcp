@@ -42,6 +42,8 @@ WORKFLOW for any task:
   - `MessageNotFound` / `AttachmentNotFound` → `McpError::invalid_params(...)` — resource not found
   - Everything else → `McpError::internal_error(...)` — server/database failures
 - **Tool functions return `Err(MailMcpError)`, not `Ok(Response::error(...))`** — the generic `call_typed_tool` handler auto-converts via `?`. Never wrap errors in a successful `Ok` response body.
+- **The bundled agent skill is embedded in the binary, so it must be maintained with the code.** `skills/apple-mail-cli/` is compiled into the executable with `include_str!` and served to agents by `rusty_apple_mail_mcp skills get apple-mail-cli`. Anything that changes what the skill tells an agent to do — CLI commands, flags, output shapes, `ErrorKind` variants, exit codes, the process contract — requires an update to that skill **in the same change, in the same commit**.
+- **A behaviour change with a stale skill is a defect, not a documentation debt.** The skill is the only instruction an installed agent reads. A stale skill points agents at commands that no longer exist, or hides a flag they need.
 
 ### Quality Gate (mandatory before every commit)
 
@@ -69,6 +71,7 @@ cargo check
 - **Never** push code that produces a single clippy warning, compiler warning, or `dbg!()` / `todo!()` / `unimplemented!()`.
 - **Always** run `cargo fmt --all` before committing. If CI fails on formatting, the commit is rejected.
 - **All 4 gates** (fmt, clippy, test, doc) must pass before any push. No exceptions.
+- **Skill sync is a fifth gate.** If the change touched CLI commands, flags, output shapes, `ErrorKind` variants, exit codes, or the process contract, `skills/apple-mail-cli/` must describe the new behaviour in the same commit. The guards in `tests/skills_drift.rs` catch a served document that no longer matches its file and commands the skill documents that the CLI no longer accepts; they cannot catch a skill that is merely incomplete, so read the diff of the skill yourself.
 - If a test is flaky due to global state, **fix it** with a serialisation lock — never silence or ignore it.
 - `#[allow(...)]` attributes are forbidden unless explicitly approved in a code review.
 
@@ -429,7 +432,8 @@ src/
 ├── lib.rs              ← re-exports public API only; declares all modules
 ├── main.rs             ← entry point; thin, delegates to runner
 ├── cli.rs              ← CLI subcommands (via clap)
-│   └── commands.rs
+│   ├── commands.rs
+│   └── skills.rs       ← skills adapter: selection and rendering of bundled documents
 ├── config.rs           ← MailConfig: loading/validation
 ├── accounts.rs         ← AccountMetadata domain type
 ├── domain.rs           ← re-exports: AttachmentContent, AttachmentMeta, ContentFormat,
@@ -460,7 +464,14 @@ src/
 │           ├── list_accounts.rs    ← ListAccountsParams
 │           ├── list_mailboxes.rs
 │           └── message_lookup.rs   ← shared message lookup helpers
+├── skills.rs           ← bundled skill catalog: embedded documents, frontmatter, lookup
 └── runner.rs           ← wire everything together; start MCP server
+```
+
+```text
+skills/apple-mail-cli/    ← agent skill, embedded into the binary with include_str!
+├── SKILL.md              ←   core workflow; always loaded
+└── references/           ←   loaded on demand via `skills get --ref <name>`
 ```
 
 ### Visibility Rules (Principle of Least Privilege)
@@ -713,3 +724,4 @@ Before submitting any code, verify that NONE of these are present:
 - Missing `///` doc comment on any pub item
 - Param struct without `#[serde(deny_unknown_fields)]`
 - Returning `Ok(Response::error(...))` for tool-level validation errors (return `Err(MailMcpError::Validation(...))` instead)
+- Behaviour change shipped while `skills/apple-mail-cli/` still describes the old behaviour
