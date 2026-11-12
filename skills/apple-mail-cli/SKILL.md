@@ -61,4 +61,3 @@ Success writes one JSON document to stdout and exits `0`. Failures leave stdout 
 For any non-zero exit, read [process contract](references/process-contract.md), branch by `error_kind` and `guidance`, and separate bad parameters, missing resources, retryable failures, and access/configuration failures.
 
 Completion criterion: final answer separates retrieved evidence from missing data, partial delivery, extraction limitations, and configuration/access failures.
-hi ther

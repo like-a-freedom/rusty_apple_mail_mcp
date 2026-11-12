@@ -10,6 +10,8 @@ pub mod mail;
 pub mod runner;
 pub mod server;
 
+pub mod skills;
+
 // Core types
 pub use config::MailConfig;
 pub use error::MailMcpError;
