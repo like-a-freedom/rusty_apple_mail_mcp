@@ -171,6 +171,12 @@ mod tests {
     }
 
     #[test]
+    fn exit_code_mapping_json_is_internal() {
+        let err = MailMcpError::Json(serde_json::Error::io(std::io::Error::other("fail")));
+        assert_eq!(u8::from(&err), exit_code::INTERNAL);
+    }
+
+    #[test]
     fn cli_error_response_serialization() {
         let err = MailMcpError::Validation("limit must be between 1 and 100, got 200".to_string());
         let envelope = CliErrorResponse::from_error(&err);

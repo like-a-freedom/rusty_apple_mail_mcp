@@ -9,7 +9,7 @@ use clap::Parser;
 
 /// CLI arguments for the Apple Mail tool.
 #[derive(Debug, Parser)]
-#[command(name = "rusty_apple_mail")]
+#[command(name = "rusty_apple_mail", version)]
 #[command(about = "Apple Mail read-only tool - MCP server or CLI", long_about = None)]
 pub struct Cli {
     /// Mail directory path (default: platform-specific Apple Mail location)

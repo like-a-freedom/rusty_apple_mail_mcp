@@ -12,7 +12,7 @@ use crate::skills::{SKILL_DOCUMENT_PATH, Skill, SkillDocument, catalog, find, re
 
 /// Output format of the skills command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
+enum Format {
     /// Human- and agent-readable markdown.
     Text,
     /// Machine-readable JSON envelope.
@@ -21,7 +21,7 @@ pub enum Format {
 
 /// Which documents a `skills get` invocation selects.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Selection {
+enum Selection {
     /// The skill document only.
     Primary,
     /// The skill document and every reference.
@@ -70,7 +70,7 @@ pub struct GetSkillArgs {
 }
 
 /// Resolve a selection into the documents to render.
-pub fn select<'a>(
+fn select<'a>(
     skill: &'a Skill,
     selection: &Selection,
 ) -> Result<Vec<&'a SkillDocument>, MailMcpError> {
@@ -89,7 +89,7 @@ pub fn select<'a>(
 }
 
 /// Render selected documents as markdown or as a JSON envelope.
-pub fn render_documents(
+fn render_documents(
     skill: &Skill,
     documents: &[&SkillDocument],
     format: Format,
@@ -115,7 +115,7 @@ pub fn render_documents(
 }
 
 /// Render the catalog of bundled skills.
-pub fn render_catalog(format: Format, pretty: bool) -> Result<String, MailMcpError> {
+fn render_catalog(format: Format, pretty: bool) -> Result<String, MailMcpError> {
     let skills = catalog()?;
     match format {
         Format::Text => Ok(skills
