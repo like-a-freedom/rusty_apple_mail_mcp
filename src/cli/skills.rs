@@ -143,7 +143,7 @@ fn render_catalog(format: Format, pretty: bool) -> Result<String, MailMcpError> 
     }
 }
 
-/// Execute the skills command and return the text to print.
+/// Render the output of the skills command.
 pub fn run(args: &SkillsArgs, pretty: bool) -> Result<String, MailMcpError> {
     let format = if args.json {
         Format::Json

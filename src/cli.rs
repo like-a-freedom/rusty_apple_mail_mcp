@@ -26,7 +26,7 @@ pub struct Cli {
     pub scope_account: Option<String>,
 
     /// Pretty-print JSON output (default: compact)
-    #[arg(long, default_value = "false")]
+    #[arg(long, global = true, default_value = "false")]
     pub pretty: bool,
 
     /// Run as MCP server (stdin/stdout protocol)

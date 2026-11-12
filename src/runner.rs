@@ -42,28 +42,18 @@ fn init_tracing(log_level: Option<&str>) {
 pub async fn run() -> Result<()> {
     let used_legacy_scope_account = legacy_scope_account_used(std::env::args_os());
     let cli = Cli::parse();
-
-    // The skills command serves bundled documentation and must work without a
-    // configured mail directory, so it runs before the configuration is built.
-    if let Some(Command::Skills(args)) = &cli.command {
-        run_skills(args, cli.pretty, used_legacy_scope_account);
-    }
-
-    let config = match build_config(&cli) {
-        Ok(config) => config,
-        Err(err) => {
-            init_tracing(None);
-            warn_legacy_scope_account(used_legacy_scope_account);
-            execution::write_error(&err);
-            std::process::exit(i32::from(execution::exit_code::CONFIG));
-        }
-    };
-
-    init_tracing(config.log_level.as_deref());
-    warn_legacy_scope_account(used_legacy_scope_account);
+    let overrides = config_overrides(&cli);
 
     match cli.command {
+        // The skills command serves bundled documentation and must work without
+        // a configured mail directory, so it never builds a configuration.
+        Some(Command::Skills(args)) => {
+            init_tracing(None);
+            warn_legacy_scope_account(used_legacy_scope_account);
+            std::process::exit(i32::from(execution::execute_skills(&args, cli.pretty)));
+        }
         Some(Command::ListAccounts(args)) => {
+            let config = start_config(&overrides, used_legacy_scope_account);
             let exit = execution::execute(
                 || crate::cli::commands::list_accounts(&config, args.include_mailboxes),
                 cli.pretty,
@@ -71,6 +61,7 @@ pub async fn run() -> Result<()> {
             std::process::exit(i32::from(exit));
         }
         Some(Command::Search(args)) => {
+            let config = start_config(&overrides, used_legacy_scope_account);
             let exit = execution::execute(
                 || crate::cli::commands::search_messages(&config, args),
                 cli.pretty,
@@ -78,6 +69,7 @@ pub async fn run() -> Result<()> {
             std::process::exit(i32::from(exit));
         }
         Some(Command::GetMessage(args)) => {
+            let config = start_config(&overrides, used_legacy_scope_account);
             let exit = execution::execute(
                 || crate::cli::commands::get_message(&config, args),
                 cli.pretty,
@@ -85,14 +77,15 @@ pub async fn run() -> Result<()> {
             std::process::exit(i32::from(exit));
         }
         Some(Command::GetAttachment(args)) => {
+            let config = start_config(&overrides, used_legacy_scope_account);
             let exit = execution::execute(
                 || crate::cli::commands::get_attachment(&config, args),
                 cli.pretty,
             );
             std::process::exit(i32::from(exit));
         }
-        Some(Command::Skills(args)) => run_skills(&args, cli.pretty, used_legacy_scope_account),
         None => {
+            let config = start_config(&overrides, used_legacy_scope_account);
             tracing::info!(
                 "starting server (mail_directory={}, mail_version={})",
                 config.mail_directory.display(),
@@ -108,23 +101,41 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-fn build_config(cli: &Cli) -> Result<MailConfig, MailMcpError> {
-    MailConfigBuilder::from_overrides(MailConfigOverrides {
+/// Collect the configuration overrides carried by the parsed arguments.
+fn config_overrides(cli: &Cli) -> MailConfigOverrides {
+    MailConfigOverrides {
         mail_directory: cli.mail_directory.clone(),
         mail_version: cli.mail_version.clone(),
         account: cli.scope_account.clone(),
+    }
+}
+
+/// Build the mail configuration from the given overrides.
+fn build_config(overrides: &MailConfigOverrides) -> Result<MailConfig, MailMcpError> {
+    MailConfigBuilder::from_overrides(MailConfigOverrides {
+        mail_directory: overrides.mail_directory.clone(),
+        mail_version: overrides.mail_version.clone(),
+        account: overrides.account.clone(),
     })
 }
 
-/// Dispatch the skills command and exit the process.
-fn run_skills(
-    args: &crate::cli::skills::SkillsArgs,
-    pretty: bool,
-    used_legacy_scope_account: bool,
-) -> ! {
-    init_tracing(None);
+/// Build the configuration, initialise tracing, and warn about legacy flags.
+///
+/// A configuration failure ends the process with the configuration exit code,
+/// so every command reports it the same way.
+fn start_config(overrides: &MailConfigOverrides, used_legacy_scope_account: bool) -> MailConfig {
+    let config = match build_config(overrides) {
+        Ok(config) => config,
+        Err(err) => {
+            init_tracing(None);
+            warn_legacy_scope_account(used_legacy_scope_account);
+            execution::write_error(&err);
+            std::process::exit(i32::from(execution::exit_code::CONFIG));
+        }
+    };
+    init_tracing(config.log_level.as_deref());
     warn_legacy_scope_account(used_legacy_scope_account);
-    std::process::exit(i32::from(execution::execute_skills(args, pretty)));
+    config
 }
 
 fn legacy_scope_account_used(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
@@ -221,7 +232,7 @@ mod tests {
             "V9",
         ]);
 
-        let config = build_config(&cli).expect("config should build");
+        let config = build_config(&config_overrides(&cli)).expect("config should build");
         assert_eq!(config.mail_directory, mail_directory);
         assert_eq!(config.mail_version, "V9");
     }
@@ -238,7 +249,7 @@ mod tests {
             "--mail-version",
             "V8",
         ]);
-        let config = build_config(&cli).expect("config should build");
+        let config = build_config(&config_overrides(&cli)).expect("config should build");
         assert_eq!(config.mail_version, "V8");
     }
 
@@ -254,7 +265,7 @@ mod tests {
             "--mail-version",
             "V10",
         ]);
-        let config = build_config(&cli).expect("config should build");
+        let config = build_config(&config_overrides(&cli)).expect("config should build");
         assert_eq!(config.mail_directory, mail_directory);
         assert_eq!(config.allowed_account_ids(), None);
     }
@@ -262,7 +273,8 @@ mod tests {
     #[test]
     fn build_config_fails_on_invalid_mail_directory() {
         let cli = Cli::parse_from(["test", "--mail-directory", "/nonexistent"]);
-        let err = build_config(&cli).expect_err("should fail on missing directory");
+        let err =
+            build_config(&config_overrides(&cli)).expect_err("should fail on missing directory");
         assert!(matches!(err, MailMcpError::DatabaseNotFound { .. }));
     }
 
@@ -278,7 +290,8 @@ mod tests {
             "--mail-version",
             "",
         ]);
-        let err = build_config(&cli).expect_err("empty mail version should fail");
+        let err =
+            build_config(&config_overrides(&cli)).expect_err("empty mail version should fail");
         assert!(matches!(err, MailMcpError::Config(_)));
     }
 }

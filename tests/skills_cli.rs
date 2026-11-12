@@ -56,6 +56,70 @@ fn skills_get_unknown_skill_exits_two_with_a_json_error() {
 }
 
 #[test]
+fn skills_get_json_returns_the_document_envelope() {
+    let output = cli()
+        .args(["skills", "get", "apple-mail-cli", "--json"])
+        .output()
+        .expect("run cli");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json output");
+    assert_eq!(value["name"], "apple-mail-cli");
+    assert_eq!(value["documents"][0]["path"], "SKILL.md");
+    assert!(
+        value["documents"][0]["content"]
+            .as_str()
+            .expect("content")
+            .starts_with("---")
+    );
+}
+
+#[test]
+fn skills_get_json_accepts_pretty_after_the_action() {
+    let output = cli()
+        .args(["skills", "get", "apple-mail-cli", "--json", "--pretty"])
+        .output()
+        .expect("run cli");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\n  \"name\""),
+        "expected indented json: {stdout}"
+    );
+}
+
+#[test]
+fn skills_get_ref_prints_only_that_reference() {
+    let output = cli()
+        .args([
+            "skills",
+            "get",
+            "apple-mail-cli",
+            "--ref",
+            "process-contract",
+        ])
+        .output()
+        .expect("run cli");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("<!-- reference: references/process-contract.md -->"));
+    assert!(!stdout.contains("references/cli-recipes.md"));
+    assert!(!stdout.starts_with("---"));
+}
+
+#[test]
+fn skills_get_help_lists_the_flags() {
+    let output = cli()
+        .args(["skills", "get", "--help"])
+        .output()
+        .expect("run cli");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--full"));
+    assert!(stdout.contains("--ref"));
+}
+
+#[test]
 fn skills_get_unknown_reference_exits_two_with_a_json_error() {
     let output = cli()
         .args(["skills", "get", "apple-mail-cli", "--ref", "nope"])

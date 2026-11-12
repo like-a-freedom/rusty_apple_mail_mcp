@@ -54,6 +54,12 @@ impl From<&MailMcpError> for ErrorKind {
     }
 }
 
+/// Classify a validation failure from its message.
+///
+/// The families are listed in the order they are checked. Only a message that
+/// is genuinely shaped like a bad request may fall through to
+/// [`ErrorKind::UsageError`]; every operational condition has its own branch,
+/// so the guidance an agent receives matches the condition it hit.
 fn classify_validation(msg: &str) -> ErrorKind {
     if msg.contains("At least one filter") || msg.contains("at least one filter") {
         ErrorKind::MissingFilter
@@ -63,8 +69,17 @@ fn classify_validation(msg: &str) -> ErrorKind {
         ErrorKind::AccountFilterInvalid
     } else if msg.contains("body file not found") {
         ErrorKind::IoFailure
-    } else if msg.contains("Failed to parse message body file") {
+    } else if msg.contains("Failed to parse message body file")
+        || msg.contains("too large to read into memory")
+        || msg.contains("Attachment content is unavailable")
+        || msg.contains("unexpected error:")
+    {
         ErrorKind::InternalError
+    } else if msg.contains("Source revision mismatch")
+        || msg.contains("is out of bounds")
+        || msg.contains("not on a valid UTF-8 character boundary")
+    {
+        ErrorKind::UsageError
     } else if msg.contains("date") || msg.contains("YYYY-MM-DD") {
         ErrorKind::BadDate
     } else if msg.contains("message_id") || msg.contains("message id") {
@@ -499,6 +514,43 @@ mod tests {
                 .to_string(),
         );
         assert_eq!(ErrorKind::from(&err), ErrorKind::InternalError);
+    }
+
+    #[test]
+    fn error_kind_oversized_file_is_internal_error() {
+        let err = MailMcpError::Validation(
+            "File /tmp/big.emlx is too large to read into memory (300000000 bytes, limit 268435456 bytes)."
+                .to_string(),
+        );
+        assert_eq!(ErrorKind::from(&err), ErrorKind::InternalError);
+    }
+
+    #[test]
+    fn error_kind_unavailable_attachment_content_is_internal_error() {
+        let err = MailMcpError::Validation(
+            "Attachment content is unavailable in the parsed message. The attachment data may be \
+             stored externally by Apple Mail or is in a format that cannot be decoded inline."
+                .to_string(),
+        );
+        assert_eq!(ErrorKind::from(&err), ErrorKind::InternalError);
+    }
+
+    #[test]
+    fn error_kind_archive_extraction_failure_is_internal_error() {
+        let err = MailMcpError::Validation("unexpected error: invalid zip signature".to_string());
+        assert_eq!(ErrorKind::from(&err), ErrorKind::InternalError);
+    }
+
+    #[test]
+    fn error_kind_delivery_errors_are_usage_errors() {
+        for message in [
+            "Source revision mismatch: expected abc, got def. Restart from offset 0.",
+            "Offset 8192 is out of bounds (total 4096 bytes)",
+            "Offset 8192 is not on a valid UTF-8 character boundary",
+        ] {
+            let err = MailMcpError::Validation(message.to_string());
+            assert_eq!(ErrorKind::from(&err), ErrorKind::UsageError, "{message}");
+        }
     }
 
     #[test]
