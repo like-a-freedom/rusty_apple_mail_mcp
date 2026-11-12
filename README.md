@@ -10,9 +10,7 @@
 
 Read-only MCP server for Apple Mail on macOS. Also works as a CLI tool.
 
-Need an AI agent to safely search and read Apple Mail on your Mac? This project provides a clean, read-only MCP layer over Apple Mail’s native storage — fast index-based searches, on‑demand body hydration from `.emlx`, and zero write access.
-
-It gives an LLM or AI agent fast local access to Apple Mail metadata, message bodies, and attachment text **without AppleScript and without IMAP/POP/EWS network calls**.
+It gives an AI agent local access to Apple Mail metadata, message bodies, and attachment text. Searches run against the index, bodies and attachments load on demand from `.emlx` files, and nothing is ever written. No AppleScript, no IMAP/POP/EWS round trips.
 
 ## Why this matters
 
@@ -25,7 +23,7 @@ This project exposes that storage through a small, intent-driven MCP interface s
 - extract readable text from supported attachments;
 - operate completely **locally** and **read-only**.
 
-In practice, it empowers AI workflows to search and read your mail archive safely and quickly, without relying on Mail.app automation like AppleScript (which damn slow and throws timeouts regularly) or network protocols.
+In practice, an agent searches and reads your mail archive without Mail.app automation. AppleScript is damn slow and throws timeouts regularly, and the network protocols add nothing you need on your own machine.
 
 ## What the server can do
 
@@ -46,7 +44,7 @@ The current tool set is intentionally compact:
 - Apple Mail installed and synced at least once
 - Rust toolchain (`rustup`, `cargo`)
 
-> **Note — macOS Full Disk Access required**
+> **Note: macOS Full Disk Access required**
 >
 > Apple Mail's data directory (`~/Library/Mail`) is protected by macOS TCC (Transparency, Consent, and Control). The MCP server process **must** have Full Disk Access to read the Envelope Index database.
 >
@@ -100,16 +98,14 @@ npx -y @modelcontextprotocol/inspector ./target/release/rusty_apple_mail_mcp
 
 ### CLI Mode
 
-In CLI mode, you can run individual commands directly from the terminal. This is useful for:
-
-- **Scripting** — automation of mail search tasks in shell scripts
-- **Debugging** — quick testing without setting up an MCP client
-- **Integration** — piping results to other command-line tools
-- **One-off queries** — when you need a quick answer without starting a persistent server
+In CLI mode, you can run individual commands directly from the terminal: to script mail lookups, to debug without setting up an MCP client, to pipe results into other command-line tools, or for one-off queries that do not need a long-running server.
 
 #### Usage
 
 ```bash
+# Print the installed version
+rusty_apple_mail_mcp --version
+
 # List all accounts
 rusty_apple_mail_mcp list-accounts
 rusty_apple_mail_mcp list-accounts --include-mailboxes
@@ -228,8 +224,8 @@ CLI flags > environment variables > config.yaml > defaults
 
 The server looks for `config.yaml` in two locations (first found wins):
 
-1. **Next to the binary** — same directory as the executable
-2. **Home config** — `~/.config/rusty_apple_mail_mcp/config.yaml`
+1. Next to the binary, in the same directory as the executable
+2. The home config at `~/.config/rusty_apple_mail_mcp/config.yaml`
 
 Copy `config.example.yaml` to one of these locations and fill in your values:
 
@@ -244,7 +240,7 @@ cp config.example.yaml ~/.config/rusty_apple_mail_mcp/config.yaml
 | `apple_mail_dir` | `APPLE_MAIL_DIR` | `--mail-directory` | `~/Library/Mail` | Root folder of the Mail data |
 | `apple_mail_version` | `APPLE_MAIL_VERSION` | `--mail-version` | `V10` | Envelope Index version subdirectory |
 | `apple_mail_account` | `APPLE_MAIL_ACCOUNT` | `--scope-account` | unset | Startup Scope selector(s); legacy top-level `--account` remains a compatibility alias |
-| `log_level` | `APPLE_MAIL_LOG_LEVEL` | — | `warn` | Log level; `RUST_LOG` takes precedence |
+| `log_level` | `APPLE_MAIL_LOG_LEVEL` | none | `warn` | Log level; `RUST_LOG` takes precedence |
 
 ### Priority chain examples
 
@@ -274,12 +270,12 @@ The server reads `RUST_LOG` through `tracing_subscriber::EnvFilter`, so it accep
 
 Common values:
 
-- `error` — only errors
-- `warn` — warnings and errors
-- `info` — startup and high-level operational logs
-- `debug` — includes per-request debug logs
-- `trace` — very verbose tracing
-- `off` — disables logging
+- `error`: only errors
+- `warn`: warnings and errors
+- `info`: startup and high-level operational logs
+- `debug`: includes per-request debug logs
+- `trace`: very verbose tracing
+- `off`: disables logging
 
 You can also scope logs per module/crate:
 
@@ -301,7 +297,7 @@ If `APPLE_MAIL_ACCOUNT` is set, the server resolves each selector through macOS 
 
 #### Discovering account selectors
 
-Run `list_accounts` without scoping first — it shows all available accounts with their names and emails:
+Run `list_accounts` without scoping first. It shows every account with its name and email:
 
 ```bash
 rusty_apple_mail_mcp list-accounts
@@ -351,7 +347,7 @@ APPLE_MAIL_ACCOUNT="Exchange,personal@example.com"
 
 - Matching is case-insensitive and trims whitespace.
 - Startup fails fast if a selector matches zero accounts (typo) or multiple accounts (ambiguous).
-- Accounts not registered in macOS Accounts settings cannot be selected by name or email — use their `account_id` instead.
+- Accounts that macOS Accounts settings does not register cannot be selected by name or email. Use their `account_id` instead.
 
 ## VS Code integration
 
@@ -387,12 +383,12 @@ Typical usage pattern:
 
 The server is optimized to minimize token consumption:
 
-- **Compact tool descriptions** — routing hints live in `ServerInfo.instructions` (loaded once), not repeated per-tool on every request.
-- **HTML → plain text** — HTML email bodies are converted to clean text via DOM parsing (using `scraper`), typically 10–20× smaller than raw HTML.
-- **Explicit completed outcomes** — successful MCP/tool payloads carry `outcome: "success"`, `outcome: "partial"`, or `outcome: "not_found"`; protocol errors stay native errors.
-- **Recipients omitted by default** — `get_message` skips To/CC lists unless `include_recipients=true`.
-- **Compact dates** — ISO 8601 without seconds (`2024-09-15T00:00Z`).
-- **`has_body` removed** — always true for indexed messages; no longer wasting tokens.
+- Routing hints live in `ServerInfo.instructions`, which loads once, instead of repeating them per tool on every request.
+- HTML bodies are converted to plain text through DOM parsing (using `scraper`), typically ten to twenty times smaller than the raw HTML.
+- Completed payloads carry an explicit `outcome` (`success`, `partial`, or `not_found`), while protocol errors stay native errors.
+- `get_message` skips To/CC lists unless `include_recipients=true`.
+- Dates are compact ISO 8601 without seconds (`2024-09-15T00:00Z`).
+- `has_body` is gone: it was always true for indexed messages, so it only wasted tokens.
 
 ### Sample search request
 
@@ -417,7 +413,7 @@ The server is optimized to minimize token consumption:
 }
 ```
 
-`include_recipients` defaults to `false` — set it to `true` when you need the To/CC lists (saves tokens on corporate mail with 50+ recipients). If a response returns `outcome: "partial"`, continue with the returned `window.next_offset` and `window.source_revision`.
+`include_recipients` defaults to `false`. Set it to `true` when you need the To/CC lists, which saves tokens on corporate mail with 50+ recipients. If a response returns `outcome: "partial"`, continue with the returned `window.next_offset` and `window.source_revision`.
 
 ### Combined account + mailbox discovery
 
@@ -435,8 +431,8 @@ This returns accounts with their mailboxes grouped, saving one round-trip.
 
 The server draws from two local sources:
 
-- **Envelope Index** – the SQLite database Apple Mail uses as a metadata index and relationship store
-- **.emlx files** – the canonical bodies and attachments for individual messages
+- The **Envelope Index**, the SQLite database Apple Mail uses as a metadata index and relationship store
+- The `.emlx` files, which hold the canonical bodies and attachments for individual messages
 
 Search queries hit the lightweight index, keeping them fast; bodies and attachments are loaded on-demand from the `.emlx` files.
 
@@ -445,8 +441,9 @@ Search queries hit the lightweight index, keeping them fast; bodies and attachme
 Handy commands while working on the codebase:
 
 ```bash
-cargo test
+cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
+cargo test
 cargo doc --no-deps
 ```
 
