@@ -20,6 +20,8 @@ pub enum ErrorKind {
     BadAttachmentId,
     /// Account filter value did not resolve or is outside Scope. Agent should fix the call.
     AccountFilterInvalid,
+    /// The request is not valid as written. Agent should fix the call.
+    UsageError,
     /// Message not found in the index. Agent should give up or ask the user.
     MessageNotFound,
     /// Attachment not found for the given message. Agent should give up or ask the user.
@@ -66,7 +68,7 @@ fn classify_validation(msg: &str) -> ErrorKind {
     } else if msg.contains("attachment_id") || msg.contains("attachment id") {
         ErrorKind::BadAttachmentId
     } else {
-        ErrorKind::InternalError
+        ErrorKind::UsageError
     }
 }
 
@@ -132,6 +134,7 @@ fn guidance_for(err: &MailMcpError, kind: &ErrorKind) -> String {
              Use list_accounts to see available account names, emails, or IDs."
                 .to_string()
         }
+        ErrorKind::UsageError => "Fix the request parameters and retry.".to_string(),
         ErrorKind::MessageNotFound => {
             format!("{err}\nUse search_messages or list_accounts to find valid message IDs.")
         }
@@ -419,9 +422,9 @@ mod tests {
     }
 
     #[test]
-    fn error_kind_unclassified_validation_is_internal() {
+    fn error_kind_unclassified_validation_is_usage_error() {
         let err = MailMcpError::Validation("something unexpected".to_string());
-        assert_eq!(ErrorKind::from(&err), ErrorKind::InternalError);
+        assert_eq!(ErrorKind::from(&err), ErrorKind::UsageError);
     }
 
     #[test]
@@ -454,6 +457,17 @@ mod tests {
         assert_eq!(json["error_kind"], "bad_limit");
         assert!(json["message"].as_str().unwrap().contains("limit"));
         assert!(json["guidance"].as_str().unwrap().contains("--limit"));
+    }
+
+    #[test]
+    fn cli_error_response_usage_error_serializes_as_usage_error() {
+        let err = MailMcpError::Validation(
+            "Unknown skill 'nope'. Available skills: apple-mail-cli".to_string(),
+        );
+        let envelope = CliErrorResponse::from_error(&err);
+        let json = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(json["error_kind"], "usage_error");
+        assert_eq!(json["guidance"], "Fix the request parameters and retry.");
     }
 
     #[test]
