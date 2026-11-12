@@ -45,6 +45,8 @@ pub enum Command {
     GetMessage(GetMessageArgs),
     /// Get attachment content
     GetAttachment(GetAttachmentArgs),
+    /// List bundled agent skills
+    Skills(skills::SkillsArgs),
 }
 
 /// Arguments for list_accounts command.

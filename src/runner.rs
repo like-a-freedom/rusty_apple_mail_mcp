@@ -42,6 +42,13 @@ fn init_tracing(log_level: Option<&str>) {
 pub async fn run() -> Result<()> {
     let used_legacy_scope_account = legacy_scope_account_used(std::env::args_os());
     let cli = Cli::parse();
+
+    // The skills command serves bundled documentation and must work without a
+    // configured mail directory, so it runs before the configuration is built.
+    if let Some(Command::Skills(args)) = &cli.command {
+        run_skills(args, cli.pretty, used_legacy_scope_account);
+    }
+
     let config = match build_config(&cli) {
         Ok(config) => config,
         Err(err) => {
@@ -84,6 +91,7 @@ pub async fn run() -> Result<()> {
             );
             std::process::exit(i32::from(exit));
         }
+        Some(Command::Skills(args)) => run_skills(&args, cli.pretty, used_legacy_scope_account),
         None => {
             tracing::info!(
                 "starting server (mail_directory={}, mail_version={})",
@@ -108,8 +116,25 @@ fn build_config(cli: &Cli) -> Result<MailConfig, MailMcpError> {
     })
 }
 
+/// Dispatch the skills command and exit the process.
+fn run_skills(
+    args: &crate::cli::skills::SkillsArgs,
+    pretty: bool,
+    used_legacy_scope_account: bool,
+) -> ! {
+    init_tracing(None);
+    warn_legacy_scope_account(used_legacy_scope_account);
+    std::process::exit(i32::from(execution::execute_skills(args, pretty)));
+}
+
 fn legacy_scope_account_used(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
-    const SUBCOMMANDS: [&str; 4] = ["list-accounts", "search", "get-message", "get-attachment"];
+    const SUBCOMMANDS: [&str; 5] = [
+        "list-accounts",
+        "search",
+        "get-message",
+        "get-attachment",
+        "skills",
+    ];
 
     for arg in args.into_iter().skip(1) {
         let arg = arg.to_string_lossy();

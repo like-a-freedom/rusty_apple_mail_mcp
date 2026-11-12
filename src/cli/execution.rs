@@ -56,6 +56,19 @@ pub fn write_success<T: serde::Serialize>(value: &T, pretty: bool) -> std::io::R
     Ok(())
 }
 
+/// Write a text payload to stdout, appending a newline only when needed.
+///
+/// Used by commands that return documentation rather than domain data. The
+/// payload is printed verbatim, so the file it comes from stays byte-identical.
+pub fn write_text(text: &str) -> std::io::Result<()> {
+    let mut stdout = std::io::stdout();
+    stdout.write_all(text.as_bytes())?;
+    if !text.ends_with('\n') {
+        writeln!(stdout)?;
+    }
+    Ok(())
+}
+
 /// Write a structured error to stderr and return the exit code.
 pub fn write_error(err: &MailMcpError) -> ExitCode {
     let envelope = CliErrorResponse::from_error(err);
@@ -63,6 +76,23 @@ pub fn write_error(err: &MailMcpError) -> ExitCode {
     let _ = serde_json::to_writer(&mut stderr, &envelope);
     let _ = writeln!(stderr);
     ExitCode::from(u8::from(err))
+}
+
+/// Execute the skills command and return its exit code.
+pub fn execute_skills(args: &crate::cli::skills::SkillsArgs, pretty: bool) -> u8 {
+    match crate::cli::skills::run(args, pretty) {
+        Ok(text) => match write_text(&text) {
+            Ok(()) => exit_code::SUCCESS,
+            Err(io_err) => {
+                write_error(&MailMcpError::Io(io_err));
+                exit_code::INTERNAL
+            }
+        },
+        Err(err) => {
+            write_error(&err);
+            u8::from(&err)
+        }
+    }
 }
 
 /// Execute a CLI command handler and handle the result according to ADR-0007.
